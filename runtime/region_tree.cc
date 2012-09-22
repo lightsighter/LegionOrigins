@@ -1100,7 +1100,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool IndexSpaceNode::are_disjoint(Color c1, Color c2) const
+    bool IndexSpaceNode::are_disjoint(Color c1, Color c2)
     //--------------------------------------------------------------------------
     {
       // Quick out
@@ -1179,6 +1179,21 @@ namespace RegionRuntime {
       assert(color_map.find(c) != color_map.end());
 #endif
       color_map.erase(c);
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexPartNode::are_disjoint(Color c1, Color c2)
+    //--------------------------------------------------------------------------
+    {
+      if (disjoint)
+        return true;
+      if (disjoint_subspaces.find(std::pair<Color,Color>(c1,c2)) !=
+          disjoint_subspaces.end())
+        return true;
+      if (disjoint_subspaces.find(std::pair<Color,Color>(c2,c1)) !=
+          disjoint_subspaces.end())
+        return true;
+      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -1304,64 +1319,20 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
-    // Region Node 
+    // Region Tree Node 
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    RegionNode::RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
-                           FieldSpaceNode *col_src, bool add)
-      : handle(r), parent(par), row_source(row_src), column_source(col_src), added(add)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    void RegionNode::add_child(LogicalPartition handle, PartitionNode *node)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(color_map.find(node->row_source->color) == color_map.end());
-#endif
-      color_map[node->row_source->color] = node;
-    }
-
-    //--------------------------------------------------------------------------
-    bool RegionNode::has_child(Color c)
-    //--------------------------------------------------------------------------
-    {
-      return (color_map.find(c) != color_map.end());
-    }
-
-    //--------------------------------------------------------------------------
-    PartitionNode* RegionNode::get_child(Color c)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(color_map.find(c) != color_map.end());
-#endif
-      return color_map[c];
-    }
-
-    //--------------------------------------------------------------------------
-    void RegionNode::remove_child(Color c)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(color_map.find(c) != color_map.end());
-#endif
-      color_map.erase(c);
-    }
-
-    //--------------------------------------------------------------------------
-    void RegionNode::register_logical_region(const LogicalUser &user, const ContextID ctx,
+    void RegionTreeNode::register_logical_region(const LogicalUser &user, const ContextID ctx,
                                              std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!path.empty());
-      assert(path.back() == row_source->color);
+      assert(color_match(path.back()));
       assert(logical_states.find(ctx) != logical_states.end());
 #endif
+      
       LogicalState &state = logical_states[ctx];
       if (path.size() == 1)
       {
@@ -1423,17 +1394,15 @@ namespace RegionRuntime {
           }
           // In cases where both are read only or reduce 
           // in the same mode then a close isn't need
-          if ((IS_READ_ONLY(user.usage) && (it->part_state == PART_READ_ONLY)) || 
-              (IS_REDUCE(user.usage) && (it->part_state == PART_REDUCE) && (it->redop = user.usage.redop)))
+          if ((IS_READ_ONLY(user.usage) && (it->open_state == OPEN_READ_ONLY)) || 
+              (IS_REDUCE(user.usage) && (it->open_state == OPEN_REDUCE) && (it->redop = user.usage.redop)))
           {
             it++;
             continue;
           }
-          perform_close_operations(user, ctx, state.prev_epoch_users, *it);
+          perform_close_operations(user, ctx, user.field_mask, state.prev_epoch_users, *it, are_closing_partition());
           if (!(it->still_valid()))
-          {
             it = state.field_states.erase(it);
-          }
           else
             it++;
         }
@@ -1442,7 +1411,7 @@ namespace RegionRuntime {
       {
         // Not there yet
         path.pop_back();
-        Color next_part = path.back();
+        Color next_child = path.back();
         // Perform the checks on the current users and the epoch users since we're still traversing
         perform_dependence_checks(user, state.curr_epoch_users, user.field_mask);
         perform_dependence_checks(user, state.prev_epoch_users, user.field_mask);
@@ -1461,19 +1430,19 @@ namespace RegionRuntime {
           }
           FieldMask overlap = it->valid_fields & user.field_mask;
           // Now check the state 
-          switch (it->part_state)
+          switch (it->open_state)
           {
-            case PART_READ_ONLY:
+            case OPEN_READ_ONLY:
               {
                 if (IS_READ_ONLY(user.usage))
                 {
                   // Everything is read-only
                   // See if the partition that we want is already open
-                  if (it->open_parts.find(next_part) != it->open_parts.end())
+                  if (it->open_children.find(next_child) != it->open_children.end())
                   {
                     // Remove the overlap fields from that partition that
                     // overlap with our own from the open mask
-                    open_mask -= (it->open_parts[next_part] & user.field_mask);
+                    open_mask -= (it->open_children[next_child] & user.field_mask);
                   }
                   it++;
                 }
@@ -1483,8 +1452,8 @@ namespace RegionRuntime {
                   // Close up all the open partitions except the one
                   // we want to go down, make a new state to be added
                   // containing the fields that are still open
-                  FieldState exclusive_open = perform_close_operations(user, ctx, 
-                                            state.prev_epoch_users, *it, next_part);
+                  FieldState exclusive_open = perform_close_operations(user, ctx, user.field_mask,
+                                            state.prev_epoch_users, *it, are_closing_partition(), next_child);
                   if (exclusive_open.still_valid())
                   {
                     open_mask -= exclusive_open.valid_fields;
@@ -1498,82 +1467,34 @@ namespace RegionRuntime {
                 }
                 break;
               }
-            case PART_EXCLUSIVE:
+            case OPEN_EXCLUSIVE:
               {
-                // There should only be one open partition
-#ifdef DEBUG_HIGH_LEVEL
-                assert(it->open_parts.size() == 1);
-#endif
-                std::map<Color,FieldMask>::iterator part_it = it->open_parts.begin();
-#ifdef DEBUG_HIGH_LEVEL
-                assert(part_it->second == it->valid_fields); // should be the same mask
-#endif
-                // See if it is the one we want
-                if (part_it->first == next_part)
+                // Close up any open partitions that conflict with ours
+                FieldState exclusive_open = perform_close_operations(user, ctx, user.field_mask,
+                                              state.prev_epoch_users, *it, are_closing_partition(), next_child);
+                if (exclusive_open.still_valid())
                 {
-                  // Remove the overlap fields from the open mask
-                  open_mask -= overlap;
-                  if (IS_REDUCE(user.usage) && (user.usage.redop != it->redop))
-                  {
-                    // Tricky case here: even if this was a non-zero reduction op
-                    // before, we'll find the dependence below and the tree will
-                    // transition correctly to exclusive with a new reduction going on
-
-                    // If they have different redop values, split off our fields
-                    // Special case for when overlap is all of the state fields
-                    if (it->valid_fields == overlap)
-                    {
-                      it->redop = user.usage.redop;
-                      it++;
-                    }
-                    else
-                    {
-                      new_states.push_back(FieldState(user, overlap, next_part));
-                      part_it->second -= overlap;
-                      it->valid_fields -= overlap;
-
-                      if (!(it->still_valid()))
-                        it = state.field_states.erase(it);
-                      else
-                        it++;
-                    }
-                  }
-                  else
-                    it++;
+                  open_mask -= exclusive_open.valid_fields;
+                  new_states.push_back(exclusive_open);
                 }
+                // See if this entry is still valid
+                if (!(it->still_valid()))
+                  it = state.field_states.erase(it);
                 else
-                {
-                  // Different partition, so close our fields
-                  PartitionNode *child_node = get_child(part_it->first);  
-                  child_node->close_logical_tree(user, ctx, overlap, state.prev_epoch_users, false/*closing partition*/);
-                  // Create a new Field state for our overlap fields
-                  new_states.push_back(FieldState(user, overlap, next_part));
-                  // If they are the same kind of redop, update the field state to
-                  // go into reduce mode
-                  if (user.usage.redop == it->redop)
-                  {
-                    new_states.back().part_state = PART_REDUCE;
-                  }
-                  part_it->second -= overlap;
-                  it->valid_fields -= overlap;
-                  if (!(it->still_valid()))
-                    it = state.field_states.erase(it);
-                  else
-                    it++;
-                }
+                  it++;
                 break;
               }
-            case PART_REDUCE:
+            case OPEN_REDUCE:
               {
                 // See if this is a reduction of the same kind
                 if (IS_REDUCE(user.usage) && (user.usage.redop == it->redop))
                 {
                   // See if the partition that we want is already open
-                  if (it->open_parts.find(next_part) != it->open_parts.end())
+                  if (it->open_children.find(next_child) != it->open_children.end())
                   {
                     // Remove the overlap fields from that partition that
                     // overlap with our own from the open mask
-                    open_mask -= (it->open_parts[next_part] & user.field_mask);
+                    open_mask -= (it->open_children[next_child] & user.field_mask);
                   }
                   it++;
                 }
@@ -1581,7 +1502,7 @@ namespace RegionRuntime {
                 {
                   // Need to close up the open fields since we're going to have to do
                   // an open anyway
-                  perform_close_operations(user, ctx, state.prev_epoch_users, *it);
+                  perform_close_operations(user, ctx, user.field_mask, state.prev_epoch_users, *it, are_closing_partition());
                   if (!(it->still_valid()))
                     it = state.field_states.erase(it);
                   else
@@ -1595,13 +1516,13 @@ namespace RegionRuntime {
         }
         // Create a new state for the open mask
         if (!!open_mask)
-          new_states.push_back(FieldState(user, open_mask, next_part));
+          new_states.push_back(FieldState(user, open_mask, next_child));
         // Merge the new field states into the old field states
         merge_new_field_states(state.field_states, new_states);
         
         // Now we can continue the traversal, figure out if we need to just continue
         // or whether we can do an open operation
-        PartitionNode *child = get_child(next_part);
+        RegionTreeNode *child = get_tree_child(next_child);
         if (open_mask == user.field_mask)
           child->open_logical_tree(user, ctx, path);
         else
@@ -1610,70 +1531,48 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path)
+    void RegionTreeNode::open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path)
     //--------------------------------------------------------------------------
     {
-#if 0
 #ifdef DEBUG_HIGH_LEVEL
-      assert(logical_states.find(key) != logical_states.end());
       assert(!path.empty());
-      assert(path.back() == row_source->color);
+      assert(color_match(path.back()));
 #endif
-      LogicalState &state = logical_states[key];
-#ifdef DEBUG_HIGH_LEVEL
-      assert(state.part_state == PART_NOT_OPEN);
-      assert(state.curr_epoch_users.empty());
-      assert(state.prev_epoch_users.empty());
-      assert(state.open_parts.empty());
-      assert(state.redop == 0);
-#endif
+      // If a state doesn't exist yet, create it
+      if (logical_states.find(ctx) == logical_states.end())
+        logical_states[ctx] = LogicalState();
+      LogicalState &state = logical_states[ctx];
       if (path.size() == 1)
       {
-        // We've arrived at our destination, register that we are now a user
+        // We've arrived wehere we're going, add ourselves as a user
         state.curr_epoch_users.push_back(user);
         path.pop_back();
       }
       else
       {
         path.pop_back();
-        Color next_part = path.back();
-        if (IS_READ_ONLY(user.usage))
-        {
-          state.part_state = PART_READ_ONLY;
-        }
-        else if (IS_WRITE(user.usage))
-        {
-          state.part_state = PART_EXCLUSIVE;
-        }
-        else
-        {
-#ifdef DEBUG_HIGH_LEVEL
-          assert(IS_REDUCE(user.usage));
-#endif
-          // Open in exclusive but mark that there's a reduction going on below,
-          // we'll use this to know when we need to go into reduction mode
-          state.part_state = PART_EXCLUSIVE;
-          state.redop = user.usage.redop;
-        }
-        state.open_parts.insert(next_part);
-        get_child(next_part)->open_logical_tree(user, key, path);
+        Color next_child = path.back();
+        std::vector<FieldState> new_states;
+        new_states.push_back(FieldState(user, user.field_mask, next_child));
+        merge_new_field_states(state.field_states, new_states);
+        // Then continue the traversal
+        RegionTreeNode *child_node = get_tree_child(next_child);
+        child_node->open_logical_tree(user, ctx, path);
       }
-#endif
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::close_logical_tree(const LogicalUser &user, ContextID ctx, const FieldMask &closing_mask,
+    void RegionTreeNode::close_logical_tree(const LogicalUser &user, ContextID ctx, const FieldMask &closing_mask,
                                         std::list<LogicalUser> &epoch_users, bool closing_partition)
     //--------------------------------------------------------------------------
     {
-#if 0
 #ifdef DEBUG_HIGH_LEVEL
-      assert(logical_states.find(key) != logical_states.end());
+      assert(logical_states.find(ctx) != logical_states.end());
 #endif
-      LogicalState &state = logical_states[key];
-      // Register any dependences we have here 
-      for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
-            it != state.curr_epoch_users.end(); it++)
+      LogicalState &state = logical_states[ctx];
+      // Register any dependences we have here
+      for (std::list<LogicalUser>::iterator it = state.curr_epoch_users.begin();
+            it != state.curr_epoch_users.end(); /*nothing*/)
       {
         // Special case for closing partition, if we already have a user then we can ignore
         // it because we have over-approximated our set of regions by saying we're using a
@@ -1681,7 +1580,17 @@ namespace RegionRuntime {
         // but might only use a subset of the regions in the partition, and then also has
         // a region requirement for another one of the regions in the partition.
         if (closing_partition && (it->op == user.op))
+        {
+          it++;
           continue;
+        }
+        // Now check for field disjointness
+        if (closing_mask * it->field_mask)
+        {
+          it++;
+          continue;
+        }
+        // Otherwise not disjoint
 #ifdef DEBUG_HIGH_LEVEL
         bool result = 
 #endif
@@ -1689,61 +1598,48 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(result); // These should all be dependences
 #endif
+        // Now figure out how to split this user to send the part
+        // corresponding to the closing mask back to the parent
         epoch_users.push_back(*it);
+        epoch_users.back().field_mask &= closing_mask;
+        // Remove the closed set of fields from this user
+        it->field_mask -= closing_mask;
+        // If it's empty, remove it from the list
+        if (!it->field_mask)
+          it = state.curr_epoch_users.erase(it);
+        else
+          it++;
       }
-      // Clear out our active users
-      state.curr_epoch_users.clear();
-      // We can also clear out the closed users, note that we don't need to worry
-      // about recording dependences on the closed users, because all the active tasks
-      // have dependences on them
-      state.prev_epoch_users.clear();
-      
-      // Now do the open sub-partitions
-      switch (state.part_state)
+      // Also go through and mask out any users in the prev_epoch_users list
+      for (std::list<LogicalUser>::iterator it = state.prev_epoch_users.begin();
+            it != state.prev_epoch_users.end(); /*nothing*/)
       {
-        case PART_NOT_OPEN:
-          {
-#ifdef DEBUG_HIGH_LEVEL
-            assert(state.open_parts.empty());
-#endif
-            // Nothing to do here
-            break;
-          }
-        case PART_REDUCE:
-          {
-            // Same as read-only, so just remove the reduction-op and fall through
-            state.redop = 0;
-          }
-        case PART_READ_ONLY:
-          {
-            for (std::set<Color>::const_iterator it = state.open_parts.begin();
-                  it != state.open_parts.end(); it++)
-            {
-              get_child(*it)->close_logical_tree(user, key, epoch_users, closing_partition);
-            }
-            state.open_parts.clear();
-            state.part_state = PART_NOT_OPEN;
-            break;
-          }
-        case PART_EXCLUSIVE:
-          {
-#ifdef DEBUG_HIGH_LEVEL
-            assert(state.open_parts.size() == 1);
-#endif
-            get_child(*(state.open_parts.begin()))->close_logical_tree(user, key, epoch_users, closing_partition);
-            state.open_parts.clear();
-            state.part_state = PART_NOT_OPEN;
-            state.redop = 0;
-            break;
-          }
-        default:
-          assert(false);
+        it->field_mask -= closing_mask;
+        if (!it->field_mask)
+          it = state.prev_epoch_users.erase(it);
+        else
+          it++;
       }
-#endif
+      // Now we need to traverse any open children 
+      for (std::list<FieldState>::iterator it = state.field_states.begin();
+            it != state.field_states.end(); /*nothing*/)
+      {
+        // Test for field disjointness
+        if (it->valid_fields * closing_mask)
+        {
+          it++;
+          continue;
+        }
+        perform_close_operations(user, ctx, closing_mask, epoch_users, *it, closing_partition);
+        if (!(it->still_valid()))
+          it = state.field_states.erase(it);
+        else
+          it++;
+      }
     }
 
     //--------------------------------------------------------------------------
-    FieldMask RegionNode::perform_dependence_checks(const LogicalUser &user, 
+    FieldMask RegionTreeNode::perform_dependence_checks(const LogicalUser &user, 
                           const std::list<LogicalUser> &users, const FieldMask &user_mask)
     //--------------------------------------------------------------------------
     {
@@ -1752,79 +1648,20 @@ namespace RegionRuntime {
             it != users.end(); it++)
       {
         // Check to see if things are disjoint
-        if (!(user_mask * it->field_mask))
+        if (user_mask * it->field_mask)
+          continue;
+        if (!perform_dependence_check(*it, user))
         {
-          if (!perform_dependence_check(*it, user))
-          {
-            // There wasn't a dependence so remove the bits from the
-            // dominator mask
-            dominator_mask -= it->field_mask;
-          }
+          // There wasn't a dependence so remove the bits from the
+          // dominator mask
+          dominator_mask -= it->field_mask;
         }
       }
       return dominator_mask;
     }
 
     //--------------------------------------------------------------------------
-    RegionNode::FieldState RegionNode::perform_close_operations(const LogicalUser &user, ContextID ctx,
-                            std::list<LogicalUser> &epoch_users,
-                            FieldState &state, int next_part /*=-1*/)
-    //--------------------------------------------------------------------------
-    {
-      std::vector<Color> to_delete;
-      FieldState result(user);
-      // Go through and close all the partitions which we overlap with
-      // and aren't the next partition that we're going to use
-      for (std::map<Color,FieldMask>::iterator it = state.open_parts.begin();
-            it != state.open_parts.end(); it++)
-      {
-        // Check field disjointnes
-        if (it->second * user.field_mask)
-          continue;
-        // Check for same partition
-        if ((next_part >= 0) && (next_part == int(it->first)))
-        {
-          FieldMask open_users = it->second & user.field_mask;
-          result.open_parts[unsigned(it->first)] = open_users;
-          result.valid_fields = open_users;
-          // Remove the open users from the current mask
-          it->second -= open_users;
-          continue;
-        }
-        // Check for partition disjointness 
-        if ((next_part >= 0) && 
-             row_source->are_disjoint(it->first, unsigned(next_part)))
-          continue;
-        // Now we need to close this partition
-        FieldMask close_mask = it->second & user.field_mask;
-        PartitionNode *child_node = get_child(it->first);
-        child_node->close_logical_tree(user, ctx, close_mask, epoch_users, false/*closing partition*/);
-        // Remove the close fields
-        it->second -= close_mask;
-        if (!it->second)
-          to_delete.push_back(it->first);
-      }
-      // Remove the partitions that can be deleted
-      for (std::vector<Color>::const_iterator it = to_delete.begin();
-            it != to_delete.end(); it++)
-      {
-        state.open_parts.erase(*it);
-      }
-      // Now we need to rebuild the valid fields mask
-      FieldMask next_valid;
-      for (std::map<Color,FieldMask>::const_iterator it = state.open_parts.begin();
-            it != state.open_parts.end(); it++)
-      {
-        next_valid |= it->second;
-      }
-      state.valid_fields = next_valid;
-
-      // Return a FieldState with the new partition and its field mask
-      return result;
-    }
-
-    //--------------------------------------------------------------------------
-    void RegionNode::merge_new_field_states(std::list<FieldState> &old_states,
+    void RegionTreeNode::merge_new_field_states(std::list<FieldState> &old_states,
                                             std::vector<FieldState> &new_states)
     //--------------------------------------------------------------------------
     {
@@ -1861,71 +1698,213 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    RegionNode::FieldState::FieldState(const LogicalUser &user)
+    RegionTreeNode::FieldState RegionTreeNode::perform_close_operations(const LogicalUser &user, ContextID ctx,
+                            const FieldMask &closing_mask, std::list<LogicalUser> &epoch_users,
+                            FieldState &state, bool closing_partition, int next_child /*=-1*/)
+    //--------------------------------------------------------------------------
+    {
+      std::vector<Color> to_delete;
+      FieldState result(user);
+      // Go through and close all the children which we overlap with
+      // and aren't the next child that we're going to use
+      for (std::map<Color,FieldMask>::iterator it = state.open_children.begin();
+            it != state.open_children.end(); it++)
+      {
+        // Check field disjointnes
+        if (it->second * closing_mask)
+          continue;
+        // Check for same child 
+        if ((next_child >= 0) && (next_child == int(it->first)))
+        {
+          FieldMask open_users = it->second & closing_mask;
+          result.open_children[unsigned(it->first)] = open_users;
+          result.valid_fields = open_users;
+          // Remove the open users from the current mask
+          it->second -= open_users;
+          continue;
+        }
+        // Check for child disjointness 
+        if ((next_child >= 0) && are_children_disjoint(it->first, unsigned(next_child)))
+          continue;
+        // Now we need to close this child 
+        FieldMask close_mask = it->second & closing_mask;
+        RegionTreeNode *child_node = get_tree_child(it->first);
+        child_node->close_logical_tree(user, ctx, close_mask, epoch_users, closing_partition);
+        // Remove the close fields
+        it->second -= close_mask;
+        if (!it->second)
+          to_delete.push_back(it->first);
+        // If we had to close another child because we're about to start
+        // a reduction and the closed child had the same reduciton mode
+        // update the result to open in reduce mode
+        if (IS_REDUCE(user.usage) && (state.redop == user.usage.redop))
+          result.open_state = OPEN_REDUCE;
+      }
+      // Remove the children that can be deleted
+      for (std::vector<Color>::const_iterator it = to_delete.begin();
+            it != to_delete.end(); it++)
+      {
+        state.open_children.erase(*it);
+      }
+      // Now we need to rebuild the valid fields mask
+      FieldMask next_valid;
+      for (std::map<Color,FieldMask>::const_iterator it = state.open_children.begin();
+            it != state.open_children.end(); it++)
+      {
+        next_valid |= it->second;
+      }
+      state.valid_fields = next_valid;
+
+      // Return a FieldState with the new children and its field mask
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionTreeNode::FieldState::FieldState(const LogicalUser &user)
     //--------------------------------------------------------------------------
     {
       redop = 0;
       if (IS_READ_ONLY(user.usage))
-        part_state = PART_READ_ONLY;
+        open_state = OPEN_READ_ONLY;
       else if (IS_WRITE(user.usage))
-        part_state = PART_EXCLUSIVE;
+        open_state = OPEN_EXCLUSIVE;
       else if (IS_REDUCE(user.usage))
       {
-        part_state = PART_EXCLUSIVE;
+        open_state = OPEN_EXCLUSIVE;
         redop = user.usage.redop;
       }
     }
 
     //--------------------------------------------------------------------------
-    RegionNode::FieldState::FieldState(const LogicalUser &user, const FieldMask &mask, Color next)
+    RegionTreeNode::FieldState::FieldState(const LogicalUser &user, const FieldMask &mask, Color next)
     //--------------------------------------------------------------------------
     {
       redop = 0;
       if (IS_READ_ONLY(user.usage))
-        part_state = PART_READ_ONLY;
+        open_state = OPEN_READ_ONLY;
       else if (IS_WRITE(user.usage))
-        part_state = PART_EXCLUSIVE;
+        open_state = OPEN_EXCLUSIVE;
       else if (IS_REDUCE(user.usage))
       {
-        part_state = PART_EXCLUSIVE;
+        open_state = OPEN_EXCLUSIVE;
         redop = user.usage.redop;
       }
       valid_fields = mask;
-      open_parts[next] = mask;
+      open_children[next] = mask;
     }
 
     //--------------------------------------------------------------------------
-    bool RegionNode::FieldState::still_valid(void) const
+    bool RegionTreeNode::FieldState::still_valid(void) const
     //--------------------------------------------------------------------------
     {
-      return (!open_parts.empty() && (!!valid_fields));
+      return (!open_children.empty() && (!!valid_fields));
     }
 
     //--------------------------------------------------------------------------
-    bool RegionNode::FieldState::overlap(const FieldState &rhs) const
+    bool RegionTreeNode::FieldState::overlap(const FieldState &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((part_state == rhs.part_state) && (redop == rhs.redop));
+      return ((open_state == rhs.open_state) && (redop == rhs.redop));
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::FieldState::merge(const FieldState &rhs)
+    void RegionTreeNode::FieldState::merge(const FieldState &rhs)
     //--------------------------------------------------------------------------
     {
       valid_fields |= rhs.valid_fields;
-      for (std::map<Color,FieldMask>::const_iterator it = rhs.open_parts.begin();
-            it != rhs.open_parts.end(); it++)
+      for (std::map<Color,FieldMask>::const_iterator it = rhs.open_children.begin();
+            it != rhs.open_children.end(); it++)
       {
-        if (open_parts.find(it->first) == open_parts.end())
+        if (open_children.find(it->first) == open_children.end())
         {
-          open_parts[it->first] = it->second;
+          open_children[it->first] = it->second;
         }
         else
         {
-          open_parts[it->first] |= it->second;
+          open_children[it->first] |= it->second;
         }
       }
     }
+
+    /////////////////////////////////////////////////////////////
+    // Region Node 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    RegionNode::RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
+                           FieldSpaceNode *col_src, bool add)
+      : RegionTreeNode(), handle(r), parent(par), 
+        row_source(row_src), column_source(col_src), added(add)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::add_child(LogicalPartition handle, PartitionNode *node)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(node->row_source->color) == color_map.end());
+#endif
+      color_map[node->row_source->color] = node;
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionNode::has_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+      return (color_map.find(c) != color_map.end());
+    }
+
+    //--------------------------------------------------------------------------
+    PartitionNode* RegionNode::get_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+#endif
+      return color_map[c];
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::remove_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c) != color_map.end());
+#endif
+      color_map.erase(c);
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionNode::are_children_disjoint(Color c1, Color c2)
+    //--------------------------------------------------------------------------
+    {
+      return row_source->are_disjoint(c1, c2);
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionNode::are_closing_partition(void) const
+    //--------------------------------------------------------------------------
+    {
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    RegionTreeNode* RegionNode::get_tree_child(Color c)
+    //--------------------------------------------------------------------------
+    {
+      return get_child(c);
+    }
+
+#ifdef DEBUG_HIGH_LEVEL
+    //--------------------------------------------------------------------------
+    bool RegionNode::color_match(Color c)
+    //--------------------------------------------------------------------------
+    {
+      return (c == row_source->color);
+    }
+#endif
 
     /////////////////////////////////////////////////////////////
     // Partition Node
@@ -1933,7 +1912,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     PartitionNode::PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src, bool add)
-      : handle(p), parent(par), row_source(row_src), disjoint(row_src->disjoint), added(add)
+      : RegionTreeNode(), handle(p), parent(par), row_source(row_src), disjoint(row_src->disjoint), added(add)
     //--------------------------------------------------------------------------
     {
     }
@@ -1976,558 +1955,34 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path)
+    bool PartitionNode::are_children_disjoint(Color c1, Color c2)
     //--------------------------------------------------------------------------
     {
-#if 0
-#ifdef DEBUG_HIGH_LEVEL
-      assert(logical_states.find(key) != logical_states.end());
-      assert(path.back() == row_source->color);
-#endif
-      LogicalState &state = logical_states[key];
-      if (path.size() == 1)
-      {
-        path.pop_back();
-        // We've arrived where we're going
-        unsigned mapping_dependence_count = 0;
-        for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
-              it != state.curr_epoch_users.end(); it++)
-        {
-          if (perform_dependence_check(*it, user))
-          {
-            mapping_dependence_count++;
-          }
-        }
-        if (mapping_dependence_count == state.curr_epoch_users.size())
-        {
-          // We dominated everyone in the current epoch, so start a new epoch
-          state.prev_epoch_users = state.curr_epoch_users;
-          state.curr_epoch_users.clear();
-        }
-        else
-        {
-          // We didn't domniate everyone, so we need to perform dependence
-          // checks against the previous epoch since we're going to be a
-          // part of the current epoch
-          for (std::vector<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
-                it != state.prev_epoch_users.end(); it++)
-          {
-            perform_dependence_check(*it, user);
-          }
-        }
-        // Add ourselves to the current epoch
-        state.curr_epoch_users.push_back(user);
-        // Now figure out what to do if we have open users below
-        if (disjoint)
-        {
-          // There are two optimized cases for disjoint: if everyone is read-only or if every one is doing
-          // the same reduction then we don't have to close everything up, otherwise we just close up all
-          // the open partitions below
-          switch (state.region_state)
-          {
-            case REG_NOT_OPEN:
-              {
-                // No need to do anything
-                break;
-              }
-            case REG_OPEN_READ_ONLY:
-              {
-                // Check to see if we're reading too, if we are then we don't need to close anything
-                // up otherwise we need to close everything up which we can do by just falling
-                // through to the exclusive case
-                if (IS_READ_ONLY(user.usage))
-                {
-                  break;
-                }
-                // Fall through
-              }
-            case REG_OPEN_EXCLUSIVE:
-              {
-                for (std::set<Color>::const_iterator it = state.open_regions.begin();
-                      it != state.open_regions.end(); it++)
-                {
-                  get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
-                }
-                state.open_regions.clear();
-                state.region_state = REG_NOT_OPEN;
-                state.redop = 0;
-                break;
-              }
-            case REG_OPEN_REDUCE:
-              {
-                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
-                {
-                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
-                        it != state.open_regions.end(); it++)
-                  {
-                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
-                  }
-                  state.open_regions.clear();
-                  state.region_state = REG_NOT_OPEN;
-                  state.redop = 0;
-                }
-                break;
-              }
-            default:
-              assert(false);
-          }
-        }
-        else
-        {
-          // Aliased partition
-          switch (state.region_state)
-          {
-            case REG_NOT_OPEN:
-              {
-                // No need to do anything
-                break;
-              }
-            case REG_OPEN_READ_ONLY:
-              {
-                // Check to see if we're read-only in which case we don't have to do anything
-                // otherwise we need to close up all the open regions
-                if (!IS_READ_ONLY(user.usage))
-                {
-                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
-                        it != state.open_regions.end(); it++)
-                  {
-                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
-                  }
-                  state.open_regions.clear();
-                  state.region_state = REG_NOT_OPEN;
-                  state.redop = 0;
-                }
-                break;
-              }
-            case REG_OPEN_EXCLUSIVE:
-              {
-                // Definitely need to close up the open region
-#ifdef DEBUG_HIGH_LEVEL
-                assert(state.open_regions.size() == 1);
-#endif
-                get_child(*(state.open_regions.begin()))->close_logical_tree(user, key, state.prev_epoch_users,
-                                                              true/*closing partition*/);
-                state.open_regions.clear();
-                state.region_state = REG_NOT_OPEN;
-                state.redop = 0;
-                break;
-              }
-            case REG_OPEN_REDUCE:
-              {
-                // If we're in reduce mode and this is a reduciton of the same kind we can leave it open,
-                // otherwise we need to close up the open regions
-                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
-                {
-                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
-                        it != state.open_regions.end(); it++)
-                  {
-                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users, true/*closing partition*/);
-                  }
-                  state.open_regions.clear();
-                  state.region_state = REG_NOT_OPEN;
-                  state.redop = 0;
-                }
-                break;
-              }
-            default:
-              assert(false);
-          }
-        }
-      }
-      else
-      {
-        // Not there yet
-        path.pop_back();
-        Color next_region = path.back();
-        for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
-              it != state.curr_epoch_users.end(); it++)
-        {
-          // Special case for partitions only, check to see if the task we are a part of is already
-          // an active user of this partition, if so there is no need to continue the travesal as
-          // anyone else that tries to use this partition will already detect us as a mapping dependence.
-          // This is only valid for partitions on index spaces because it is an over-approximation of the
-          // set of logical regions that we are using.
-          if (it->op == user.op)
-            continue;
-          perform_dependence_check(*it, user);
-        }
-        // Also need to check everything from the previous epoch since we can't dominate here
-        for (std::vector<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
-              it != state.prev_epoch_users.end(); it++)
-        {
-          perform_dependence_check(*it, user);
-        }
-        
-        // Different things to do for disjoint and aliased partitions
-        if (disjoint)
-        {
-          // For disjoint partitions, we'll use the state mode a little differently
-          // We'll optimize for the cases where we don't need to close up things below
-          // which is if everything is read-only and a task is using a partition in
-          // read-only or if everything is reduce and a task is in reduce.  The exclusive
-          // mode will act as bottom which just means we don't know and therefore have to
-          // close everthing up below.
-          switch (state.region_state)
-          {
-            case REG_NOT_OPEN:
-              {
-                if (IS_READ_ONLY(user.usage))
-                {
-                  state.region_state = REG_OPEN_READ_ONLY;
-                }
-                else if (IS_REDUCE(user.usage))
-                {
-                  state.region_state = REG_OPEN_REDUCE;
-                  state.redop = user.usage.redop;
-                }
-                else
-                {
-                  state.region_state = REG_OPEN_EXCLUSIVE;
-                }
-                break;
-              }
-            case REG_OPEN_READ_ONLY:
-              {
-                if (!IS_READ_ONLY(user.usage))
-                {
-                  // Not everything is read-only anymore, back to exclusive
-                  state.region_state = REG_OPEN_EXCLUSIVE;
-                }
-                break;
-              }
-            case REG_OPEN_EXCLUSIVE:
-              {
-                // No matter what this is just going to stay in the bottom mode
-                break;
-              }
-            case REG_OPEN_REDUCE:
-              {
-                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
-                {
-                  // Not everything in the same mode anymore
-                  state.region_state = REG_OPEN_EXCLUSIVE;
-                  state.redop = 0;
-                }
-                break;
-              }
-            default:
-              assert(false);
-          }
-          // Now continue the traversal
-          if (state.open_regions.find(next_region) ==
-              state.open_regions.end())
-          {
-            // Not open yet, so open it and continue
-            state.open_regions.insert(next_region);
-            get_child(next_region)->open_logical_tree(user, key, path);
-          }
-          else
-          {
-            // Already open, continue the traversal
-            get_child(next_region)->register_logical_region(user, key, path);
-          }
-        }
-        else
-        {
-          // Aliased partition
-          switch (state.region_state)
-          {
-            case REG_NOT_OPEN:
-              {
-#ifdef DEBUG_HIGH_LEVEL
-                assert(state.open_regions.empty());
-#endif
-                // Open the partition in the right mode
-                if (IS_READ_ONLY(user.usage))
-                {
-                  state.region_state = REG_OPEN_READ_ONLY;
-                }
-                else if (IS_WRITE(user.usage))
-                {
-                  state.region_state = REG_OPEN_EXCLUSIVE;
-                }
-                else
-                {
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(IS_REDUCE(user.usage));
-#endif
-                  state.region_state = REG_OPEN_EXCLUSIVE;
-                  state.redop = user.usage.redop;
-                }
-                state.open_regions.insert(next_region);
-                get_child(next_region)->open_logical_tree(user, key, path);
-                break;
-              }
-            case REG_OPEN_READ_ONLY:
-              {
-                if (IS_READ_ONLY(user.usage))
-                {
-                  // Just another read, check to see if the one we want is already open
-                  if (state.open_regions.find(next_region) ==
-                      state.open_regions.end())
-                  {
-                    // not open yet
-                    state.open_regions.insert(next_region);
-                    get_child(next_region)->open_logical_tree(user, key, path);
-                  }
-                  else
-                  {
-                    // already open
-                    get_child(next_region)->register_logical_region(user, key, path);
-                  }
-                }
-                else
-                {
-                  // Either a write or a reduce, either way need to close everything up
-                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
-                        it != state.open_regions.end(); it++)
-                  {
-                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users,
-                                                        true/*closing partition*/);
-                  }
-                  state.open_regions.clear();
-                  state.open_regions.insert(next_region);
-                  // Regardless of whether this is a write or a reduce, open in exclusive
-                  state.region_state = REG_OPEN_EXCLUSIVE;
-                  if (IS_REDUCE(user.usage))
-                  {
-                    state.redop = user.usage.redop;
-                  }
-                  // Open up the region we want
-                  get_child(next_region)->open_logical_tree(user, key, path);
-                }
-                break;
-              }
-            case REG_OPEN_EXCLUSIVE:
-              {
-#ifdef DEBUG_HIGH_LEVEL
-                assert(state.open_regions.size() == 1);
-#endif
-                // Check to see if the region we want is the one that is open
-                if (next_region == *(state.open_regions.begin()))
-                {
-                  // Already open
-                  if (IS_REDUCE(user.usage))
-                  {
-                    state.redop = user.usage.redop;
-                  }
-                  get_child(next_region)->register_logical_region(user, key, path);
-                }
-                else
-                {
-                  // Different, close up the open one and open the one we want
-                  get_child(*(state.open_regions.begin()))->close_logical_tree(user, key,
-                                        state.prev_epoch_users, true/*closing partition*/);
-                  state.open_regions.clear();
-                  state.open_regions.insert(next_region);
-                  if (IS_READ_ONLY(user.usage))
-                  {
-                    state.region_state = REG_OPEN_READ_ONLY;
-                  }
-                  else if (IS_REDUCE(user.usage))
-                  {
-                    // Check to see if our reduction was already going on, if so put it in reduce mode
-                    // otherwise just keep it in exclusive mode
-                    if (user.usage.redop == state.redop)
-                    {
-                      state.region_state = REG_OPEN_REDUCE;
-                    }
-                    else
-                    {
-                      state.redop = user.usage.redop;
-                    }
-                  }
-                  // Open the one we want
-                  get_child(next_region)->open_logical_tree(user, key, path);
-                }
-                break;
-              }
-            case REG_OPEN_REDUCE:
-              {
-                // If it is a read, a write, or a different kind of reduction we have to close it
-                if (!IS_REDUCE(user.usage) || (user.usage.redop != state.redop))
-                {
-                  // Need to close up all the open partitions, and re-open in the right mode
-                  for (std::set<Color>::const_iterator it = state.open_regions.begin();
-                        it != state.open_regions.end(); it++)
-                  {
-                    get_child(*it)->close_logical_tree(user, key, state.prev_epoch_users,
-                                                        true/*closing partition*/);
-                  }
-                  state.open_regions.clear();
-                  state.open_regions.insert(next_region);
-                  if (IS_READ_ONLY(user.usage))
-                  {
-                    state.region_state = REG_OPEN_READ_ONLY;
-                    state.redop = 0;
-                  }
-                  else if (IS_WRITE(user.usage))
-                  {
-                    state.region_state = REG_OPEN_EXCLUSIVE;
-                    state.redop = 0;
-                  }
-                  else
-                  {
-#ifdef DEBUG_HIGH_LEVEL
-                    assert(IS_REDUCE(user.usage));
-#endif
-                    state.region_state = REG_OPEN_REDUCE;
-                    state.redop = user.usage.redop;
-                  }
-                  get_child(next_region)->open_logical_tree(user, key, path);
-                }
-                else
-                {
-#ifdef DEBUG_HIGH_LEVEL
-                  assert(IS_REDUCE(user.usage) && (user.usage.redop == state.redop)); 
-#endif
-                  // Same kind of reduction, see if the region we want is already open
-                  if (state.open_regions.find(next_region) ==
-                      state.open_regions.end())
-                  {
-                    // not open
-                    state.open_regions.insert(next_region);
-                    get_child(next_region)->open_logical_tree(user, key, path);
-                  }
-                  else
-                  {
-                    // already open, continue the traversal
-                    get_child(next_region)->register_logical_region(user, key, path);
-                  }
-                }
-                break;
-              }
-            default:
-              assert(false);
-          }
-        }
-      }
-#endif
+      return (disjoint || row_source->are_disjoint(c1, c2));
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path)
+    bool PartitionNode::are_closing_partition(void) const
     //--------------------------------------------------------------------------
     {
-#if 0
-#ifdef DEBUG_HIGH_LEVEL
-      assert(!path.empty());
-      assert(path.back() == row_source->color);
-      assert(logical_states.find(key) != logical_states.end());
-#endif
-      LogicalState &state = logical_states[key];
-#ifdef DEBUG_HIGH_LEVEL
-      assert(state.open_regions.empty());
-      assert(state.curr_epoch_users.empty());
-      assert(state.prev_epoch_users.empty());
-      assert(state.redop == 0);
-#endif
-      if (path.size() == 1)
-      {
-        // We've arrived
-        path.pop_back();
-        state.curr_epoch_users.push_back(user);
-      }
-      else
-      {
-        // Haven't arrived yet, continue the traversal
-        path.pop_back();
-        Color next_region = path.back();
-        if (disjoint)
-        {
-          if (IS_READ_ONLY(user.usage))
-          {
-            state.region_state = REG_OPEN_READ_ONLY;
-          }
-          else if (IS_REDUCE(user.usage))
-          {
-            state.region_state = REG_OPEN_REDUCE;
-            state.redop = user.usage.redop;
-          }
-          else
-          {
-            state.region_state = REG_OPEN_EXCLUSIVE;
-          }
-          // Open our region and continue
-          state.open_regions.insert(next_region);
-          get_child(next_region)->open_logical_tree(user, key, path);
-        }
-        else
-        {
-          // Aliased partition
-          if (IS_READ_ONLY(user.usage))
-          {
-            state.region_state = REG_OPEN_READ_ONLY;
-          }
-          else if (IS_WRITE(user.usage))
-          {
-            state.region_state = REG_OPEN_EXCLUSIVE;
-          }
-          else
-          {
-#ifdef DEBUG_HIGH_LEVEL
-            assert(IS_REDUCE(user.usage));
-#endif
-            // Open this in exclusive mode, but mark that there is a reduction
-            // going on below which will allow us to go into reduce mode later
-            state.region_state = REG_OPEN_EXCLUSIVE;
-            state.redop = user.usage.redop;
-          }
-          state.open_regions.insert(next_region);
-          get_child(next_region)->open_logical_tree(user, key, path);
-        }
-      }
-#endif
+      return true;
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask, 
-                                          std::list<LogicalUser> &epoch_users, bool closing_partition)
+    RegionTreeNode* PartitionNode::get_tree_child(Color c)
     //--------------------------------------------------------------------------
     {
-#if 0
-#ifdef DEBUG_HIGH_LEVEL
-      assert(logical_states.find(key) != logical_states.end());
-#endif
-      LogicalState &state = logical_states[key];
-      // Register any dependences we have here 
-      for (std::vector<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
-            it != state.curr_epoch_users.end(); it++)
-      {
-        // Special case for closing partition, if we already have a user then we can ignore
-        // it because we have over-approximated our set of regions by saying we're using a
-        // partition.  This occurs whenever an index space task says its using a partition,
-        // but might only use a subset of the regions in the partition, and then also has
-        // a region requirement for another one of the regions in the partition.
-        if (closing_partition && (it->op == user.op))
-          continue;
-#ifdef DEBUG_HIGH_LEVEL
-        bool result = 
-#endif
-        perform_dependence_check(*it, user);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(result); // These should all be dependences
-#endif
-        epoch_users.push_back(*it);
-      }
-      // Clear out our active users
-      state.curr_epoch_users.clear();
-      // We can also clear out the closed users, note that we don't need to worry
-      // about recording dependences on the closed users, because all the active tasks
-      // have dependences on them
-      state.prev_epoch_users.clear();
-      
-      // Close outa all our open regions, regardless of disjoint or not
-      for (std::set<Color>::const_iterator it = state.open_regions.begin();
-            it != state.open_regions.end(); it++)
-      {
-        get_child(*it)->close_logical_tree(user, key, epoch_users, closing_partition);
-      }
-      state.open_regions.clear();
-      state.region_state = REG_NOT_OPEN;
-      state.redop = 0;
-#endif
+      return get_child(c);
     }
+
+#ifdef DEBUG_HIGH_LEVEL
+    //--------------------------------------------------------------------------
+    bool PartitionNode::color_match(Color c)
+    //--------------------------------------------------------------------------
+    {
+      return (c == row_source->color);
+    }
+#endif
 
     /////////////////////////////////////////////////////////////
     // Logical User 

@@ -208,6 +208,7 @@ namespace RegionRuntime {
     class IndexSpaceNode;
     class IndexPartNode;
     class FieldSpaceNode;
+    class RegionTreeNode;
     class RegionNode;
     class PartitionNode;
     class InstanceManager;

@@ -163,7 +163,7 @@ namespace RegionRuntime {
     public:
       void add_child(IndexPartition handle, IndexPartNode *node);
       void remove_child(Color c);
-      bool are_disjoint(Color c1, Color c2) const;
+      bool are_disjoint(Color c1, Color c2);
     public:
       void add_instance(RegionNode *inst);
       void remove_instance(RegionNode *inst);
@@ -189,6 +189,7 @@ namespace RegionRuntime {
     public:
       void add_child(IndexSpace handle, IndexSpaceNode *node);
       void remove_child(Color c);
+      bool are_disjoint(Color c1, Color c2);
     public:
       void add_instance(PartitionNode *inst);
       void remove_instance(PartitionNode *inst);
@@ -199,6 +200,7 @@ namespace RegionRuntime {
       IndexSpaceNode *const parent;
       std::map<Color,IndexSpaceNode*> color_map;
       std::list<PartitionNode*> logical_nodes; // corresponding partition nodes
+      std::set<std::pair<Color,Color> > disjoint_subspaces; // for non-disjoint partitions
       const bool disjoint;
       bool added;
     };
@@ -226,17 +228,13 @@ namespace RegionRuntime {
       std::list<FieldID> deleted_fields;
     };
 
-    class RegionNode {
+    class RegionTreeNode {
     protected:
-      enum DataState {
-        DATA_CLEAN,
-        DATA_DIRTY,
-      };
-      enum PartState {
-        PART_NOT_OPEN  = 0,
-        PART_EXCLUSIVE = 1, // allows only a single open partition
-        PART_READ_ONLY = 2, // allows multiple read-only partitions
-        PART_REDUCE    = 3, // allows multiple reduction instances with same reduction op
+      enum OpenState {
+        NOT_OPEN       = 0,
+        OPEN_EXCLUSIVE = 1,
+        OPEN_READ_ONLY = 2,
+        OPEN_REDUCE    = 3,
       };
     protected:
       struct FieldState {
@@ -249,15 +247,43 @@ namespace RegionRuntime {
         void merge(const FieldState &rhs);
       public:
         FieldMask valid_fields;
-        PartState part_state;
+        OpenState open_state;
         ReductionOpID redop;
-        std::map<Color,FieldMask> open_parts;
+        std::map<Color,FieldMask> open_children;
       };
       struct LogicalState {
       public:
         std::list<FieldState>  field_states;
         std::list<LogicalUser> curr_epoch_users; // Users from the current epoch
         std::list<LogicalUser> prev_epoch_users; // Users from the previous epoch
+      };
+    public:
+      void register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
+      void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
+      void close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask,
+                              std::list<LogicalUser> &epoch_users, bool closing_partition);
+    protected:
+      // Logical region helper functions
+      FieldMask perform_dependence_checks(const LogicalUser &user, 
+                    const std::list<LogicalUser> &users, const FieldMask &user_mask);
+      void merge_new_field_states(std::list<FieldState> &old_states, std::vector<FieldState> &new_states);
+      FieldState perform_close_operations(const LogicalUser &user, ContextID ctx, const FieldMask &closing_mask,
+                        std::list<LogicalUser> &epoch_users, FieldState &state, bool closing_partition, int next_child=-1);
+      virtual bool are_children_disjoint(Color c1, Color c2) = 0;
+      virtual bool are_closing_partition(void) const = 0;
+      virtual RegionTreeNode* get_tree_child(Color c) = 0;
+#ifdef DEBUG_HIGH_LEVEL
+      virtual bool color_match(Color c) = 0;
+#endif
+    protected:
+      std::map<ContextID,LogicalState> logical_states;
+    };
+
+    class RegionNode : public RegionTreeNode {
+    protected:
+      enum DataState {
+        DATA_CLEAN,
+        DATA_DIRTY,
       };
     public:
       friend class RegionTreeForest;
@@ -269,19 +295,13 @@ namespace RegionRuntime {
       bool has_child(Color c);
       PartitionNode* get_child(Color c);
       void remove_child(Color c);
-    public:
-      // Logical region state operations
-      void register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
-      void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
-      void close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask,
-                              std::list<LogicalUser> &epoch_users, bool closing_partition);
     protected:
-      // Logical region helper functions
-      FieldMask perform_dependence_checks(const LogicalUser &user, 
-                    const std::list<LogicalUser> &users, const FieldMask &user_mask);
-      FieldState perform_close_operations(const LogicalUser &user, ContextID ctx,
-                      std::list<LogicalUser> &epoch_users, FieldState &state, int next_part=-1);
-      void merge_new_field_states(std::list<FieldState> &old_states, std::vector<FieldState> &new_states);
+      virtual bool are_children_disjoint(Color c1, Color c2);
+      virtual bool are_closing_partition(void) const;
+      virtual RegionTreeNode* get_tree_child(Color c);
+#ifdef DEBUG_HIGH_LEVEL
+      virtual bool color_match(Color c);
+#endif
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
@@ -289,10 +309,9 @@ namespace RegionRuntime {
       FieldSpaceNode *const column_source; // only valid for top of region trees
       std::map<Color,PartitionNode*> color_map;
       bool added;
-      std::map<ContextID,LogicalState> logical_states;
     };
 
-    class PartitionNode {
+    class PartitionNode : public RegionTreeNode {
     public:
       friend class RegionTreeForest;
       friend class RegionNode;
@@ -303,27 +322,13 @@ namespace RegionRuntime {
       bool has_child(Color c);
       RegionNode* get_child(Color c);
       void remove_child(Color c);
-    public:
-      void register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
-      void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
-      void close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask, 
-                              std::list<LogicalUser> &epoch_users, bool closing_partition);
     protected:
-      enum RegState {
-        REG_NOT_OPEN,
-        REG_OPEN_READ_ONLY,
-        REG_OPEN_EXCLUSIVE,
-        REG_OPEN_REDUCE, // multiple regions open for aliased partitions in reduce mode
-      };
-    protected:
-      struct LogicalState {
-      public:
-        RegState region_state;
-        std::map<Color,FieldMask> open_regions;
-        ReductionOpID redop;
-        std::list<LogicalUser> curr_epoch_users;
-        std::list<LogicalUser> prev_epoch_users;
-      };
+      virtual bool are_children_disjoint(Color c1, Color c2);
+      virtual bool are_closing_partition(void) const;
+      virtual RegionTreeNode* get_tree_child(Color c);
+#ifdef DEBUG_HIGH_LEVEL
+      virtual bool color_match(Color c);
+#endif
     private:
       const LogicalPartition handle;
       RegionNode *const parent;
@@ -332,7 +337,6 @@ namespace RegionRuntime {
       std::map<Color,RegionNode*> color_map;
       const bool disjoint;
       bool added;
-      std::map<ContextID,LogicalState> logical_states;
     };
 
     class InstanceRef {
