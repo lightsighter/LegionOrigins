@@ -3371,7 +3371,11 @@ namespace RegionRuntime {
       log_field(LEVEL_DEBUG,"Allocating new field %d of size %ld for field space %d in task %s (ID %d)",
                               new_field, field_size, space.id, ctx->variants->name, ctx->get_unique_id());
 #endif
-      ctx->allocate_field(space, new_field, field_size);
+      {
+        std::map<FieldID,size_t> field_allocations;
+        field_allocations[new_field] = field_size;
+        ctx->allocate_fields(space, field_allocations);
+      }
       return new_field;
     }
 
@@ -3385,7 +3389,58 @@ namespace RegionRuntime {
                               fid, space.id, ctx->variants->name, ctx->get_unique_id());
 #endif
       DeletionOperation *deletion = get_available_deletion(ctx);
-      deletion->initialize_field_deletion(ctx, space, fid);
+      {
+        std::set<FieldID> to_free;
+        to_free.insert(fid);
+        deletion->initialize_field_deletion(ctx, space, to_free);
+      }
+      // Perform the dependence analysis
+      add_to_dependence_queue(deletion);
+#ifdef INORDER_EXECUTION
+      if (program_order_execution)
+      {
+        add_to_inorder_queue(ctx, deletion);
+      }
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::allocate_fields(Context ctx, FieldSpace space, const std::vector<size_t> &field_sizes,
+                                            std::vector<FieldID> &resulting_fields)
+    //--------------------------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ALLOCATE_FIELD);
+      resulting_fields.clear();
+      std::map<FieldID,size_t> field_allocations;
+      for (std::vector<size_t>::const_iterator it = field_sizes.begin();
+            it != field_sizes.end(); it++)
+      {
+        FieldID new_field = get_unique_field_id();
+#ifdef DEBUG_HIGH_LEVEL
+        log_field(LEVEL_DEBUG,"Allocating new field %d of size %ld for field space %d in task %s (ID %d)",
+                              new_field, *it, space.id, ctx->variants->name, ctx->get_unique_id());
+#endif
+        field_allocations[new_field] = *it; 
+        resulting_fields.push_back(new_field);
+      }
+      ctx->allocate_fields(space, field_allocations);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::free_fields(Context ctx, FieldSpace space, const std::set<FieldID> &to_free)
+    //--------------------------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_FREE_FIELD);
+#ifdef DEBUG_HIGH_LEVEL
+      for (std::set<FieldID>::const_iterator it = to_free.begin();
+            it != to_free.end(); it++)
+      {
+        log_field(LEVEL_DEBUG,"Registering a deletion of field %d for field space %d in task %s (ID %d)",
+                              *it, space.id, ctx->variants->name, ctx->get_unique_id());
+      }
+#endif
+      DeletionOperation *deletion = get_available_deletion(ctx);
+      deletion->initialize_field_deletion(ctx, space, to_free);
       // Perform the dependence analysis
       add_to_dependence_queue(deletion);
 #ifdef INORDER_EXECUTION

@@ -38,8 +38,8 @@ namespace RegionRuntime {
       // Field Space operations
       void create_field_space(FieldSpace space);
       void destroy_field_space(FieldSpace space);
-      void allocate_field(FieldSpace space, FieldID fid, size_t field_size);
-      void free_field(FieldSpace space, FieldID fid);
+      void allocate_fields(FieldSpace space, const std::map<FieldID,size_t> &field_allocations);
+      void free_fields(FieldSpace space, const std::set<FieldID> &to_free);
       bool has_field(FieldSpace space, FieldID fid);
       size_t get_field_size(FieldSpace space, FieldID fid);
     public:
@@ -57,7 +57,7 @@ namespace RegionRuntime {
       void analyze_index_space_deletion(ContextID ctx, IndexSpace sp, DeletionOperation *op);
       void analyze_index_part_deletion(ContextID ctx, IndexPartition part, DeletionOperation *op);
       void analyze_field_space_deletion(ContextID ctx, FieldSpace sp, DeletionOperation *op);
-      void analyze_field_deletion(ContextID ctx, FieldSpace sp, FieldID fid, DeletionOperation *op);
+      void analyze_field_deletion(ContextID ctx, FieldSpace sp, const std::set<FieldID> &to_free, DeletionOperation *op);
       void analyze_region_deletion(ContextID ctx, LogicalRegion handle, DeletionOperation *op);
       void analyze_partition_deletion(ContextID ctx, LogicalPartition handle, DeletionOperation *op);
     public:
@@ -209,9 +209,10 @@ namespace RegionRuntime {
     public:
       friend class RegionTreeForest;
       FieldSpaceNode(FieldSpace sp);
+      typedef std::pair<size_t,unsigned/*idx*/> FieldInfo;
     public:
-      void allocate_field(FieldID fid, size_t field_size);
-      void free_field(FieldID fid);
+      void allocate_fields(const std::map<FieldID,size_t> &field_allocations);
+      void free_fields(const std::set<FieldID> &to_free);
       bool has_field(FieldID fid);
       size_t get_field_size(FieldID fid);
     public:
@@ -219,13 +220,15 @@ namespace RegionRuntime {
       void remove_instance(RegionNode *node);
     public:
       FieldMask get_field_mask(const std::vector<FieldID> &fields);
+      FieldMask get_field_mask(const std::set<FieldID> &fields);
     private:
       const FieldSpace handle;
       // Top nodes in the trees for which this field space is used 
       std::list<RegionNode*> logical_nodes;
-      std::map<FieldID,size_t> fields;
+      std::map<FieldID,FieldInfo> fields;
       std::list<FieldID> created_fields;
       std::list<FieldID> deleted_fields;
+      unsigned total_index_fields;
     };
 
     class RegionTreeNode {
@@ -295,6 +298,10 @@ namespace RegionRuntime {
       bool has_child(Color c);
       PartitionNode* get_child(Color c);
       void remove_child(Color c);
+    public:
+      // Logical context operations
+      void initialize_logical_context(ContextID ctx);
+      void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     protected:
       virtual bool are_children_disjoint(Color c1, Color c2);
       virtual bool are_closing_partition(void) const;
@@ -322,6 +329,10 @@ namespace RegionRuntime {
       bool has_child(Color c);
       RegionNode* get_child(Color c);
       void remove_child(Color c);
+    public:
+      // Logical context operations
+      void initialize_logical_context(ContextID ctx);
+      void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     protected:
       virtual bool are_children_disjoint(Color c1, Color c2);
       virtual bool are_closing_partition(void) const;

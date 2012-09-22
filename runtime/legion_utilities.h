@@ -144,8 +144,11 @@ namespace RegionRuntime {
     template<typename T, unsigned int MAX>
     class BitMask {
     public:
-      BitMask(void);
+      BitMask(T init = 0);
       BitMask(const BitMask &rhs);
+    public:
+      template<unsigned int SHIFT, unsigned int MASK>
+      inline void set_bit(unsigned bit);
     public:
       inline bool operator==(const BitMask &rhs) const;
       inline bool operator<(const BitMask &rhs) const;
@@ -498,12 +501,12 @@ namespace RegionRuntime {
 #define BIT_ELMTS (MAX/(8*sizeof(T)))
     //-------------------------------------------------------------------------
     template<typename T, unsigned int MAX>
-    BitMask<T,MAX>::BitMask(void)
+    BitMask<T,MAX>::BitMask(T init /*= 0*/)
     //-------------------------------------------------------------------------
     {
       for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
       {
-        bit_vector[idx] = 0;
+        bit_vector[idx] = init;
       }
     }
 
@@ -516,6 +519,15 @@ namespace RegionRuntime {
       {
         bit_vector[idx] = rhs[idx];
       }
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX> template<unsigned SHIFT, unsigned MASK>
+    void BitMask<T,MAX>::set_bit(unsigned bit)
+    //-------------------------------------------------------------------------
+    {
+      unsigned idx = bit >> SHIFT;
+      bit_vector[idx] |= (1ULL << (bit & MASK));
     }
 
     //-------------------------------------------------------------------------

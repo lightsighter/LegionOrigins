@@ -138,7 +138,7 @@ namespace RegionRuntime {
       void initialize_index_space_deletion(Context parent, IndexSpace space);
       void initialize_index_partition_deletion(Context parent, IndexPartition part);
       void initialize_field_space_deletion(Context parent, FieldSpace space);
-      void initialize_field_deletion(Context parent, FieldSpace space, FieldID fid);
+      void initialize_field_deletion(Context parent, FieldSpace space, const std::set<FieldID> &to_free);
       void initialize_region_deletion(Context parent, LogicalRegion handle);
       void initialize_partition_deletion(Context parent, LogicalPartition handle);
     public:
@@ -167,7 +167,7 @@ namespace RegionRuntime {
       } index;
       FieldSpace field_space; 
       DeletionKind handle_tag;
-      FieldID field_id;
+      std::set<FieldID> free_fields;
       LogicalRegion region;
       LogicalPartition partition;
       bool performed;
@@ -344,8 +344,8 @@ namespace RegionRuntime {
       // Operations on field spaces
       void create_field_space(FieldSpace space);
       void destroy_field_space(FieldSpace space);
-      void allocate_field(FieldSpace space, FieldID fid, size_t field_size);
-      void free_field(FieldSpace space, FieldID fid);
+      void allocate_fields(FieldSpace space, const std::map<FieldID,size_t> &field_allocations);
+      void free_fields(FieldSpace space, const std::set<FieldID> &to_free);
     public:
       // Operations on region trees
       void create_region(LogicalRegion handle);  

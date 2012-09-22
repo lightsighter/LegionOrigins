@@ -693,7 +693,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void DeletionOperation::initialize_field_deletion(Context parent, FieldSpace space, FieldID fid)
+    void DeletionOperation::initialize_field_deletion(Context parent, FieldSpace space, const std::set<FieldID> &to_free)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -702,7 +702,7 @@ namespace RegionRuntime {
       parent_ctx = parent;
       field_space = space;
       handle_tag = DESTROY_FIELD;
-      field_id = fid; 
+      free_fields = to_free;
       performed = false;
       parent->register_child_deletion(this);
     }
@@ -802,7 +802,7 @@ namespace RegionRuntime {
           }
         case DESTROY_FIELD:
           {
-            forest_ctx->analyze_field_deletion(parent_ctx->ctx_id, field_space, field_id, this);
+            forest_ctx->analyze_field_deletion(parent_ctx->ctx_id, field_space, free_fields, this);
             break;
           }
         case DESTROY_REGION:
@@ -852,7 +852,7 @@ namespace RegionRuntime {
             }
           case DESTROY_FIELD:
             {
-              parent_ctx->free_field(field_space, field_id);
+              parent_ctx->free_fields(field_space, free_fields);
               break;
             }
           case DESTROY_REGION:
@@ -1781,7 +1781,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::allocate_field(FieldSpace space, FieldID fid, size_t field_size)
+    void SingleTask::allocate_fields(FieldSpace space, const std::map<FieldID,size_t> &field_allocations)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1793,12 +1793,12 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->allocate_field(space, fid, field_size);
+      forest_ctx->allocate_fields(space, field_allocations);
       unlock_context();
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::free_field(FieldSpace space, FieldID fid)
+    void SingleTask::free_fields(FieldSpace space, const std::set<FieldID> &to_free)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1812,7 +1812,7 @@ namespace RegionRuntime {
       // No need to worry about deferring this, it's already been done
       // by the DeletionOperation
       lock_context();
-      forest_ctx->free_field(space, fid);
+      forest_ctx->free_fields(space, to_free);
       unlock_context();
     }
 

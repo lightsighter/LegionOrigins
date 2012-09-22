@@ -450,23 +450,23 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::allocate_field(FieldSpace space, FieldID fid, size_t field_size)
+    void RegionTreeForest::allocate_fields(FieldSpace space, const std::map<FieldID,size_t> &field_allocations)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
 #endif
-      get_node(space)->allocate_field(fid, field_size);
+      get_node(space)->allocate_fields(field_allocations);
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::free_field(FieldSpace space, FieldID fid)
+    void RegionTreeForest::free_fields(FieldSpace space, const std::set<FieldID> &to_free)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
 #endif
-      get_node(space)->free_field(fid);
+      get_node(space)->free_fields(to_free);
     }
 
     //--------------------------------------------------------------------------
@@ -579,7 +579,7 @@ namespace RegionRuntime {
     void RegionTreeForest::initialize_logical_context(LogicalRegion handle, ContextID ctx)
     //--------------------------------------------------------------------------
     {
-
+      get_node(handle)->initialize_logical_context(ctx);
     }
 
     //--------------------------------------------------------------------------
@@ -598,6 +598,79 @@ namespace RegionRuntime {
         assert(path.empty());
 #endif
       }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::analyze_index_space_deletion(ContextID ctx, IndexSpace sp, DeletionOperation *op)
+    //--------------------------------------------------------------------------
+    {
+      IndexSpaceNode *index_node = get_node(sp);
+      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      // Perform the deletion registration across all instances
+      for (std::list<RegionNode*>::const_iterator it = index_node->logical_nodes.begin();
+            it != index_node->logical_nodes.end(); it++)
+      {
+        (*it)->register_deletion_operation(ctx, op, deletion_mask);
+      }
+    }
+    
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::analyze_index_part_deletion(ContextID ctx, IndexPartition part, DeletionOperation *op)
+    //--------------------------------------------------------------------------
+    {
+      IndexPartNode *index_node = get_node(part);
+      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      // Perform the deletion registration across all instances
+      for (std::list<PartitionNode*>::const_iterator it = index_node->logical_nodes.begin();
+            it != index_node->logical_nodes.end(); it++)
+      {
+        (*it)->register_deletion_operation(ctx, op, deletion_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::analyze_field_space_deletion(ContextID ctx, FieldSpace sp, DeletionOperation *op)
+    //--------------------------------------------------------------------------
+    {
+      FieldSpaceNode *field_node = get_node(sp);
+      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      // Perform the deletion operation across all instances
+      for (std::list<RegionNode*>::const_iterator it = field_node->logical_nodes.begin();
+            it != field_node->logical_nodes.end(); it++)
+      {
+        (*it)->register_deletion_operation(ctx, op, deletion_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::analyze_field_deletion(ContextID ctx, FieldSpace sp, const std::set<FieldID> &to_free, DeletionOperation *op)
+    //--------------------------------------------------------------------------
+    {
+      FieldSpaceNode *field_node = get_node(sp);
+      // Get the mask for the single field
+      FieldMask deletion_mask = field_node->get_field_mask(to_free);
+      // Perform the deletion across all the instances
+      for (std::list<RegionNode*>::const_iterator it = field_node->logical_nodes.begin();
+            it != field_node->logical_nodes.end(); it++)
+      {
+        (*it)->register_deletion_operation(ctx, op, deletion_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::analyze_region_deletion(ContextID ctx, LogicalRegion handle, DeletionOperation *op)
+    //--------------------------------------------------------------------------
+    {
+      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      get_node(handle)->register_deletion_operation(ctx, op, deletion_mask); 
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::analyze_partition_deletion(ContextID ctx, LogicalPartition handle, DeletionOperation *op)
+    //--------------------------------------------------------------------------
+    {
+      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      get_node(handle)->register_deletion_operation(ctx, op, deletion_mask);
     }
 
     //--------------------------------------------------------------------------
@@ -1232,41 +1305,57 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     FieldSpaceNode::FieldSpaceNode(FieldSpace sp)
-      : handle(sp)
+      : handle(sp), total_index_fields(0)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
-    void FieldSpaceNode::allocate_field(FieldID fid, size_t field_size)
+    void FieldSpaceNode::allocate_fields(const std::map<FieldID,size_t> &field_allocations)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(fields.find(fid) == fields.end());
-#endif
-      fields[fid] = field_size;
-      created_fields.push_back(fid);
-    }
-
-    //--------------------------------------------------------------------------
-    void FieldSpaceNode::free_field(FieldID fid)
-    //--------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(fields.find(fid) != fields.end());
-#endif
-      fields.erase(fid);
-      deleted_fields.push_back(fid);
-      // Check to see if we created it
-      for (std::list<FieldID>::iterator it = created_fields.begin();
-            it != created_fields.end(); it++)
+      for (std::map<FieldID,size_t>::const_iterator it = field_allocations.begin();
+            it != field_allocations.end(); it++)
       {
-        if ((*it) == fid)
+#ifdef DEBUG_HIGH_LEVEL
+        assert(fields.find(it->first) == fields.end());
+#endif
+        fields[it->first] = FieldInfo(it->second,total_index_fields++);
+        created_fields.push_back(it->first);
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      if (total_index_fields >= MAX_FIELDS)
+      {
+        log_field(LEVEL_ERROR,"Exceeded maximum number of allocated fields for a field space %d. "  
+                              "Change 'MAX_FIELDS' at the top of legion_types.h and recompile.", MAX_FIELDS);
+        exit(ERROR_MAX_FIELD_OVERFLOW);
+      }
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::free_fields(const std::set<FieldID> &to_free)
+    //--------------------------------------------------------------------------
+    {
+      for (std::set<FieldID>::const_iterator it = to_free.begin();
+            it != to_free.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(fields.find(*it) != fields.end());
+#endif
+        fields.erase(*it);
+        deleted_fields.push_back(*it);
+        // Check to see if we created it
+        for (std::list<FieldID>::iterator cit = created_fields.begin();
+              cit != created_fields.end(); cit++)
         {
-          created_fields.erase(it);
-          // No longer needs to be marked deleted
-          deleted_fields.pop_back();
-          break;
+          if ((*cit) == (*it))
+          {
+            created_fields.erase(cit);
+            // No longer needs to be marked deleted
+            deleted_fields.pop_back();
+            break;
+          }
         }
       }
     }
@@ -1285,7 +1374,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(fields.find(fid) != fields.end());
 #endif
-      return fields[fid];
+      return fields[fid].first;
     }
 
     //--------------------------------------------------------------------------
@@ -1316,6 +1405,38 @@ namespace RegionRuntime {
         }
       }
       assert(false); // should never get here
+    }
+
+    //--------------------------------------------------------------------------
+    FieldMask FieldSpaceNode::get_field_mask(const std::vector<FieldID> &mask_fields)
+    //--------------------------------------------------------------------------
+    {
+      FieldMask result;
+      for (std::vector<FieldID>::const_iterator it = mask_fields.begin();
+            it != mask_fields.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(fields.find(*it) != fields.end());
+#endif
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].second);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    FieldMask FieldSpaceNode::get_field_mask(const std::set<FieldID> &mask_fields)
+    //--------------------------------------------------------------------------
+    {
+      FieldMask result;
+      for (std::set<FieldID>::const_iterator it = mask_fields.begin();
+            it != mask_fields.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(fields.find(*it) != fields.end());
+#endif
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].second);
+      }
+      return result;
     }
 
     /////////////////////////////////////////////////////////////
@@ -1877,6 +1998,61 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void RegionNode::initialize_logical_context(ContextID ctx)
+    //--------------------------------------------------------------------------
+    {
+      if (logical_states.find(ctx) == logical_states.end())
+        logical_states[ctx] = LogicalState();
+      else
+      {
+        LogicalState &state = logical_states[ctx];
+        state.field_states.clear();
+        state.curr_epoch_users.clear();
+        state.prev_epoch_users.clear();
+      }
+      // Now initialize any children
+      for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->initialize_logical_context(ctx);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::register_deletion_operation(ContextID ctx, DeletionOperation *op,
+                                                  const FieldMask &deletion_mask)
+    //--------------------------------------------------------------------------
+    {
+      // If we don't even have a logical state then neither 
+      // do any of our children so we're done
+      if (logical_states.find(ctx) == logical_states.end())
+        return;
+      const LogicalState &state = logical_states[ctx];
+      for (std::list<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+            it != state.curr_epoch_users.end(); it++)
+      {
+        // Check for field disjointness
+        if (it->field_mask * deletion_mask)
+          continue;
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
+      }
+      for (std::list<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+            it != state.prev_epoch_users.end(); it++)
+      {
+        // Check for field disjointness
+        if (it->field_mask * deletion_mask)
+          continue;
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
+      }
+      // Do any children
+      for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->register_deletion_operation(ctx, op, deletion_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     bool RegionNode::are_children_disjoint(Color c1, Color c2)
     //--------------------------------------------------------------------------
     {
@@ -1952,6 +2128,61 @@ namespace RegionRuntime {
       assert(color_map.find(c) != color_map.end());
 #endif
       color_map.erase(c);
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::initialize_logical_context(ContextID ctx)
+    //--------------------------------------------------------------------------
+    {
+      if (logical_states.find(ctx) == logical_states.end())
+        logical_states[ctx] = LogicalState();
+      else
+      {
+        LogicalState &state = logical_states[ctx];
+        state.field_states.clear();
+        state.curr_epoch_users.clear();
+        state.prev_epoch_users.clear();
+      }
+      // Now do any children
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->initialize_logical_context(ctx);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::register_deletion_operation(ContextID ctx, DeletionOperation *op,
+                                                    const FieldMask &deletion_mask)
+    //--------------------------------------------------------------------------
+    {
+      // If we don't even have a logical state then neither 
+      // do any of our children so we're done
+      if (logical_states.find(ctx) == logical_states.end())
+        return;
+      const LogicalState &state = logical_states[ctx];
+      for (std::list<LogicalUser>::const_iterator it = state.curr_epoch_users.begin();
+            it != state.curr_epoch_users.end(); it++)
+      {
+        // Check for field disjointness
+        if (it->field_mask * deletion_mask)
+          continue;
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
+      }
+      for (std::list<LogicalUser>::const_iterator it = state.prev_epoch_users.begin();
+            it != state.prev_epoch_users.end(); it++)
+      {
+        // Check for field disjointness
+        if (it->field_mask * deletion_mask)
+          continue;
+        op->add_mapping_dependence(0/*idx*/, *it, TRUE_DEPENDENCE);
+      }
+      // Do any children
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->register_deletion_operation(ctx, op, deletion_mask);
+      }
     }
 
     //--------------------------------------------------------------------------

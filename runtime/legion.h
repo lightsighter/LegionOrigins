@@ -633,6 +633,10 @@ namespace RegionRuntime {
        * aren't in the given handle, deallocate them.
        */
       inline void free_field(FieldID id);
+
+      inline void allocate_fields(const std::vector<size_t> &field_sizes,
+                                  std::vector<FieldID> &resulting_fields);
+      inline void free_fields(const std::set<FieldID> &to_free);
     public:
       inline FieldSpace get_field_space(void) const;
     public:
@@ -792,6 +796,9 @@ namespace RegionRuntime {
       friend class FieldAllocator;
       FieldID allocate_field(Context ctx, FieldSpace space, size_t field_size);
       void free_field(Context ctx, FieldSpace space, FieldID fid);
+      void allocate_fields(Context ctx, FieldSpace space, const std::vector<size_t> &field_sizes,
+                           std::vector<FieldID> &resulting_fields);
+      void free_fields(Context ctx, FieldSpace space, const std::set<FieldID> &to_free);
     public:
       /////////////////////////
       // Functions for regions 
@@ -1712,6 +1719,21 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       runtime->free_field(parent, space, id);
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FieldAllocator::allocate_fields(const std::vector<size_t> &field_sizes,
+                                                std::vector<FieldID> &resulting_fields)
+    //--------------------------------------------------------------------------
+    {
+      runtime->allocate_fields(parent, space, field_sizes, resulting_fields);
+    }
+
+    //--------------------------------------------------------------------------
+    inline void FieldAllocator::free_fields(const std::set<FieldID> &to_free)
+    //--------------------------------------------------------------------------
+    {
+      runtime->free_fields(parent, space, to_free);
     }
 
     //--------------------------------------------------------------------------

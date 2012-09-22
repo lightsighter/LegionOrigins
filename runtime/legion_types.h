@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cassert>
 #include <cstring>
+#include <stdint.h>
 
 #include "limits.h"
 
@@ -17,7 +18,15 @@
 #include <vector>
 
 #define AUTO_GENERATE_ID   UINT_MAX
+
 #define MAX_FIELDS         128
+// The folowing fields are used in the FieldMask instantiation of BitMask
+// If you change one you probably have to change the others too
+#define FIELD_TYPE          uint64_t 
+#define FIELD_SHIFT         6
+#define FIELD_MASK          0x3F
+
+
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -77,6 +86,7 @@ namespace RegionRuntime {
       ERROR_INVALID_REGION_ENTRY = 51,
       ERROR_INVALID_PARTITION_ENTRY = 52,
       ERROR_ALIASED_INTRA_TASK_REGIONS = 53,
+      ERROR_MAX_FIELD_OVERFLOW = 54,
     };
 
     // enum and namepsaces don't really get along well
@@ -261,7 +271,7 @@ namespace RegionRuntime {
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;
     typedef std::map<ProjectionID,ProjectionFnptr> ProjectionTable;
-    typedef BitMask<unsigned long long, MAX_FIELDS> FieldMask;
+    typedef BitMask<FIELD_TYPE, MAX_FIELDS> FieldMask;
 
 #define FRIEND_ALL_RUNTIME_CLASSES                \
     friend class HighLevelRuntime;                \
