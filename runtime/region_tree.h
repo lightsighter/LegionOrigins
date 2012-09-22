@@ -163,6 +163,7 @@ namespace RegionRuntime {
     public:
       void add_child(IndexPartition handle, IndexPartNode *node);
       void remove_child(Color c);
+      bool are_disjoint(Color c1, Color c2) const;
     public:
       void add_instance(RegionNode *inst);
       void remove_instance(RegionNode *inst);
@@ -232,26 +233,29 @@ namespace RegionRuntime {
         DATA_DIRTY,
       };
       enum PartState {
-        PART_NOT_OPEN,
-        PART_EXCLUSIVE, // allows only a single open partition
-        PART_READ_ONLY, // allows multiple read-only partitions
-        PART_REDUCE, // allows multiple reduction instances with same reduction op
+        PART_NOT_OPEN  = 0,
+        PART_EXCLUSIVE = 1, // allows only a single open partition
+        PART_READ_ONLY = 2, // allows multiple read-only partitions
+        PART_REDUCE    = 3, // allows multiple reduction instances with same reduction op
       };
     protected:
-      struct PartKey {
+      struct FieldState {
       public:
-        PartKey(const LogicalUser &user, Color c);
+        FieldState(const LogicalUser &user);
+        FieldState(const LogicalUser &user, const FieldMask &mask, Color next);
       public:
-        Color color;
-        PartState state;
+        bool still_valid(void) const;
+        bool overlap(const FieldState &rhs) const;
+        void merge(const FieldState &rhs);
+      public:
+        FieldMask valid_fields;
+        PartState part_state;
         ReductionOpID redop;
-      public:
-        bool operator==(const PartKey &rhs) const;
-        bool operator<(const PartKey &rhs) const;
+        std::map<Color,FieldMask> open_parts;
       };
       struct LogicalState {
       public:
-        std::map<PartKey,FieldMask> open_parts; // open partitions and their state
+        std::list<FieldState>  field_states;
         std::list<LogicalUser> curr_epoch_users; // Users from the current epoch
         std::list<LogicalUser> prev_epoch_users; // Users from the previous epoch
       };
@@ -273,11 +277,11 @@ namespace RegionRuntime {
                               std::list<LogicalUser> &epoch_users, bool closing_partition);
     protected:
       // Logical region helper functions
-      void perform_arrival_dependence_checks(const LogicalUser &user, LogicalState &state);
-      void close_open_partitions_below(const LogicalUser &user, const ContextID ctx, LogicalState &state);
-      void perform_current_dependence_checks(const LogicalUser &user, LogicalState &state);
-      void siphon_open_partitions(const LogicalUser &user, const ContextID ctx, LogicalState &state, PartKey &key);
-      bool need_close_operation(const PartKey &prev, const PartKey &next);
+      FieldMask perform_dependence_checks(const LogicalUser &user, 
+                    const std::list<LogicalUser> &users, const FieldMask &user_mask);
+      FieldState perform_close_operations(const LogicalUser &user, ContextID ctx,
+                      std::list<LogicalUser> &epoch_users, FieldState &state, int next_part=-1);
+      void merge_new_field_states(std::list<FieldState> &old_states, std::vector<FieldState> &new_states);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;

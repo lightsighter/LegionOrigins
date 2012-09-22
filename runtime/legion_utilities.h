@@ -149,6 +149,7 @@ namespace RegionRuntime {
     public:
       inline bool operator==(const BitMask &rhs) const;
       inline bool operator<(const BitMask &rhs) const;
+      inline bool operator!=(const BitMask &rhs) const;
     public:
       inline const T& operator[](const unsigned &idx) const;
       inline T& operator[](const unsigned &idx);
@@ -558,6 +559,14 @@ namespace RegionRuntime {
           return false;
       }
       return true;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    inline bool BitMask<T,MAX>::operator!=(const BitMask &rhs) const
+    //-------------------------------------------------------------------------
+    {
+      return !(*this == rhs);
     }
 
     //-------------------------------------------------------------------------
