@@ -500,7 +500,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(result);
 #endif
-      physical_instance = forest_ctx->map_region(reg_mapper, requirement.parent);
+      forest_ctx->map_region(reg_mapper, requirement.parent);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(reg_mapper.path.empty());
+#endif
+      physical_instance = reg_mapper.result;
       forest_ctx->unlock_context();
 
       if (!physical_instance.is_virtual_ref())
@@ -2436,7 +2440,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(result);
 #endif
-            new_ref = forest_ctx->map_region(reg_mapper, regions[idx].region);
+            forest_ctx->map_region(reg_mapper, regions[idx].region);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(reg_mapper.path.empty());
+#endif
           }
           else
           {
@@ -2448,10 +2455,13 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
             assert(result);
 #endif
-            new_ref = forest_ctx->map_region(reg_mapper, regions[idx].parent);
+            forest_ctx->map_region(reg_mapper, regions[idx].parent);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(reg_mapper.path.empty());
+#endif
           }
           lock();
-          physical_instances.push_back(new_ref);
+          physical_instances.push_back(reg_mapper.result);
           // Check to make sure that the result isn't virtual, if it is then the mapping failed
           if (physical_instances[idx].is_virtual_ref())
           {
@@ -3279,6 +3289,9 @@ namespace RegionRuntime {
 #endif
         // Now do the sanitizing walk 
         forest_ctx->map_region(reg_mapper, regions[idx].parent);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(reg_mapper.path.empty());
+#endif
         if (reg_mapper.success)
         {
           regions[idx].sanitized = true; 
@@ -4549,6 +4562,9 @@ namespace RegionRuntime {
         }
         // No do the sanitizing walk
         forest_ctx->map_region(reg_mapper, regions[idx].parent);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(reg_mapper.path.empty());
+#endif
         if (reg_mapper.success)
         {
           regions[idx].sanitized = true;

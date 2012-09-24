@@ -52,7 +52,7 @@ namespace RegionRuntime {
     public:
       // Logical Region contexts 
       void initialize_logical_context(LogicalRegion handle, ContextID ctx);
-      void analyze_region(const RegionAnalyzer &az);
+      void analyze_region(RegionAnalyzer &az);
       // Special registrations for deletions
       void analyze_index_space_deletion(ContextID ctx, IndexSpace sp, DeletionOperation *op);
       void analyze_index_part_deletion(ContextID ctx, IndexPartition part, DeletionOperation *op);
@@ -63,7 +63,7 @@ namespace RegionRuntime {
     public:
       // Physical Region contexts
       InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx);
-      InstanceRef map_region(RegionMapper &rm, LogicalRegion start_region);
+      void map_region(RegionMapper &rm, LogicalRegion start_region);
       Event close_to_instance(InstanceRef ref, std::vector<InstanceRef> &source_copies);
     public:
       // Packing and unpacking send
@@ -239,11 +239,15 @@ namespace RegionRuntime {
         OPEN_READ_ONLY = 2,
         OPEN_REDUCE    = 3,
       };
+      enum DataState {
+        DATA_CLEAN,
+        DATA_DIRTY,
+      };
     protected:
       struct FieldState {
       public:
-        FieldState(const LogicalUser &user);
-        FieldState(const LogicalUser &user, const FieldMask &mask, Color next);
+        FieldState(const GenericUser &user);
+        FieldState(const GenericUser &user, const FieldMask &mask, Color next);
       public:
         bool still_valid(void) const;
         bool overlap(const FieldState &rhs) const;
@@ -254,24 +258,33 @@ namespace RegionRuntime {
         ReductionOpID redop;
         std::map<Color,FieldMask> open_children;
       };
-      struct LogicalState {
+      struct GenericState {
       public:
-        std::list<FieldState>  field_states;
+        std::list<FieldState> field_states;
+      };
+      struct LogicalState : public GenericState {
+      public:
         std::list<LogicalUser> curr_epoch_users; // Users from the current epoch
         std::list<LogicalUser> prev_epoch_users; // Users from the previous epoch
       };
+      struct PhysicalState : public GenericState {
+      public:
+      };
     public:
-      void register_logical_region(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
+      void register_logical_region(const LogicalUser &user, RegionAnalyzer &az);
+      void open_logical_tree(const LogicalUser &user, RegionAnalyzer &az);
       void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
-      void close_logical_tree(const LogicalUser &user, const ContextID ctx, const FieldMask &closing_mask,
-                              std::list<LogicalUser> &epoch_users, bool closing_partition);
+      void close_logical_tree(LogicalCloser &closer, const FieldMask &closing_mask);
+    protected:
+      // Generic operations on the region tree
+      bool siphon_open_children(TreeCloser &closer, GenericState &state, const GenericUser &user, Color next_child);
+      FieldState perform_close_operations(TreeCloser &closer, const GenericUser &user, 
+                                          const FieldMask &closing_mask, FieldState &state, int next_child=-1);
     protected:
       // Logical region helper functions
       FieldMask perform_dependence_checks(const LogicalUser &user, 
                     const std::list<LogicalUser> &users, const FieldMask &user_mask);
       void merge_new_field_states(std::list<FieldState> &old_states, std::vector<FieldState> &new_states);
-      FieldState perform_close_operations(const LogicalUser &user, ContextID ctx, const FieldMask &closing_mask,
-                        std::list<LogicalUser> &epoch_users, FieldState &state, bool closing_partition, int next_child=-1);
       virtual bool are_children_disjoint(Color c1, Color c2) = 0;
       virtual bool are_closing_partition(void) const = 0;
       virtual RegionTreeNode* get_tree_child(Color c) = 0;
@@ -280,14 +293,10 @@ namespace RegionRuntime {
 #endif
     protected:
       std::map<ContextID,LogicalState> logical_states;
+      std::map<ContextID,PhysicalState> physical_states;
     };
 
     class RegionNode : public RegionTreeNode {
-    protected:
-      enum DataState {
-        DATA_CLEAN,
-        DATA_DIRTY,
-      };
     public:
       friend class RegionTreeForest;
       friend class PartitionNode;
@@ -302,6 +311,11 @@ namespace RegionRuntime {
       // Logical context operations
       void initialize_logical_context(ContextID ctx);
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
+    public:
+      void initialize_physical_context(ContextID ctx);
+      void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
+      void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
+      void close_physical_tree(const PhysicalUser &user, RegionMapper &rm, const std::vector<InstanceView*> &targets, bool leave_open);
     protected:
       virtual bool are_children_disjoint(Color c1, Color c2);
       virtual bool are_closing_partition(void) const;
@@ -309,6 +323,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       virtual bool color_match(Color c);
 #endif
+    protected:
+      // Physical traversal methods
+      InstanceView* map_physical_region(RegionMapper &rm);
+      void update_valid_views(PhysicalState &state, InstanceView* new_view, bool dirty);
+      void update_valid_views(PhysicalState &state, const std::vector<InstanceView*>& new_views, bool dirty);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
@@ -333,6 +352,11 @@ namespace RegionRuntime {
       // Logical context operations
       void initialize_logical_context(ContextID ctx);
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
+    public:
+      void initialize_physical_context(ContextID ctx);
+      void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
+      void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
+      void close_physical_tree(const PhysicalUser &user, RegionMapper &rm, const std::vector<InstanceView*> &targets, bool leave_open);
     protected:
       virtual bool are_children_disjoint(Color c1, Color c2);
       virtual bool are_closing_partition(void) const;
@@ -378,15 +402,60 @@ namespace RegionRuntime {
       ReductionOpID     redop;
     };
 
-    struct LogicalUser {
+    struct GenericUser {
+    public:
+      GenericUser(const FieldMask &m, const RegionUsage &u)
+        : field_mask(m), usage(u) { }
+    public:
+      FieldMask field_mask;
+      RegionUsage usage;
+    };
+
+    struct LogicalUser : public GenericUser {
     public:
       LogicalUser(GeneralizedOperation *o, unsigned id, const FieldMask &m, const RegionUsage &u);
     public:
       GeneralizedOperation *op;
       unsigned idx;
       GenerationID gen;
-      FieldMask field_mask;
-      RegionUsage usage;
+    };
+
+    struct PhysicalUser : public GenericUser {
+    public:
+      PhysicalUser(const FieldMask &m, const RegionUsage &u, Event single, Event multi);
+    public:
+      Event single_term;
+      Event multi_term;
+    };
+
+    class TreeCloser {
+    public:
+      virtual void pre_siphon(void) = 0;
+      virtual void post_siphon(void) = 0; 
+      virtual void close_tree_node(RegionTreeNode *node, const FieldMask &closing_mask) = 0;
+    };
+
+    class LogicalCloser : public TreeCloser {
+    public:
+      LogicalCloser(const LogicalUser &u, ContextID c, std::list<LogicalUser> &users, bool closing_part);
+    public:
+      virtual void pre_siphon(void);
+      virtual void post_siphon(void);
+      virtual void close_tree_node(RegionTreeNode *node, const FieldMask &closing_mask);
+    public:
+      const LogicalUser &user;
+      ContextID ctx;
+      std::list<LogicalUser> &epoch_users;
+      bool closing_partition;
+    };
+
+    class PhysicalCloser : public TreeCloser {
+    public:
+      PhysicalCloser(const PhysicalUser &u, RegionMapper &rm, RegionNode *close_target, bool leave_open);
+    public:
+      virtual void pre_siphon(void);
+      virtual void post_siphon(void);
+      virtual void close_tree_node(RegionTreeNode *node, const FieldMask &closing_mask);
     };
 
     class RegionAnalyzer {
@@ -435,6 +504,8 @@ namespace RegionRuntime {
       std::vector<unsigned> path;
       // Vector for tracking source copy references, note it's a reference
       std::vector<InstanceRef> &source_copy_instances;
+      // The resulting InstanceRef (if any)
+      InstanceRef result;
     };
 #if 0
 

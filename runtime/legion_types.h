@@ -230,7 +230,12 @@ namespace RegionRuntime {
     class EscapedUser;
     class EscapedCopier;
     struct RegionUsage;
+    struct GenericUser;
     struct LogicalUser;
+    struct PhysicalUser;
+    class TreeCloser;
+    class LogicalCloser;
+    class PhysicalCloser;
 
     // legion_utilities.h
     class Serializer;
