@@ -218,7 +218,8 @@ namespace RegionRuntime {
       virtual bool distribute_task(void) = 0; // Return true if still local
       virtual bool perform_mapping(void) = 0; // Return if mapping was successful
       virtual void launch_task(void) = 0;
-      virtual void sanitize_region_forest(void) = 0;
+      virtual bool prepare_steal(void) = 0;
+      virtual bool sanitize_region_forest(void) = 0;
       virtual void initialize_subtype_fields(void) = 0; 
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
@@ -314,7 +315,8 @@ namespace RegionRuntime {
       virtual bool distribute_task(void) = 0; // Return true if still local
       virtual bool perform_mapping(void) = 0;
       virtual void launch_task(void);
-      virtual void sanitize_region_forest(void) = 0;
+      virtual bool prepare_steal(void);
+      virtual bool sanitize_region_forest(void) = 0;
       virtual void initialize_subtype_fields(void) = 0;
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
@@ -446,7 +448,8 @@ namespace RegionRuntime {
       virtual bool distribute_task(void) = 0; // Return true if still local
       virtual bool perform_mapping(void) = 0;
       virtual void launch_task(void) = 0;
-      virtual void sanitize_region_forest(void) = 0;
+      virtual bool prepare_steal(void) = 0;
+      virtual bool sanitize_region_forest(void) = 0;
       virtual void initialize_subtype_fields(void) = 0;
       virtual Event get_map_event(void) const = 0;
       virtual Event get_termination_event(void) const = 0;
@@ -524,7 +527,7 @@ namespace RegionRuntime {
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
-      virtual void sanitize_region_forest(void);
+      virtual bool sanitize_region_forest(void);
       virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
@@ -602,7 +605,7 @@ namespace RegionRuntime {
       // Functions from TaskContext
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
-      virtual void sanitize_region_forest(void);
+      virtual bool sanitize_region_forest(void);
       virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
@@ -660,7 +663,8 @@ namespace RegionRuntime {
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
       virtual void launch_task(void);
-      virtual void sanitize_region_forest(void);
+      virtual bool prepare_steal(void);
+      virtual bool sanitize_region_forest(void);
       virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;
@@ -740,7 +744,8 @@ namespace RegionRuntime {
       virtual bool distribute_task(void); // Return true if still local
       virtual bool perform_mapping(void);
       virtual void launch_task(void);
-      virtual void sanitize_region_forest(void);
+      virtual bool prepare_steal(void);
+      virtual bool sanitize_region_forest(void);
       virtual void initialize_subtype_fields(void);
       virtual Event get_map_event(void) const;
       virtual Event get_termination_event(void) const;

@@ -490,7 +490,8 @@ namespace RegionRuntime {
       forest_ctx->lock_context();
       ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
       RegionMapper reg_mapper(phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
-                              unmapped_event, unmapped_event, tag, true/*inline mapping*/, source_copy_instances);
+                              unmapped_event, unmapped_event, tag, false/*sanitizing*/,
+                              true/*inline mapping*/, source_copy_instances);
       // Compute the path 
 #ifdef DEBUG_HIGH_LEVEL
       bool result = 
@@ -499,7 +500,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(result);
 #endif
-      physical_instance = forest_ctx->map_region(reg_mapper);
+      physical_instance = forest_ctx->map_region(reg_mapper, requirement.parent);
       forest_ctx->unlock_context();
 
       if (!physical_instance.is_virtual_ref())
@@ -1490,12 +1491,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       bool success = true;
-      if (!is_distributed())
+      if (is_locally_mapped())
       {
-        if (is_locally_mapped())
+        if (!is_distributed() && !is_stolen())
         {
-          // locally mapped task, so map it, distribute it,
-          // if still local, then launch it
+          // This task is still on the processor
+          // where it originated, so we have to do the mapping now
           if (perform_mapping())
           {
             if (distribute_task())
@@ -1503,42 +1504,86 @@ namespace RegionRuntime {
               // Still local so launch the task
               launch_task();
             }
+            // otherwise it was sent away and we're done
           }
-          else
+          else // mapping failed
           {
             success = false;
           }
         }
         else
         {
-          // Try distributing it first
-          if (distribute_task())
+          // If it was stolen and hasn't been distributed yet
+          // we have to try distributing it first
+          if (!is_distributed())
           {
-            if (perform_mapping())
+            if (distribute_task())
+            {
               launch_task();
-            else
-              success = false;
+            }
+          }
+          else
+          {
+            // This was task was already distributed 
+            // so just run it here regardless of whether
+            // it was stolen or not
+            launch_task();
           }
         }
       }
-      else
+      else // not locally mapped
       {
-        // If it's already been distributed
-        if (is_locally_mapped())
+        if (!is_distributed())
         {
-          // Remote task that was locally mapped
-          // All we need to do now is launch it
-          launch_task();
+          // Don't need to do sanitization if we were already stolen
+          // since that means we're remote and were already sanitized
+          if (is_stolen() || sanitize_region_forest())
+          {
+            if (distribute_task())
+            {
+              if (perform_mapping())
+                launch_task();
+              else
+                success = false;
+            }
+            // otherwise it was sent away and we're done
+          }
+          else
+            success = false;
         }
-        else
+        else // already been distributed
         {
-          // Remote task that hasn't been mapped yet
           if (perform_mapping())
             launch_task();
           else
             success = false;
         }
       }
+      return success;
+    }
+
+    //--------------------------------------------------------------------------
+    bool SingleTask::prepare_steal(void)
+    //--------------------------------------------------------------------------
+    {
+      bool success = true;
+      if (is_locally_mapped())
+      {
+        // If task is locally mapped it shouldn't have even been on the
+        // list of tasks to steal see HighLevelRuntime::process_steal
+        assert(false);
+        success = false;
+      }
+      else
+      {
+        // If it hasn't been distributed and it hasn't been
+        // stolen then we have to be able to sanitize it to
+        // be able to steal it
+        if (!is_distributed() && !is_stolen())
+          success = sanitize_region_forest();
+      }
+      if (success)
+        steal_count++;
       return success;
     }
 
@@ -2377,17 +2422,34 @@ namespace RegionRuntime {
         {
           // Otherwise we want to do an actual physical mapping
           RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
-                                  single_term, multi_term, tag, false/*inline mapping*/, source_copy_instances);
+                                  single_term, multi_term, tag, false/*sanitizing*/,
+                                  false/*inline mapping*/, source_copy_instances);
           // Compute the path 
+          // If the region was sanitized, we only need to do the path from the region itself
+          InstanceRef new_ref;
+          if (regions[idx].sanitized)
+          {
 #ifdef DEBUG_HIGH_LEVEL
-          bool result = 
+            bool result = 
 #endif
-          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.path);
+            forest_ctx->compute_index_path(regions[idx].region.index_space, regions[idx].region.index_space, reg_mapper.path);
 #ifdef DEBUG_HIGH_LEVEL
-          assert(result); // better have been able to compute the path
+            assert(result);
 #endif
-          // Now do the traversal and record the result
-          InstanceRef new_ref = forest_ctx->map_region(reg_mapper);
+            new_ref = forest_ctx->map_region(reg_mapper, regions[idx].region);
+          }
+          else
+          {
+            // Not sanitized so map from the parent
+#ifdef DEBUG_HIGH_LEVEL
+            bool result = 
+#endif
+            forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.path);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(result);
+#endif
+            new_ref = forest_ctx->map_region(reg_mapper, regions[idx].parent);
+          }
           lock();
           physical_instances.push_back(new_ref);
           // Check to make sure that the result isn't virtual, if it is then the mapping failed
@@ -2640,16 +2702,36 @@ namespace RegionRuntime {
         // Slice first, then map, finally distribute 
         if (is_sliced())
         {
-          if (perform_mapping())
+          if (!is_distributed() && !is_stolen())
           {
-            if (distribute_task())
+            // Task is still on the originating processor
+            // so we have to do the mapping now
+            if (perform_mapping())
             {
-              launch_task();
+              if (distribute_task())
+              {
+                launch_task();
+              }
+            }
+            else
+            {
+              success = false;
             }
           }
           else
           {
-            success = false;
+            if (!is_distributed())
+            {
+              if (distribute_task())
+              {
+                launch_task();
+              }
+            }
+            else
+            {
+              // Already been distributed, so we can launch it now
+              launch_task();
+            }
           }
         }
         else
@@ -2662,42 +2744,43 @@ namespace RegionRuntime {
       else // Not locally mapped
       {
         // Distribute first, then slice, finally map
+        // Check if we need to sanitize
         if (!is_distributed())
         {
           // Since we're going to try distributing it,
           // make sure all the region trees are clean
-          sanitize_region_forest();
-          // Try distributing, if still local
-          // then go about slicing
-          if (distribute_task())
+          if (is_stolen() || sanitize_region_forest())
           {
-            if (is_sliced())
+            // Try distributing, if still local
+            // then go about slicing
+            if (distribute_task())
             {
-              // This task has been sliced and is local
-              // so map it and launch it
-              success = map_and_launch();
-            }
-            else
-            {
-              // Task to be sliced on this processor
-              // Will recursively invoke perform_operation
-              // on the new slice tasks
-              success = slice_index_space();
+              if (is_sliced())
+              {
+                // This task has been sliced and is local
+                // so map it and launch it
+                success = map_and_launch();
+              }
+              else
+              {
+                // Task to be sliced on this processor
+                // Will recursively invoke perform_operation
+                // on the new slice tasks
+                success = slice_index_space();
+              }
             }
           }
+          else
+            success = false; // sanitization failed
         }
         else // Already been distributed
         {
           if (is_sliced())
           {
-            // Distributed and now local
             success = map_and_launch();
           }
           else
           {
-            // Task to be sliced on this processor
-            // Will recursively invoke perform_operation
-            // on the new slice tasks
             success = slice_index_space();
           }
         }
@@ -3061,18 +3144,16 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!distributed);
 #endif
+      // Allow this to be re-entrant in case sanitization fails
       target_proc = invoke_mapper_target_proc();
       distributed = true;
+      bool is_local = (target_proc != runtime->local_proc);
       // If the target processor isn't us we have to
       // send our task away
-      return (target_proc == runtime->local_proc);
-      bool is_local = (target_proc == runtime->local_proc);
       if (!is_local)
       {
-        // Sanitize the forest before sending it away
-        sanitize_region_forest();
         runtime->send_task(target_proc, this);
-      } 
+      }
       return is_local; 
     }
 
@@ -3162,10 +3243,55 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void IndividualTask::sanitize_region_forest(void)
+    bool IndividualTask::sanitize_region_forest(void)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!remote);
+#endif
+      // For each of our regions perform a walk on the physical tree to 
+      // destination region, but without doing any mapping.  Then update
+      // the parent region in the region requirements so that we only have
+      // to walk from the target region.
 
+      bool result = true;
+      lock_context();
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(regions[idx].handle_type == SINGULAR);
+#endif
+        // Check to see if this region is already sanitized
+        if (regions[idx].sanitized)
+          continue;
+        ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
+        // Create a sanitizing region mapper and map it
+        RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock,
+                                Processor::NO_PROC, termination_event, termination_event,
+                                tag, true/*sanitizing*/, false/*inline mapping*/,
+                                source_copy_instances);
+#ifdef DEBUG_HIGH_LEVEL
+        bool result = 
+#endif
+        forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.path);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(result); // better have been able to compute the path
+#endif
+        // Now do the sanitizing walk 
+        forest_ctx->map_region(reg_mapper, regions[idx].parent);
+        if (reg_mapper.success)
+        {
+          regions[idx].sanitized = true; 
+        }
+        else
+        {
+          // Couldn't sanitize the tree
+          result = false;
+          break;
+        }
+      }
+      unlock_context();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -3926,11 +4052,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PointTask::sanitize_region_forest(void)
+    bool PointTask::sanitize_region_forest(void)
     //--------------------------------------------------------------------------
     {
       // Should never be called
       assert(false);
+      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -4376,10 +4503,64 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void IndexTask::sanitize_region_forest(void)
+    bool IndexTask::prepare_steal(void)
     //--------------------------------------------------------------------------
     {
-      // TODO: Go through and sanitize all of our region trees
+      // IndexTask should never be stealable
+      assert(false);
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexTask::sanitize_region_forest(void)
+    //--------------------------------------------------------------------------
+    {
+      bool result = true;
+      lock_context();
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if (regions[idx].sanitized)
+          continue;
+        ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent); 
+        // Create a sanitizing region mapper and map it
+        RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock,
+                                Processor::NO_PROC, termination_event, termination_event,
+                                tag, true/*sanitizing*/, false/*inline mapping*/,
+                                source_copy_instances);
+        if (regions[idx].handle_type == SINGULAR)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          bool result = 
+#endif
+          forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.path);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(result);
+#endif
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          bool result = 
+#endif
+          forest_ctx->compute_partition_path(regions[idx].parent.index_space,regions[idx].partition.index_partition, reg_mapper.path);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(result);
+#endif
+        }
+        // No do the sanitizing walk
+        forest_ctx->map_region(reg_mapper, regions[idx].parent);
+        if (reg_mapper.success)
+        {
+          regions[idx].sanitized = true;
+        }
+        else
+        {
+          result = false;
+          break;
+        }
+      }
+      unlock_context();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -5128,10 +5309,24 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SliceTask::sanitize_region_forest(void)
+    bool SliceTask::prepare_steal(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!is_locally_mapped());
+#endif
+      // No need to do anything here since the region trees were sanitized
+      // prior to slicing the index space task
+      steal_count++;
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
+    bool SliceTask::sanitize_region_forest(void)
     //--------------------------------------------------------------------------
     {
       // Do nothing.  Region trees for slices were already sanitized by their IndexTask
+      return true;
     }
 
     //--------------------------------------------------------------------------

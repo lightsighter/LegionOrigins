@@ -63,7 +63,7 @@ namespace RegionRuntime {
     public:
       // Physical Region contexts
       InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx);
-      InstanceRef map_region(const RegionMapper &rm);
+      InstanceRef map_region(RegionMapper &rm, LogicalRegion start_region);
       Event close_to_instance(InstanceRef ref, std::vector<InstanceRef> &source_copies);
     public:
       // Packing and unpacking send
@@ -407,15 +407,19 @@ namespace RegionRuntime {
 #ifdef LOW_LEVEL_LOCKS
       RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     Lock mapper_lock, Processor target, Event single, Event multi, 
-                    MappingTagID tag, bool inline_mapping, std::vector<InstanceRef> &source_copy);
+                    MappingTagID tag, bool sanitizing, bool inline_mapping, 
+                    std::vector<InstanceRef> &source_copy);
 #else
       RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     ImmovableLock mapper_lock, Processor target, Event single, Event multi, 
-                    MappingTagID tag, bool inline_mapping, std::vector<InstanceRef> &source_copy);
+                    MappingTagID tag, bool sanitizing, bool inline_mapping, 
+                    std::vector<InstanceRef> &source_copy);
 #endif
     public:
       ContextID ctx;
+      bool sanitizing;
       bool inline_mapping;
+      bool success; // for knowing whether a sanitizing walk succeeds or not
       unsigned idx;
       const RegionRequirement &req;
 #ifdef LOW_LEVEL_LOCKS

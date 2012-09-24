@@ -555,7 +555,8 @@ namespace RegionRuntime {
                                         PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
 					 MappingTagID _tag, bool _verified, TypeHandle _inst)
       : region(_handle), privilege(_priv), prop(_prop), parent(_parent),
-        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR), inst_type(_inst)
+        redop(0), tag(_tag), verified(_verified), sanitized(false), 
+        handle_type(SINGULAR), inst_type(_inst)
     //--------------------------------------------------------------------------
     { 
       privilege_fields = priv_fields;
@@ -577,8 +578,8 @@ namespace RegionRuntime {
                 LogicalRegion _parent, MappingTagID _tag, bool _verified,
                 TypeHandle _inst)
       : partition(pid), privilege(_priv), prop(_prop), parent(_parent),
-        redop(0), tag(_tag), verified(_verified), handle_type(PROJECTION),
-        projection(_proj), inst_type(_inst)
+        redop(0), tag(_tag), verified(_verified), sanitized(false), 
+        handle_type(PROJECTION), projection(_proj), inst_type(_inst)
     //--------------------------------------------------------------------------
     { 
       privilege_fields = priv_fields;
@@ -600,8 +601,8 @@ namespace RegionRuntime {
                                     LogicalRegion _parent, MappingTagID _tag, bool _verified,
                                     TypeHandle _inst)
       : region(_handle), privilege(REDUCE), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR),
-        inst_type(_inst)
+        redop(op), tag(_tag), verified(_verified), sanitized(false), 
+        handle_type(SINGULAR), inst_type(_inst)
     //--------------------------------------------------------------------------
     {
       privilege_fields = priv_fields;
@@ -623,8 +624,8 @@ namespace RegionRuntime {
                         LogicalRegion _parent, MappingTagID _tag, bool _verified,
                         TypeHandle _inst)
       : partition(pid), privilege(REDUCE), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), projection(_proj),
-        inst_type(_inst)
+        redop(op), tag(_tag), verified(_verified), sanitized(false), 
+        handle_type(PROJECTION), projection(_proj), inst_type(_inst)
     //--------------------------------------------------------------------------
     {
       privilege_fields = priv_fields;
@@ -643,8 +644,8 @@ namespace RegionRuntime {
                                         PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
 					 MappingTagID _tag, bool _verified, TypeHandle _inst)
       : region(_handle), privilege(_priv), prop(_prop), parent(_parent),
-        redop(0), tag(_tag), verified(_verified), handle_type(SINGULAR),
-        inst_type(_inst)
+        redop(0), tag(_tag), verified(_verified), sanitized(false), 
+        handle_type(SINGULAR), inst_type(_inst)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -662,8 +663,8 @@ namespace RegionRuntime {
                 LogicalRegion _parent, MappingTagID _tag, bool _verified,
                 TypeHandle _inst)
       : partition(pid), privilege(_priv), prop(_prop), parent(_parent),
-        redop(0), tag(_tag), verified(_verified), handle_type(PROJECTION),
-        projection(_proj), inst_type(_inst)
+        redop(0), tag(_tag), verified(_verified), sanitized(false), 
+        handle_type(PROJECTION), projection(_proj), inst_type(_inst)
     //--------------------------------------------------------------------------
     { 
 #ifdef DEBUG_HIGH_LEVEL
@@ -681,8 +682,8 @@ namespace RegionRuntime {
                                     LogicalRegion _parent, MappingTagID _tag, bool _verified,
                                     TypeHandle _inst)
       : region(_handle), privilege(REDUCE), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(SINGULAR),
-        inst_type(_inst)
+        redop(op), tag(_tag), verified(_verified), sanitized(false),
+        handle_type(SINGULAR), inst_type(_inst)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -700,8 +701,8 @@ namespace RegionRuntime {
                         LogicalRegion _parent, MappingTagID _tag, bool _verified,
                         TypeHandle _inst)
       : partition(pid), privilege(REDUCE), prop(_prop), parent(_parent),
-        redop(op), tag(_tag), verified(_verified), handle_type(PROJECTION), 
-        projection(_proj), inst_type(_inst)
+        redop(op), tag(_tag), verified(_verified), sanitized(false),
+        handle_type(PROJECTION), projection(_proj), inst_type(_inst)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -721,7 +722,7 @@ namespace RegionRuntime {
       if ((handle_type == rhs.handle_type) && (privilege == rhs.privilege) &&
           (prop == rhs.prop) && (parent == rhs.parent) && (redop == rhs.redop) &&
           (tag == rhs.tag) && (verified == rhs.verified) && 
-          (inst_type == rhs.inst_type))
+          (sanitized == rhs.sanitized) && (inst_type == rhs.inst_type))
       {
         if (((handle_type == SINGULAR) && (region == rhs.region)) ||
             ((handle_type == PROJECTION) && (partition == rhs.partition) && (projection == rhs.projection)))
@@ -743,7 +744,7 @@ namespace RegionRuntime {
       if ((handle_type < rhs.handle_type) || (privilege < rhs.privilege) ||
           (prop < rhs.prop) || (parent < rhs.parent) || (redop < rhs.redop) ||
           (tag < rhs.tag) || (verified < rhs.verified) ||
-          (inst_type < rhs.inst_type))
+          (sanitized < rhs.sanitized) || (inst_type < rhs.inst_type))
       {
         return true;
       }
@@ -776,6 +777,7 @@ namespace RegionRuntime {
       redop = rhs.redop;
       tag = rhs.tag;
       verified = rhs.verified;
+      sanitized = rhs.sanitized;
       handle_type = rhs.handle_type;
       projection = rhs.projection;
       inst_type = rhs.inst_type;
@@ -799,6 +801,7 @@ namespace RegionRuntime {
       result += sizeof(this->redop);
       result += sizeof(this->tag);
       result += sizeof(this->verified);
+      result += sizeof(this->sanitized);
       result += sizeof(this->handle_type);
       result += sizeof(this->projection);
       result += sizeof(this->inst_type);
@@ -832,6 +835,7 @@ namespace RegionRuntime {
       rez.serialize(this->redop);
       rez.serialize(this->tag);
       rez.serialize(this->verified);
+      rez.serialize(this->sanitized);
       rez.serialize(this->projection);
       rez.serialize(this->inst_type);
     }
@@ -865,6 +869,7 @@ namespace RegionRuntime {
       derez.deserialize(this->redop);
       derez.deserialize(this->tag);
       derez.deserialize(this->verified);
+      derez.deserialize(this->sanitized);
       derez.deserialize(this->projection);
       derez.deserialize(this->inst_type);
     }
@@ -4521,6 +4526,9 @@ namespace RegionRuntime {
     void HighLevelRuntime::process_steal(const void * args, size_t arglen)
     //--------------------------------------------------------------------------------------------
     {
+#ifdef INORDER_EXECUTION
+      assert(false); // should never get a steal request during INORDER_EXECUTION
+#endif
       Deserializer derez(args,arglen);
       // Unpack the stealing processor
       Processor thief;
@@ -4586,8 +4594,15 @@ namespace RegionRuntime {
             {
               // Mark the task as stolen
               Task *t = const_cast<Task*>(*it);
-              t->steal_count++;
-              stolen.insert(static_cast<TaskContext*>(t));
+              TaskContext *tt = static_cast<TaskContext*>(t);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(stolen.find(tt) == stolen.end());
+#endif
+              // Make sure we're going to be able to steal this task
+              if (tt->prepare_steal())
+              {
+                stolen.insert(tt);
+              }
             }
             // Also remove any stolen tasks from the queue
             std::list<TaskContext*>::iterator it = ready_queues[stealer].begin();
@@ -4611,6 +4626,7 @@ namespace RegionRuntime {
       // Send the tasks back
       if (!stolen.empty())
       {
+        
         // Send the tasks back  
         send_tasks(thief, stolen);
 
@@ -4835,6 +4851,7 @@ namespace RegionRuntime {
       }
 
       // Also send out any steal requests that might have been made
+      // There are no steal requests for inorder-execution
       for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
             it != targets.end(); )
       {

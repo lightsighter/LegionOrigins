@@ -120,6 +120,7 @@ namespace RegionRuntime {
       // Get the index point if it is an index point
       template<typename PT, unsigned DIM>
       void get_index_point(PT buffer[DIM]) const;
+      inline bool is_stolen(void) const { return (steal_count > 0); }
     protected:
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
@@ -407,6 +408,7 @@ namespace RegionRuntime {
       ReductionOpID      redop;
       MappingTagID       tag;
       bool               verified; // has this been verified already
+      bool               sanitized;
       HandleType         handle_type;
       ProjectionID       projection;
       // This is for verifying that the instance fields match up
