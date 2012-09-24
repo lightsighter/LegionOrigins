@@ -95,9 +95,6 @@ namespace RegionRuntime {
     class LockImpl;
     class MemoryImpl;
     class ProcessorImpl;
-    class RegionMetaDataImpl;
-    class RegionAllocatorImpl;
-    class RegionInstanceImpl;
 
     class Runtime {
     public:
@@ -109,18 +106,18 @@ namespace RegionRuntime {
       LockImpl*            get_lock_impl(Lock l);
       MemoryImpl*          get_memory_impl(Memory m);
       ProcessorImpl*       get_processor_impl(Processor p);
-      RegionMetaDataImpl*  get_metadata_impl(RegionMetaDataUntyped m);
-      RegionAllocatorImpl* get_allocator_impl(RegionAllocatorUntyped a);
-      RegionInstanceImpl*  get_instance_impl(RegionInstanceUntyped i);
+      IndexSpace::Impl*  get_metadata_impl(IndexSpace is);
+      IndexSpaceAllocator::Impl* get_allocator_impl(IndexSpaceAllocator a);
+      RegionInstance::Impl*  get_instance_impl(RegionInstance i);
 
       EventImpl*           get_free_event(void);
       LockImpl*            get_free_lock(size_t data_size = 0);
-      RegionMetaDataImpl*  get_free_metadata(size_t num_elmts, size_t elmt_size);
-      RegionMetaDataImpl*  get_free_metadata(RegionMetaDataImpl *par, const ElementMask &mask);
-      RegionAllocatorImpl* get_free_allocator(RegionMetaDataImpl *owner);
-      RegionInstanceImpl*  get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, 
+      IndexSpace::Impl*  get_free_metadata(size_t num_elmts);
+      IndexSpace::Impl*  get_free_metadata(IndexSpace::Impl *par, const ElementMask &mask);
+      IndexSpaceAllocator::Impl* get_free_allocator(IndexSpace::Impl *owner);
+      RegionInstance::Impl*  get_free_instance(IndexSpace is, Memory m, size_t num_elmts, 
                                               size_t elmt_size, char *ptr, const ReductionOpUntyped *redop,
-                                              RegionInstanceImpl *parent);
+                                              RegionInstance::Impl *parent);
 
       const ReductionOpUntyped* get_reduction_op(ReductionOpID redop);
 
@@ -137,12 +134,12 @@ namespace RegionRuntime {
       std::list<LockImpl*> free_locks;
       std::vector<MemoryImpl*> memories;
       std::vector<ProcessorImpl*> processors;
-      std::vector<RegionMetaDataImpl*> metadatas;
-      std::list<RegionMetaDataImpl*> free_metas;
-      std::vector<RegionAllocatorImpl*> allocators;
-      std::list<RegionAllocatorImpl*> free_allocators;
-      std::vector<RegionInstanceImpl*> instances;
-      std::list<RegionInstanceImpl*> free_instances;
+      std::vector<IndexSpace::Impl*> metadatas;
+      std::list<IndexSpace::Impl*> free_metas;
+      std::vector<IndexSpaceAllocator::Impl*> allocators;
+      std::list<IndexSpaceAllocator::Impl*> free_allocators;
+      std::vector<RegionInstance::Impl*> instances;
+      std::list<RegionInstance::Impl*> free_instances;
       Machine *machine;
       pthread_rwlock_t event_lock;
       pthread_mutex_t  free_event_lock;
@@ -1971,12 +1968,12 @@ namespace RegionRuntime {
 
 
     ////////////////////////////////////////////////////////
-    // RegionMetaDataImpl (Declaration Only) 
+    // IndexSpace::Impl (Declaration Only) 
     ////////////////////////////////////////////////////////
 
-    class RegionMetaDataImpl {
+    class IndexSpace::Impl {
     public:
-	RegionMetaDataImpl(int idx, size_t num, size_t elem_size, bool activate = false) {
+	Impl(int idx, size_t num, bool activate = false) {
                 mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
 		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		active = activate;
@@ -1984,13 +1981,13 @@ namespace RegionRuntime {
 		if (activate)
 		{
 			num_elmts = num;
-			elmt_size = elem_size;
 			lock = Runtime::get_runtime()->get_free_lock();
                         mask = ElementMask(num_elmts);
                         parent = NULL;
 		}
 	}
-        RegionMetaDataImpl(int idx, RegionMetaDataImpl *par, const ElementMask &m, bool activate = false) {
+
+        Impl(int idx, IndexSpace::Impl *par, const ElementMask &m, bool activate = false) {
                 mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
                 PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
 		active = activate;
@@ -1998,31 +1995,31 @@ namespace RegionRuntime {
 		if (activate)
 		{
 			num_elmts = m.get_num_elmts();
-			elmt_size = par->elmt_size;
 	                // Since we have a parent, use the parent's master allocator	
 			lock = Runtime::get_runtime()->get_free_lock();
                         mask = m;
                         parent = par;
 		}
         }
-        ~RegionMetaDataImpl(void)
+
+        ~Impl(void)
         {
                 PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
                 free(mutex);
         }
     public:
-	bool activate(size_t num_elmts, size_t elmt_size);
-        bool activate(RegionMetaDataImpl *par, const ElementMask &m);
+	bool activate(size_t num_elmts);
+        bool activate(IndexSpace::Impl *par, const ElementMask &m);
 	void deactivate(void);	
-	RegionMetaDataUntyped get_metadata(void);
+	IndexSpace get_metadata(void);
 
-	RegionAllocatorUntyped create_allocator(Memory m);
-	RegionInstanceUntyped  create_instance(Memory m, ReductionOpID redop = 0);
-        RegionInstanceUntyped  create_instance(Memory m, ReductionOpID redop, off_t list_size,
-                                               RegionInstanceUntyped parent);
+	IndexSpaceAllocator create_allocator(Memory m);
+        RegionInstance create_instance(Memory m, size_t elmt_size, ReductionOpID redop = 0);
+        RegionInstance create_instance(Memory m, ReductionOpID redop, off_t list_size,
+                                               RegionInstance parent);
 
-	void destroy_allocator(RegionAllocatorUntyped a);
-	void destroy_instance(RegionInstanceUntyped i);
+	void destroy_allocator(IndexSpaceAllocator a);
+	void destroy_instance(RegionInstance i);
 
 	Lock get_lock(void);
 
@@ -2034,15 +2031,14 @@ namespace RegionRuntime {
         void     free_space(unsigned ptr, unsigned count);
     private:
 	//std::set<RegionAllocatorUntyped> allocators;
-	std::set<RegionInstanceUntyped> instances;
+	std::set<RegionInstance> instances;
 	LockImpl *lock;
 	pthread_mutex_t *mutex;
 	bool active;
 	int index;
 	size_t num_elmts;
-	size_t elmt_size;
         ElementMask mask;
-        RegionMetaDataImpl *parent;
+        IndexSpace::Impl *parent;
     };
 
     
@@ -2050,11 +2046,11 @@ namespace RegionRuntime {
     // Region Allocator 
     ////////////////////////////////////////////////////////
 
-    /*static*/ const RegionAllocatorUntyped RegionAllocatorUntyped::NO_ALLOC = RegionAllocatorUntyped();
+    /*static*/ const IndexSpaceAllocator IndexSpaceAllocator::NO_ALLOC = IndexSpaceAllocator();
 
-    class RegionAllocatorImpl {
+    class IndexSpaceAllocator::Impl {
     public:
-	RegionAllocatorImpl(int idx, bool activate = false, RegionMetaDataImpl *o = NULL) 
+	Impl(int idx, bool activate = false, IndexSpace::Impl *o = NULL) 
 		: owner(o), index(idx)
 	{
                 mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
@@ -2065,51 +2061,52 @@ namespace RegionRuntime {
 			lock = Runtime::get_runtime()->get_free_lock();
 		}
 	}
-        ~RegionAllocatorImpl(void)
+
+        ~Impl(void)
         {
                 PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
-                free(mutex);
+                ::free(mutex);
         }
     public:
 	unsigned alloc_elmt(size_t num_elmts = 1);
         void free_elmt(unsigned ptr, unsigned count);
-	bool activate(RegionMetaDataImpl *owner);
+	bool activate(IndexSpace::Impl *owner);
 	void deactivate();
-	RegionAllocatorUntyped get_allocator(void) const;
+	IndexSpaceAllocator get_allocator(void) const;
 	Lock get_lock(void);
     private:
-        RegionMetaDataImpl *owner;
+        IndexSpace::Impl *owner;
 	pthread_mutex_t *mutex;
 	bool active;
 	LockImpl *lock;
 	const int index;
     }; 
 
-    unsigned RegionAllocatorUntyped::alloc_untyped(unsigned count /*= 1*/) const
+    unsigned IndexSpaceAllocator::alloc(unsigned count /*= 1*/) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_allocator_impl(*this)->alloc_elmt(count);
     }
 
-    void RegionAllocatorUntyped::free_untyped(unsigned ptr, unsigned count /*= 1 */) const
+    void IndexSpaceAllocator::free(unsigned ptr, unsigned count /*= 1 */) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       Runtime::get_runtime()->get_allocator_impl(*this)->free_elmt(ptr, count);
     }
 
-    unsigned RegionAllocatorImpl::alloc_elmt(size_t num_elmts)
+    unsigned IndexSpaceAllocator::Impl::alloc_elmt(size_t num_elmts)
     {
         // No need to hold the lock since we're just reading
         return owner->allocate_space(num_elmts);
     }
 
-    void RegionAllocatorImpl::free_elmt(unsigned ptr, unsigned count)
+    void IndexSpaceAllocator::Impl::free_elmt(unsigned ptr, unsigned count)
     {
         // No need to hold the lock since we're just reading
         owner->free_space(ptr,count);
     }
 
-    bool RegionAllocatorImpl::activate(RegionMetaDataImpl *own)
+    bool IndexSpaceAllocator::Impl::activate(IndexSpace::Impl *own)
     {
 	bool result = false;
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
@@ -2124,7 +2121,7 @@ namespace RegionRuntime {
 	return result;
     }
 
-    void RegionAllocatorImpl::deactivate(void)
+    void IndexSpaceAllocator::Impl::deactivate(void)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
@@ -2137,17 +2134,17 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
-    RegionAllocatorUntyped RegionAllocatorImpl::get_allocator(void) const
+    IndexSpaceAllocator IndexSpaceAllocator::Impl::get_allocator(void) const
     {
 #ifdef DEBUG_LOW_LEVEL
         assert(active);
 #endif
-	RegionAllocatorUntyped allocator;
+	IndexSpaceAllocator allocator;
 	allocator.id = index;
 	return allocator;
     }
 
-    Lock RegionAllocatorImpl::get_lock(void)
+    Lock IndexSpaceAllocator::Impl::get_lock(void)
     {
 	return lock->get_lock();
     }
@@ -2157,11 +2154,11 @@ namespace RegionRuntime {
     // Region Instance 
     ////////////////////////////////////////////////////////
 
-    class RegionInstanceImpl : public Triggerable { 
+    class RegionInstance::Impl : public Triggerable { 
     public:
-        RegionInstanceImpl(int idx, RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, 
-                            bool activate = false, char *base = NULL, const ReductionOpUntyped *op = NULL,
-                            RegionInstanceImpl *parent = NULL)
+        Impl(int idx, IndexSpace r, Memory m, size_t num, size_t elem_size, 
+	     bool activate = false, char *base = NULL, const ReductionOpUntyped *op = NULL,
+	     RegionInstance::Impl *parent = NULL)
 	        : elmt_size(elem_size), num_elmts(num), reduction((op!=NULL)), list((parent!=NULL)), redop(op), parent_impl(parent), cur_entry(0), index(idx), next_handle(1)
 	{
                 mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
@@ -2180,7 +2177,8 @@ namespace RegionRuntime {
 			lock = Runtime::get_runtime()->get_free_lock();
 		}
 	}
-        ~RegionInstanceImpl(void)
+
+        ~Impl(void)
         {
                 PTHREAD_SAFE_CALL(pthread_mutex_destroy(mutex));
                 free(mutex);
@@ -2188,18 +2186,18 @@ namespace RegionRuntime {
     public:
 	const void* read(unsigned ptr);
 	void write(unsigned ptr, const void* newval);	
-        bool activate(RegionMetaDataUntyped r, Memory m, size_t num_elmts, size_t elem_size, 
-                      char *base, const ReductionOpUntyped *op, RegionInstanceImpl *parent);
+        bool activate(IndexSpace r, Memory m, size_t num_elmts, size_t elem_size, 
+                      char *base, const ReductionOpUntyped *op, RegionInstance::Impl *parent);
 	void deactivate(void);
-	Event copy_to(RegionInstanceUntyped target, Event wait_on);
-        Event copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on);
-        Event copy_to(RegionInstanceUntyped target, RegionMetaDataUntyped src_region, Event wait_on);
-	RegionInstanceUntyped get_instance(void) const;
+	Event copy_to(RegionInstance target, Event wait_on);
+        Event copy_to(RegionInstance target, const ElementMask &mask, Event wait_on);
+        Event copy_to(RegionInstance target, IndexSpace src_region, Event wait_on);
+	RegionInstance get_instance(void) const;
 	void trigger(unsigned count, TriggerHandle handle);
 	Lock get_lock(void);
-        void perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask);
-        void apply_list(RegionInstanceImpl *target);
-        void append_list(RegionInstanceImpl *target);
+        void perform_copy_operation(RegionInstance::Impl *target, const ElementMask &src_mask, const ElementMask &dst_mask);
+        void apply_list(RegionInstance::Impl *target);
+        void append_list(RegionInstance::Impl *target);
         void verify_access(unsigned ptr);
         bool is_reduction(void) const { return reduction; }
         bool is_list_reduction(void) const { return list; }
@@ -2210,18 +2208,18 @@ namespace RegionRuntime {
     private:
         class CopyOperation {
         public:
-          RegionInstanceImpl *target;
+          RegionInstance::Impl *target;
           EventImpl *complete;
           TriggerHandle id;
           const ElementMask &src_mask;
           const ElementMask &dst_mask;
         public:
-          CopyOperation(RegionInstanceImpl *t, EventImpl *c, TriggerHandle i, 
+          CopyOperation(RegionInstance::Impl *t, EventImpl *c, TriggerHandle i, 
                         const ElementMask &s, const ElementMask &d)
             : target(t), complete(c), id(i), src_mask(s), dst_mask(d) { }
         };
     private:
-        RegionMetaDataUntyped region;
+        IndexSpace region;
 	char *base_ptr;	
 	size_t elmt_size;
 	size_t num_elmts;
@@ -2230,7 +2228,7 @@ namespace RegionRuntime {
         bool reduction; // reduction fold
         bool list; // reduction list
         const ReductionOpUntyped *redop; // for all reductions
-        RegionInstanceImpl *parent_impl; // for lists
+        RegionInstance::Impl *parent_impl; // for lists
         size_t cur_entry; // for lists
 	bool active;
 	const int index;
@@ -2240,49 +2238,51 @@ namespace RegionRuntime {
         std::list<CopyOperation> pending_copies;
     };
 
-    /*static*/ const RegionInstanceUntyped RegionInstanceUntyped::NO_INST = { 0 };
+    /*static*/ const RegionInstance RegionInstance::NO_INST = { 0 };
 
-   RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceUntyped::get_accessor_untyped(void) const
+   RegionAccessor<AccessorGeneric> RegionInstance::get_accessor(void) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-      RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(*this);
-      return RegionInstanceAccessorUntyped<AccessorGeneric>((void *)impl);
+      RegionInstance::Impl *impl = Runtime::get_runtime()->get_instance_impl(*this);
+      return RegionAccessor<AccessorGeneric>((void *)impl);
     }
 
-    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, Event wait_on) const
+#ifdef OLD_INTFC
+    Event RegionInstance::copy_to_untyped(RegionInstance target, Event wait_on) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,wait_on);
     }
 
-    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, const ElementMask &mask,
+    Event RegionInstance::copy_to_untyped(RegionInstance target, const ElementMask &mask,
                                                 Event wait_on) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,mask,wait_on);
     }
 
-    Event RegionInstanceUntyped::copy_to_untyped(RegionInstanceUntyped target, RegionMetaDataUntyped region,
+    Event RegionInstance::copy_to_untyped(RegionInstance target, IndexSpace region,
                                                  Event wait_on) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       return Runtime::get_runtime()->get_instance_impl(*this)->copy_to(target,region,wait_on);
     }
+#endif
 
-    const void* RegionInstanceImpl::read(unsigned ptr)
+    const void* RegionInstance::Impl::read(unsigned ptr)
     {
       // 'ptr' has already been multiplied by elmt_size
       return ((void*)(base_ptr + ptr));
     }
 
-    void RegionInstanceImpl::write(unsigned ptr, const void* newval)
+    void RegionInstance::Impl::write(unsigned ptr, const void* newval)
     {
       // 'ptr' has already been multiplied by elmt_size
       memcpy((base_ptr + ptr),newval,elmt_size);
     }
 
-    bool RegionInstanceImpl::activate(RegionMetaDataUntyped r, Memory m, size_t num, size_t elem_size, 
-                                      char *base, const ReductionOpUntyped *op, RegionInstanceImpl *parent)
+    bool RegionInstance::Impl::activate(IndexSpace r, Memory m, size_t num, size_t elem_size, 
+                                      char *base, const ReductionOpUntyped *op, RegionInstance::Impl *parent)
     {
 	bool result = false;
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
@@ -2310,7 +2310,7 @@ namespace RegionRuntime {
 	return result;
     }
 
-    void RegionInstanceImpl::deactivate(void)
+    void RegionInstance::Impl::deactivate(void)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	active = false;
@@ -2330,20 +2330,20 @@ namespace RegionRuntime {
 
     Logger::Category log_copy("copy");
 
-    Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, Event wait_on)
+    Event RegionInstance::Impl::copy_to(RegionInstance target, Event wait_on)
     {
       return copy_to(target,region,wait_on);
     }
 
-    Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, RegionMetaDataUntyped src_region, Event wait_on)
+    Event RegionInstance::Impl::copy_to(RegionInstance target, IndexSpace src_region, Event wait_on)
     {
       const ElementMask &mask = src_region.get_valid_mask();
       return copy_to(target,mask,wait_on);
     }
 
-    Event RegionInstanceImpl::copy_to(RegionInstanceUntyped target, const ElementMask &mask, Event wait_on)
+    Event RegionInstance::Impl::copy_to(RegionInstance target, const ElementMask &mask, Event wait_on)
     {
-	RegionInstanceImpl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
+	RegionInstance::Impl *target_impl = Runtime::get_runtime()->get_instance_impl(target);
         const ElementMask &target_mask = target_impl->region.get_valid_mask();
 	//log_copy(LEVEL_INFO, "copy %x/%p/%x -> %x/%p/%x", index, this, region.id, target.id, target_impl, target_impl->region.id);
 #ifdef DEBUG_LOW_LEVEL
@@ -2377,7 +2377,7 @@ namespace RegionRuntime {
         return Event::NO_EVENT;
     }
 
-    void RegionInstanceImpl::trigger(unsigned count, TriggerHandle handle)
+    void RegionInstance::Impl::trigger(unsigned count, TriggerHandle handle)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         // Find the copy operation in the set
@@ -2471,7 +2471,7 @@ namespace RegionRuntime {
       };
     }; // Namespace RangeExecutors
 
-    void RegionInstanceImpl::perform_copy_operation(RegionInstanceImpl *target, const ElementMask &src_mask, const ElementMask &dst_mask)
+    void RegionInstance::Impl::perform_copy_operation(RegionInstance::Impl *target, const ElementMask &src_mask, const ElementMask &dst_mask)
     {
         DetailedTimer::ScopedPush sp(TIME_COPY); 
         const void *src_ptr = base_ptr;
@@ -2563,7 +2563,7 @@ namespace RegionRuntime {
         }
     }
 
-    void RegionInstanceImpl::apply_list(RegionInstanceImpl *target)
+    void RegionInstance::Impl::apply_list(RegionInstance::Impl *target)
     {
 #ifdef DEBUG_LOW_LEVEL
         assert(this->list);
@@ -2583,7 +2583,7 @@ namespace RegionRuntime {
         }
     }
 
-    void RegionInstanceImpl::append_list(RegionInstanceImpl *target)
+    void RegionInstance::Impl::append_list(RegionInstance::Impl *target)
     {
 #ifdef DEBUG_LOW_LEVEL
         assert(this->list);
@@ -2593,19 +2593,19 @@ namespace RegionRuntime {
         assert(false);
     }
 
-    RegionInstanceUntyped RegionInstanceImpl::get_instance(void) const
+    RegionInstance RegionInstance::Impl::get_instance(void) const
     {
-	RegionInstanceUntyped inst;
+	RegionInstance inst;
 	inst.id = index;
 	return inst;
     }
 
-    Lock RegionInstanceImpl::get_lock(void)
+    Lock RegionInstance::Impl::get_lock(void)
     {
 	return lock->get_lock();
     }
 
-    void RegionInstanceImpl::verify_access(unsigned ptr)
+    void RegionInstance::Impl::verify_access(unsigned ptr)
     {
       const ElementMask &mask = region.get_valid_mask();
       if (!mask.is_set(ptr))
@@ -2615,27 +2615,27 @@ namespace RegionRuntime {
       }
     }
 
-    void RegionInstanceAccessorUntyped<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
+    void RegionAccessor<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
     {
-      const char *src = (const char*)(((RegionInstanceImpl *)internal_data)->get_base_ptr());
+      const char *src = (const char*)(((RegionInstance::Impl *)internal_data)->get_base_ptr());
       memcpy(dst, src+byte_offset, size);
     }
 
-    void RegionInstanceAccessorUntyped<AccessorGeneric>::put_untyped(off_t byte_offset, const void *src, size_t size) const
+    void RegionAccessor<AccessorGeneric>::put_untyped(off_t byte_offset, const void *src, size_t size) const
     {
-      char *dst = (char*)(((RegionInstanceImpl *)internal_data)->get_base_ptr());
+      char *dst = (char*)(((RegionInstance::Impl *)internal_data)->get_base_ptr());
       memcpy(dst+byte_offset, src, size);
     }
 
     // Acessor Generic (can convert)
     template <>
-    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorGeneric>(void) const
+    bool RegionAccessor<AccessorGeneric>::can_convert<AccessorGeneric>(void) const
     { return true; }
 
     template<>
-    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArray>(void) const
+    bool RegionAccessor<AccessorGeneric>::can_convert<AccessorArray>(void) const
     { 
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data;
       if (impl->is_reduction())
       {
         return false;
@@ -2647,9 +2647,9 @@ namespace RegionRuntime {
     }
 
     template<>
-    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorArrayReductionFold>(void) const
+    bool RegionAccessor<AccessorGeneric>::can_convert<AccessorArrayReductionFold>(void) const
     {
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data;
       if (impl->is_reduction() && !impl->is_list_reduction())
       {
         return true;
@@ -2661,9 +2661,9 @@ namespace RegionRuntime {
     }
 
     template<>
-    bool RegionInstanceAccessorUntyped<AccessorGeneric>::can_convert<AccessorReductionList>(void) const
+    bool RegionAccessor<AccessorGeneric>::can_convert<AccessorReductionList>(void) const
     {
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data;
       if (impl->is_reduction() && impl->is_list_reduction())
       {
         return true;
@@ -2674,25 +2674,26 @@ namespace RegionRuntime {
       }
     }
 
-    bool RegionInstanceAccessorUntyped<AccessorGeneric>::is_reduction_only(void) const
+    bool RegionAccessor<AccessorGeneric>::is_reduction_only(void) const
     {
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data;
       return impl->is_reduction();
     }
 
     // Accessor Generic (convert)
     template <>
-    RegionInstanceAccessorUntyped<AccessorGeneric> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorGeneric>(void) const
+    RegionAccessor<AccessorGeneric> RegionAccessor<AccessorGeneric>::convert<AccessorGeneric>(void) const
     { return *this; }
 
+#if 0
     template<>
-    RegionInstanceAccessorUntyped<AccessorArray> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorArray>(void) const
+    RegionAccessor<AccessorArray> RegionAccessor<AccessorGeneric>::convert<AccessorArray>(void) const
     { 
 #ifdef DEBUG_LOW_LEVEL
       assert(!this->is_reduction_only());
 #endif
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
-      RegionInstanceAccessorUntyped<AccessorArray> ret(impl->get_base_ptr()); 
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data;
+      RegionAccessor<AccessorArray> ret(impl->get_base_ptr()); 
 #ifdef POINTER_CHECKS
       ret.impl_ptr = impl;
 #endif
@@ -2700,148 +2701,153 @@ namespace RegionRuntime {
     }
 
     template<>
-    RegionInstanceAccessorUntyped<AccessorArrayReductionFold> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorArrayReductionFold>(void) const
+    RegionAccessor<AccessorArrayReductionFold> RegionAccessor<AccessorGeneric>::convert<AccessorArrayReductionFold>(void) const
     {
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data;
 #ifdef DEBUG_LOW_LEVEL
       assert(impl->is_reduction() && !impl->is_list_reduction());
 #endif
-      return RegionInstanceAccessorUntyped<AccessorArrayReductionFold>(impl->get_base_ptr());
+      return RegionAccessor<AccessorArrayReductionFold>(impl->get_base_ptr());
     }
 
     template<>
-    RegionInstanceAccessorUntyped<AccessorReductionList> RegionInstanceAccessorUntyped<AccessorGeneric>::convert<AccessorReductionList>(void) const
+    RegionAccessor<AccessorReductionList> RegionAccessor<AccessorGeneric>::convert<AccessorReductionList>(void) const
     {
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data; 
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data; 
 #ifdef DEBUG_LOW_LEVEL
       assert(impl->is_reduction() && impl->is_list_reduction());
 #endif
-      return RegionInstanceAccessorUntyped<AccessorReductionList>(impl,impl->get_num_elmts(),impl->get_elmt_size());
+      return RegionAccessor<AccessorReductionList>(impl,impl->get_num_elmts(),impl->get_elmt_size());
     }
 
-    RegionInstanceAccessorUntyped<AccessorReductionList>::RegionInstanceAccessorUntyped(void *_internal_data,
+    RegionAccessor<AccessorReductionList>::RegionAccessor(void *_internal_data,
                                                                                         size_t _num_entries,
                                                                                         size_t _elmt_size)
     {
       internal_data = _internal_data;
 
-      RegionInstanceImpl *impl = (RegionInstanceImpl*)internal_data;
+      RegionInstance::Impl *impl = (RegionInstance::Impl*)internal_data;
       cur_size = impl->get_cur_entry(); 
       max_size = _num_entries;
       entry_list = impl->get_base_ptr();
     }
 
-    void RegionInstanceAccessorUntyped<AccessorReductionList>::flush(void) const
+    void RegionAccessor<AccessorReductionList>::flush(void) const
     {
       assert(false);
     }
 
-    void RegionInstanceAccessorUntyped<AccessorReductionList>::reduce_slow_case(size_t my_pos, unsigned ptrvalue,
+    void RegionAccessor<AccessorReductionList>::reduce_slow_case(size_t my_pos, unsigned ptrvalue,
                                                                 const void *entry, size_t sizeof_entry) const
     {
       assert(false);
     }
+#endif
 
 #ifdef POINTER_CHECKS
-    void RegionInstanceAccessorUntyped<AccessorGeneric>::verify_access(unsigned ptr) const
+    void RegionAccessor<AccessorGeneric>::verify_access(unsigned ptr) const
     {
-        ((RegionInstanceImpl*)internal_data)->verify_access(ptr);
+        ((RegionInstance::Impl*)internal_data)->verify_access(ptr);
     }
 
-    void RegionInstanceAccessorUntyped<AccessorArray>::verify_access(unsigned ptr) const
+    void RegionAccessor<AccessorArray>::verify_access(unsigned ptr) const
     {
-        ((RegionInstanceImpl*)impl_ptr)->verify_access(ptr);
+        ((RegionInstance::Impl*)impl_ptr)->verify_access(ptr);
     }
 #endif
 
 
     ////////////////////////////////////////////////////////
-    // RegionMetaDataUntyped 
+    // IndexSpace 
     ////////////////////////////////////////////////////////
 
-    /*static*/ const RegionMetaDataUntyped RegionMetaDataUntyped::NO_REGION = RegionMetaDataUntyped();
+    /*static*/ const IndexSpace IndexSpace::NO_SPACE = IndexSpace();
 
-    // Lifting Declaration of RegionMetaDataImpl above allocator so we can call it in allocator
+    // Lifting Declaration of IndexSpace::Impl above allocator so we can call it in allocator
     
     Logger::Category log_region("region");
 
-    RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(size_t num_elmts, size_t elmt_size)
+    IndexSpace IndexSpace::create_index_space(size_t num_elmts)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(num_elmts, elmt_size);	
-	log_region(LEVEL_INFO, "region created: id=%x num=%zd size=%zd",
-		   r->get_metadata().id, num_elmts, elmt_size);
+	IndexSpace::Impl *r = Runtime::get_runtime()->get_free_metadata(num_elmts);	
+	log_region(LEVEL_INFO, "region created: id=%x num=%zd",
+		   r->get_metadata().id, num_elmts);
 	return r->get_metadata();
     }
 
-    RegionMetaDataUntyped RegionMetaDataUntyped::create_region_untyped(RegionMetaDataUntyped parent, const ElementMask &mask)
+    IndexSpace IndexSpace::create_index_space(IndexSpace parent, const ElementMask &mask)
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-      RegionMetaDataImpl *par = Runtime::get_runtime()->get_metadata_impl(parent);
-      RegionMetaDataImpl *r = Runtime::get_runtime()->get_free_metadata(par, mask);
+      IndexSpace::Impl *par = Runtime::get_runtime()->get_metadata_impl(parent);
+      IndexSpace::Impl *r = Runtime::get_runtime()->get_free_metadata(par, mask);
       log_region(LEVEL_INFO, "region created: id=%x parent=%x",
 		 r->get_metadata().id, parent.id);
       return r->get_metadata();
     }
 
-    RegionAllocatorUntyped RegionMetaDataUntyped::create_allocator_untyped(Memory m) const
+    IndexSpaceAllocator IndexSpace::create_allocator(Memory m) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	return r->create_allocator(m);
     }
 
-    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m) const
+    RegionInstance IndexSpace::create_instance(Memory m, size_t elmt_size) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	return r->create_instance(m);
+	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+	return r->create_instance(m, elmt_size);
     }
 
-    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m, ReductionOpID redop) const
+#if 0
+    RegionInstance IndexSpace::create_instance(Memory m, ReductionOpID redop) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-        RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+        IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
         return r->create_instance(m, redop);
     }
 
-    RegionInstanceUntyped RegionMetaDataUntyped::create_instance_untyped(Memory m, ReductionOpID redop,
-                                                  off_t list_size, RegionInstanceUntyped parent_inst) const
+    RegionInstance IndexSpace::create_instance(Memory m, ReductionOpID redop,
+                                                  off_t list_size, RegionInstance parent_inst) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-        RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+        IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
         return r->create_instance(m, redop, list_size, parent_inst);
     }
+#endif
 
-    void RegionMetaDataUntyped::destroy_region_untyped(void) const
+    void IndexSpace::destroy(void) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
         r->deactivate();
     }
 
-    void RegionMetaDataUntyped::destroy_allocator_untyped(RegionAllocatorUntyped a) const
+#if 0
+    void IndexSpace::destroy_allocator(IndexSpaceAllocator a) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->destroy_allocator(a);
     }
 
-    void RegionMetaDataUntyped::destroy_instance_untyped(RegionInstanceUntyped i) const
+    void IndexSpace::destroy_instance(RegionInstance i) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-	RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
 	r->destroy_instance(i);
     }
+#endif
 
-    const ElementMask &RegionMetaDataUntyped::get_valid_mask(void) const
+    const ElementMask &IndexSpace::get_valid_mask(void) const
     {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-      RegionMetaDataImpl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+      IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
       return r->get_element_mask();
     }
 
-    bool RegionMetaDataImpl::activate(size_t num, size_t size)
+    bool IndexSpace::Impl::activate(size_t num)
     {
 	bool result = false;
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
@@ -2850,7 +2856,6 @@ namespace RegionRuntime {
 		active = true;
 		result = true;
 		num_elmts = num;
-		elmt_size = size;
 		lock = Runtime::get_runtime()->get_free_lock();
                 mask = ElementMask(num_elmts);
                 parent = NULL;
@@ -2859,7 +2864,7 @@ namespace RegionRuntime {
 	return result;
     }
 
-    bool RegionMetaDataImpl::activate(RegionMetaDataImpl *par, const ElementMask &m)
+    bool IndexSpace::Impl::activate(IndexSpace::Impl *par, const ElementMask &m)
     {
       bool result = false;
       PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
@@ -2868,7 +2873,6 @@ namespace RegionRuntime {
         active = true;
         result = true;
         num_elmts = m.get_num_elmts();
-        elmt_size = par->elmt_size;
         lock = Runtime::get_runtime()->get_free_lock();
         mask = m;
         parent = par;
@@ -2877,16 +2881,15 @@ namespace RegionRuntime {
       return result;
     }
 
-    void RegionMetaDataImpl::deactivate(void)
+    void IndexSpace::Impl::deactivate(void)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	active = false;
 	num_elmts = 0;
-	elmt_size = 0;
-	for (std::set<RegionInstanceUntyped>::iterator it = instances.begin();
+	for (std::set<RegionInstance>::iterator it = instances.begin();
 		it != instances.end(); it++)
 	{
-		RegionInstanceImpl *instance = Runtime::get_runtime()->get_instance_impl(*it);
+		RegionInstance::Impl *instance = Runtime::get_runtime()->get_instance_impl(*it);
 		instance->deactivate();
 	}	
 	instances.clear();
@@ -2895,7 +2898,7 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
-    unsigned RegionMetaDataImpl::allocate_space(unsigned count)
+    unsigned IndexSpace::Impl::allocate_space(unsigned count)
     {
         int result = 0;
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
@@ -2926,7 +2929,7 @@ namespace RegionRuntime {
         return unsigned(result);
     }
 
-    void RegionMetaDataImpl::free_space(unsigned ptr, unsigned count)
+    void IndexSpace::Impl::free_space(unsigned ptr, unsigned count)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
@@ -2949,29 +2952,29 @@ namespace RegionRuntime {
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
-    RegionMetaDataUntyped RegionMetaDataImpl::get_metadata(void)
+    IndexSpace IndexSpace::Impl::get_metadata(void)
     {
-	RegionMetaDataUntyped meta;
+	IndexSpace meta;
 	meta.id = index;
 	return meta;
     }
 
-    const ElementMask& RegionMetaDataImpl::get_element_mask(void)
+    const ElementMask& IndexSpace::Impl::get_element_mask(void)
     {
       return mask;
     }
 
-    RegionAllocatorUntyped RegionMetaDataImpl::create_allocator(Memory m)
+    IndexSpaceAllocator IndexSpace::Impl::create_allocator(Memory m)
     {
-        RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_free_allocator(this);
+        IndexSpaceAllocator::Impl *allocator = Runtime::get_runtime()->get_free_allocator(this);
 	return allocator->get_allocator();
     }
 
-    RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m, ReductionOpID redop /*=0*/)
+    RegionInstance IndexSpace::Impl::create_instance(Memory m, size_t elmt_size, ReductionOpID redop /*=0*/)
     {
         if (!m.exists())
         {
-          return RegionInstanceUntyped::NO_INST;
+          return RegionInstance::NO_INST;
         }
         // First try to create the location in the memory, if there is no space
         // don't bother trying to make the data
@@ -2982,12 +2985,12 @@ namespace RegionRuntime {
           char *ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
           if (ptr == NULL)
           {
-            return RegionInstanceUntyped::NO_INST;
+            return RegionInstance::NO_INST;
           }
           PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-          RegionMetaDataUntyped r = { index };
-          RegionInstanceImpl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size, ptr, NULL/*redop*/, NULL/*parent instance*/);
-          RegionInstanceUntyped inst = impl->get_instance();
+          IndexSpace r = { index };
+          RegionInstance::Impl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size, ptr, NULL/*redop*/, NULL/*parent instance*/);
+          RegionInstance inst = impl->get_instance();
           instances.insert(inst);
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
           return inst;
@@ -2998,27 +3001,27 @@ namespace RegionRuntime {
           char *ptr = (char*)mem->allocate_space(num_elmts*(op->sizeof_rhs));
           if (ptr == NULL)
           {
-            return RegionInstanceUntyped::NO_INST;
+            return RegionInstance::NO_INST;
           }
           // Initialize the reduction instance 
           op->init(ptr, num_elmts);
           // Set everything up
           PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-          RegionMetaDataUntyped r = { index };
-          RegionInstanceImpl *impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, op->sizeof_rhs, ptr, op, NULL/*parent instance*/);
-          RegionInstanceUntyped inst = impl->get_instance();
+          IndexSpace r = { index };
+          RegionInstance::Impl *impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, op->sizeof_rhs, ptr, op, NULL/*parent instance*/);
+          RegionInstance inst = impl->get_instance();
           instances.insert(inst);
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
           return inst;
         }
     }
 
-    RegionInstanceUntyped RegionMetaDataImpl::create_instance(Memory m, ReductionOpID redopid, off_t list_size,
-                                                              RegionInstanceUntyped parent_inst) 
+    RegionInstance IndexSpace::Impl::create_instance(Memory m, ReductionOpID redopid, off_t list_size,
+                                                              RegionInstance parent_inst) 
     {
         if (!m.exists())
         {
-            return RegionInstanceUntyped::NO_INST; 
+            return RegionInstance::NO_INST; 
         }
         MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
  // There must be a reduction operation for a list instance
@@ -3029,42 +3032,42 @@ namespace RegionRuntime {
         char *ptr = (char*)mem->allocate_space(list_size * (op->sizeof_rhs + sizeof(utptr_t)));
         if (ptr == NULL)
         {
-            return RegionInstanceUntyped::NO_INST;
+            return RegionInstance::NO_INST;
         }
         // Set everything up
-        RegionInstanceImpl *parent_impl = Runtime::get_runtime()->get_instance_impl(parent_inst);
+        RegionInstance::Impl *parent_impl = Runtime::get_runtime()->get_instance_impl(parent_inst);
 #ifdef DEBUG_LOW_LEVEL
         assert(parent_impl != NULL);
 #endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-        RegionMetaDataUntyped r = { index };
-        RegionInstanceImpl *impl = Runtime::get_runtime()->get_free_instance(r,m,list_size,op->sizeof_rhs, ptr, op, parent_impl);
-        RegionInstanceUntyped inst = impl->get_instance();
+        IndexSpace r = { index };
+        RegionInstance::Impl *impl = Runtime::get_runtime()->get_free_instance(r,m,list_size,op->sizeof_rhs, ptr, op, parent_impl);
+        RegionInstance inst = impl->get_instance();
         instances.insert(inst);
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
         return inst;
     }
 
-    void RegionMetaDataImpl::destroy_allocator(RegionAllocatorUntyped a)
+    void IndexSpace::Impl::destroy_allocator(IndexSpaceAllocator a)
     {
-        RegionAllocatorImpl *allocator = Runtime::get_runtime()->get_allocator_impl(a);
+        IndexSpaceAllocator::Impl *allocator = Runtime::get_runtime()->get_allocator_impl(a);
         allocator->deactivate();
     }
 
-    void RegionMetaDataImpl::destroy_instance(RegionInstanceUntyped inst)
+    void IndexSpace::Impl::destroy_instance(RegionInstance inst)
     {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-	std::set<RegionInstanceUntyped>::iterator it = instances.find(inst);
+	std::set<RegionInstance>::iterator it = instances.find(inst);
 #ifdef DEBUG_LOW_LEVEL
 	assert(it != instances.end());
 #endif	
 	instances.erase(it);
-	RegionInstanceImpl *impl = Runtime::get_runtime()->get_instance_impl(inst);
+	RegionInstance::Impl *impl = Runtime::get_runtime()->get_instance_impl(inst);
 	impl->deactivate();
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
-    Lock RegionMetaDataImpl::get_lock(void)
+    Lock IndexSpace::Impl::get_lock(void)
     {
 	return lock->get_lock();
     }
@@ -3302,6 +3305,17 @@ namespace RegionRuntime {
       ProcessorImpl::start((void*)impl);
     }
 
+    void Machine::shutdown(void)
+    {
+      const std::set<Processor> &all_procs = get_all_processors();
+      for (std::set<Processor>::iterator it = all_procs.begin();
+	   it != all_procs.end(); it++)
+      {
+	// Kill pill
+	it->spawn(0, NULL, 0);
+      }
+    }
+
     Processor::Kind Machine::get_processor_kind(Processor p) const
     {
 	return Processor::LOC_PROC;
@@ -3387,14 +3401,14 @@ namespace RegionRuntime {
 
 	for (unsigned i=0; i<BASE_METAS; i++)
 	{
-		metadatas.push_back(new RegionMetaDataImpl(i,0,0));
+		metadatas.push_back(new IndexSpace::Impl(i,0,0));
                 if (i != 0)
                   free_metas.push_back(metadatas.back());
 	}
 
 	for (unsigned i=0; i<BASE_ALLOCATORS; i++)
         {
-		allocators.push_back(new RegionAllocatorImpl(i));	
+		allocators.push_back(new IndexSpaceAllocator::Impl(i));	
                 if (i != 0)
                   free_allocators.push_back(allocators.back());
         }
@@ -3403,7 +3417,7 @@ namespace RegionRuntime {
 	{
 		Memory m;
 		m.id = 0;
-		instances.push_back(new RegionInstanceImpl(i,RegionMetaDataUntyped::NO_REGION,m,0,0));
+		instances.push_back(new RegionInstance::Impl(i,IndexSpace::NO_SPACE,m,0,0));
                 if (i != 0)
                   free_instances.push_back(instances.back());
 	}
@@ -3473,38 +3487,38 @@ namespace RegionRuntime {
 	return processors[p.id];
     }
 
-    RegionMetaDataImpl* Runtime::get_metadata_impl(RegionMetaDataUntyped m)
+    IndexSpace::Impl* Runtime::get_metadata_impl(IndexSpace m)
     {
         PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&metadata_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(m.id != 0);
 	assert(m.id < metadatas.size());
 #endif
-        RegionMetaDataImpl *result = metadatas[m.id];
+        IndexSpace::Impl *result = metadatas[m.id];
         PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
 	return result;
     }
 
-    RegionAllocatorImpl* Runtime::get_allocator_impl(RegionAllocatorUntyped a)
+    IndexSpaceAllocator::Impl* Runtime::get_allocator_impl(IndexSpaceAllocator a)
     {
         PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&allocator_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(a.id != 0);
 	assert(a.id < allocators.size());
 #endif
-        RegionAllocatorImpl *result = allocators[a.id];
+        IndexSpaceAllocator::Impl *result = allocators[a.id];
         PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&allocator_lock));
 	return result;
     }
 
-    RegionInstanceImpl* Runtime::get_instance_impl(RegionInstanceUntyped i)
+    RegionInstance::Impl* Runtime::get_instance_impl(RegionInstance i)
     {
         PTHREAD_SAFE_CALL(pthread_rwlock_rdlock(&instance_lock));
 #ifdef DEBUG_LOW_LEVEL
 	assert(i.id != 0);
 	assert(i.id < instances.size());
 #endif
-        RegionInstanceImpl *result = instances[i.id];
+        RegionInstance::Impl *result = instances[i.id];
         PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
 	return result;
     }
@@ -3575,15 +3589,15 @@ namespace RegionRuntime {
 	return result;
     }
 
-    RegionMetaDataImpl* Runtime::get_free_metadata(size_t num_elmts, size_t elmt_size)
+    IndexSpace::Impl* Runtime::get_free_metadata(size_t num_elmts)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_metas_lock));
         if (!free_metas.empty())
         {
-          RegionMetaDataImpl *result = free_metas.front();
+          IndexSpace::Impl *result = free_metas.front();
           free_metas.pop_front();
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_metas_lock));
-          bool activated = result->activate(num_elmts,elmt_size);
+          bool activated = result->activate(num_elmts);
 #ifdef DEBUG_LOW_LEVEL
           assert(activated);
 #endif
@@ -3592,12 +3606,12 @@ namespace RegionRuntime {
 	// Otherwise there are no free metadata so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&metadata_lock));
 	unsigned int index = metadatas.size();
-	metadatas.push_back(new RegionMetaDataImpl(index,num_elmts,elmt_size,true));
-	RegionMetaDataImpl *result = metadatas[index];
+	metadatas.push_back(new IndexSpace::Impl(index,num_elmts,true));
+	IndexSpace::Impl *result = metadatas[index];
         // Create a whole bunch of other metas too while we're here
         for (unsigned idx=1; idx < BASE_METAS; idx++)
         {
-          metadatas.push_back(new RegionMetaDataImpl(index+idx,0,0,false));
+          metadatas.push_back(new IndexSpace::Impl(index+idx,0,0,false));
           free_metas.push_back(metadatas.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
@@ -3605,12 +3619,12 @@ namespace RegionRuntime {
 	return result;
     }
 
-    RegionMetaDataImpl* Runtime::get_free_metadata(RegionMetaDataImpl *parent, const ElementMask &mask)
+    IndexSpace::Impl* Runtime::get_free_metadata(IndexSpace::Impl *parent, const ElementMask &mask)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_metas_lock));
         if (!free_metas.empty())
         {
-          RegionMetaDataImpl *result = free_metas.front();
+          IndexSpace::Impl *result = free_metas.front();
           free_metas.pop_front();
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_metas_lock));
           bool activated = result->activate(parent,mask);
@@ -3622,12 +3636,12 @@ namespace RegionRuntime {
 	// Otherwise there are no free metadata so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&metadata_lock));
 	unsigned int index = metadatas.size();
-	metadatas.push_back(new RegionMetaDataImpl(index,parent,mask,true));
-	RegionMetaDataImpl *result = metadatas[index];
+	metadatas.push_back(new IndexSpace::Impl(index,parent,mask,true));
+	IndexSpace::Impl *result = metadatas[index];
         // Create a whole bunch of other metas too while we're here
         for (unsigned idx=1; idx < BASE_METAS; idx++)
         {
-          metadatas.push_back(new RegionMetaDataImpl(index+idx,0,0,false));
+          metadatas.push_back(new IndexSpace::Impl(index+idx,0,0,false));
           free_metas.push_back(metadatas.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
@@ -3636,12 +3650,12 @@ namespace RegionRuntime {
     }
 
 
-    RegionAllocatorImpl* Runtime::get_free_allocator(RegionMetaDataImpl *owner)
+    IndexSpaceAllocator::Impl* Runtime::get_free_allocator(IndexSpace::Impl *owner)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_alloc_lock));
         if (!free_allocators.empty())
         {
-          RegionAllocatorImpl *result = free_allocators.front();
+          IndexSpaceAllocator::Impl *result = free_allocators.front();
           free_allocators.pop_front();
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_alloc_lock));
           bool activated = result->activate(owner);
@@ -3653,12 +3667,12 @@ namespace RegionRuntime {
 	// Nothing free, so make some new ones
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&allocator_lock));
 	unsigned int index = allocators.size();
-	allocators.push_back(new RegionAllocatorImpl(index,true,owner));
-	RegionAllocatorImpl*result = allocators[index];
+	allocators.push_back(new IndexSpaceAllocator::Impl(index,true,owner));
+	IndexSpaceAllocator::Impl*result = allocators[index];
         // Create a whole bunch of other allocators while we're here
         for (unsigned idx=1; idx < BASE_ALLOCATORS; idx++)
         {
-          allocators.push_back(new RegionAllocatorImpl(index+idx,false));
+          allocators.push_back(new IndexSpaceAllocator::Impl(index+idx,false));
           free_allocators.push_back(allocators.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&allocator_lock));
@@ -3666,14 +3680,14 @@ namespace RegionRuntime {
 	return result;
     }
 
-    RegionInstanceImpl* Runtime::get_free_instance(RegionMetaDataUntyped r, Memory m, size_t num_elmts, 
+    RegionInstance::Impl* Runtime::get_free_instance(IndexSpace r, Memory m, size_t num_elmts, 
                                                     size_t elmt_size, char *ptr, const ReductionOpUntyped *redop,
-                                                    RegionInstanceImpl *parent)
+                                                    RegionInstance::Impl *parent)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_inst_lock));
         if (!free_instances.empty())
         {
-          RegionInstanceImpl *result = free_instances.front();
+          RegionInstance::Impl *result = free_instances.front();
           free_instances.pop_front();
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_inst_lock));
           bool activated = result->activate(r, m, num_elmts, elmt_size, ptr, redop, parent);
@@ -3685,12 +3699,12 @@ namespace RegionRuntime {
 	// Nothing free so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&instance_lock));
 	unsigned int index = instances.size();
-	instances.push_back(new RegionInstanceImpl(index,r,m,num_elmts,elmt_size,true,ptr,redop,parent));
-	RegionInstanceImpl *result = instances[index];
+	instances.push_back(new RegionInstance::Impl(index,r,m,num_elmts,elmt_size,true,ptr,redop,parent));
+	RegionInstance::Impl *result = instances[index];
         // Create a whole bunch of other instances while we're here
         for (unsigned idx=1; idx < BASE_INSTANCES; idx++)
         {
-          instances.push_back(new RegionInstanceImpl(index+idx,RegionMetaDataUntyped::NO_REGION,m,0,0,false));
+          instances.push_back(new RegionInstance::Impl(index+idx,IndexSpace::NO_SPACE,m,0,0,false));
           free_instances.push_back(instances.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));

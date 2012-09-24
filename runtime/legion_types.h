@@ -2,7 +2,7 @@
 #ifndef __LEGION_TYPES_H__
 #define __LEGION_TYPES_H__
 
-#include "lowlevel_new.h"
+#include "lowlevel.h"
 
 #include <cstdio>
 #include <cstdlib>

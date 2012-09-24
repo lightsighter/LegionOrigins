@@ -141,6 +141,7 @@ namespace RegionRuntime {
       // special task IDs
       enum {
         // Save ID 0 for the force shutdown function
+	TASK_ID_REQUEST_SHUTDOWN   = 0,
 	TASK_ID_PROCESSOR_INIT     = 1,
 	TASK_ID_PROCESSOR_SHUTDOWN = 2,
 	TASK_ID_PROCESSOR_IDLE     = 3, // typically used for high-level scheduler
@@ -573,7 +574,6 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
-    protected:
       unsigned alloc(unsigned count = 1) const;
       void reserve(unsigned ptr, unsigned count = 1) const;
       void free(unsigned ptr, unsigned count = 1) const;
@@ -924,6 +924,9 @@ namespace RegionRuntime {
 
       void run(Processor::TaskFuncID task_id = 0, RunStyle style = ONE_TASK_ONLY,
 	       const void *args = 0, size_t arglen = 0);
+
+      // requests a shutdown of all the processors
+      void shutdown(void);
 
     public:
       const std::set<Memory>&    get_all_memories(void) const { return memories; }

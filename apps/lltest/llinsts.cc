@@ -4,13 +4,15 @@
 
 using namespace RegionRuntime::LowLevel;
 
-enum { TASKID_TOPLEVEL = 1,
+enum { TASKID_TOPLEVEL = Processor::TASK_ID_FIRST_AVAILABLE,
 };
 
 template <AccessorType AT>
 void toplevel_task(const void * args, size_t arglen, Processor p)
 {
-  printf("in toplevel_task()\n");
+  printf("in toplevel_task(%d)\n", p.id);
+
+  Machine::get_machine()->shutdown();
 }
 
 int main(int argc, char **argv)

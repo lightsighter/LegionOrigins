@@ -2263,6 +2263,7 @@ namespace RegionRuntime {
       set_event.trigger();
       unlock();
       notify_all_waiters();
+      return true;
     }
 
     //--------------------------------------------------------------------------
