@@ -767,7 +767,7 @@ namespace RegionRuntime {
       /**
        * Create and destroy index spaces
        */
-      IndexSpace create_index_space(Context ctx);
+      IndexSpace create_index_space(Context ctx, size_t max_num_elmts);
       void destroy_index_space(Context ctx, IndexSpace handle);
       /**
        * Create and destroy partitions of index spaces
@@ -1268,13 +1268,15 @@ namespace RegionRuntime {
        */
       virtual void map_task_region(const Task *task, Processor target, MappingTagID tag, bool inline_mapping,
                                     const RegionRequirement &req, unsigned index,
-                                    const std::set<Memory> &current_instances,
+                                    const std::map<Memory,bool/*all-fields-up-to-date*/> &current_instances,
                                     std::vector<Memory> &target_ranking,
                                     bool &enable_WAR_optimization);
 
       /**
        * Whenever a task fails to map, tell the mapper about it so that is aware of which
        * region failed to map and can possibly decide to do things differently in the future.
+       * Note there is nothing returned to the high-level in this case so the mapper
+       * can do nothing for this call if it wants.
        */
       virtual void notify_failed_mapping(const Task *task, const RegionRequirement &req, unsigned index, bool inline_mapping);
 
@@ -1299,13 +1301,12 @@ namespace RegionRuntime {
 
       /**
        * A copy operation needs to be performed to move data to a physical instance
-       * located in the destination memory.  Chosen which of the physical current
-       * valid physical instances should be the source of the copy operation.  The
-       * current instances will never be empty and the chosen source memory must
-       * be one of the valid instances.
+       * located in the destination memory.  Sort the set of instances from which
+       * copies could be issued to update all of the fields fo the required instance.
+       * If the returned vector is empty, the runtime will issue copies in a random order.
        */
       virtual void select_copy_source(const std::set<Memory> &current_instances,
-                                    const Memory &dst, Memory &chosen_src);
+                                      const Memory &dst, std::vector<Memory> &chosen_order);
 
 
       /**

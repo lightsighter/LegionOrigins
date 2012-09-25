@@ -3226,15 +3226,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    IndexSpace HighLevelRuntime::create_index_space(Context ctx)
+    IndexSpace HighLevelRuntime::create_index_space(Context ctx, size_t max_num_elmts)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_INDEX_SPACE);
-      // TODO: do we need upper bounds here
-      IndexSpace space = IndexSpace::create_index_space(0);
+      IndexSpace space = IndexSpace::create_index_space(max_num_elmts);
 #ifdef DEBUG_HIGH_LEVEL
-      log_index(LEVEL_DEBUG, "Creating index space %x in task %s (ID %d)", space.id,
-                              ctx->variants->name,ctx->get_unique_id());
+      log_index(LEVEL_DEBUG, "Creating index space %x in task %s (ID %d) with %ld maximum elements", space.id,
+                              ctx->variants->name,ctx->get_unique_id(), max_num_elmts);
 #endif
 #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Index Space %x",space.id);
