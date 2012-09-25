@@ -3276,15 +3276,34 @@ namespace RegionRuntime {
                               pid, parent.id, ctx->variants->name, ctx->get_unique_id());
 #endif
       // Perform the coloring
-      std::map<Color,IndexSpace> coloring; 
+      std::map<Color,ColoringFunctor::ColoredPoints<unsigned> > coloring; 
       coloring_functor.perform_coloring(colors,parent,coloring);
+      std::map<Color,IndexSpace> new_index_spaces; 
+      for (std::map<Color,ColoringFunctor::ColoredPoints<unsigned> >::const_iterator cit = 
+            coloring.begin(); cit != coloring.end(); cit++)
+      {
+        LowLevel::ElementMask child_mask;
+        const ColoringFunctor::ColoredPoints<unsigned> &coloring = cit->second;
+        for (std::set<unsigned>::const_iterator it = coloring.points.begin();
+              it != coloring.points.end(); it++)
+        {
+          child_mask.enable(*it,1);
+        }
+        for (std::set<std::pair<unsigned,unsigned> >::const_iterator it = 
+              coloring.ranges.begin(); it != coloring.ranges.end(); it++)
+        {
+          child_mask.enable(it->first, it->second-it->first+1);
+        }
+        IndexSpace child_space = IndexSpace::create_index_space(parent, child_mask);
+        new_index_spaces[cit->first] = child_space;
+      }
       bool disjoint = coloring_functor.is_disjoint();
  #ifndef LOG_EVENT_ONLY
       log_spy(LEVEL_INFO,"Index Partition %d Parent %x Disjoint %d",pid,parent.id,disjoint);
 #endif
       
       // Create the new partition
-      ctx->create_index_partition(pid, parent, disjoint, coloring_functor.get_partition_color(), coloring);
+      ctx->create_index_partition(pid, parent, disjoint, coloring_functor.get_partition_color(), new_index_spaces);
 
       return pid;
     }

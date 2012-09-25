@@ -29,7 +29,7 @@ namespace RegionRuntime {
       // Index Space operations
       void create_index_space(IndexSpace space);
       void destroy_index_space(IndexSpace space);
-      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, Color color,
+      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, int color,
                                   const std::map<Color,IndexSpace> &coloring); 
       void destroy_index_partition(IndexPartition pid);
       IndexPartition get_index_partition(IndexSpace parent, Color color);
@@ -152,6 +152,12 @@ namespace RegionRuntime {
       std::list<LogicalPartition> deleted_partitions;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Index Space Node 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Capture the relationship of index spaces
+     */
     class IndexSpaceNode {
     public:
       friend class RegionTreeForest;
@@ -164,6 +170,7 @@ namespace RegionRuntime {
       void add_child(IndexPartition handle, IndexPartNode *node);
       void remove_child(Color c);
       bool are_disjoint(Color c1, Color c2);
+      Color generate_color(void);
     public:
       void add_instance(RegionNode *inst);
       void remove_instance(RegionNode *inst);
@@ -178,6 +185,9 @@ namespace RegionRuntime {
       bool added;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Index Partition Node 
+    /////////////////////////////////////////////////////////////
     class IndexPartNode {
     public:
       friend class RegionTreeForest;
@@ -205,6 +215,9 @@ namespace RegionRuntime {
       bool added;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Field Space Node 
+    /////////////////////////////////////////////////////////////
     class FieldSpaceNode {
     public:
       friend class RegionTreeForest;
@@ -231,6 +244,12 @@ namespace RegionRuntime {
       unsigned total_index_fields;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Region Tree Node 
+    /////////////////////////////////////////////////////////////
+    /**
+     * A generic parent class for RegionNode and PartitionNode
+     */
     class RegionTreeNode {
     protected:
       enum OpenState {
@@ -238,10 +257,6 @@ namespace RegionRuntime {
         OPEN_EXCLUSIVE = 1,
         OPEN_READ_ONLY = 2,
         OPEN_REDUCE    = 3,
-      };
-      enum DataState {
-        DATA_CLEAN,
-        DATA_DIRTY,
       };
     protected:
       struct FieldState {
@@ -269,17 +284,22 @@ namespace RegionRuntime {
       };
       struct PhysicalState : public GenericState {
       public:
+        std::map<InstanceView*,FieldMask> valid_views;
+        FieldMask dirty_mask;
       };
     public:
       void register_logical_region(const LogicalUser &user, RegionAnalyzer &az);
       void open_logical_tree(const LogicalUser &user, RegionAnalyzer &az);
       void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
       void close_logical_tree(LogicalCloser &closer, const FieldMask &closing_mask);
+    public:
+      virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask) = 0;
     protected:
       // Generic operations on the region tree
-      bool siphon_open_children(TreeCloser &closer, GenericState &state, const GenericUser &user, Color next_child);
+      bool siphon_open_children(TreeCloser &closer, GenericState &state, 
+            const GenericUser &user, const FieldMask &current_mask, int next_child = -1);
       FieldState perform_close_operations(TreeCloser &closer, const GenericUser &user, 
-                                          const FieldMask &closing_mask, FieldState &state, int next_child=-1);
+                    const FieldMask &closing_mask, FieldState &state, int next_child=-1);
     protected:
       // Logical region helper functions
       FieldMask perform_dependence_checks(const LogicalUser &user, 
@@ -296,6 +316,12 @@ namespace RegionRuntime {
       std::map<ContextID,PhysicalState> physical_states;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Region Node 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Represents a single logical region
+     */
     class RegionNode : public RegionTreeNode {
     public:
       friend class RegionTreeForest;
@@ -315,7 +341,9 @@ namespace RegionRuntime {
       void initialize_physical_context(ContextID ctx);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
-      void close_physical_tree(const PhysicalUser &user, RegionMapper &rm, const std::vector<InstanceView*> &targets, bool leave_open);
+      virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);
+      void update_valid_views(ContextID ctx, const FieldMask &valid_mask, bool dirty, InstanceView* new_view);
+      void update_valid_views(ContextID ctx, const FieldMask &valid_mask, const FieldMask &dirty_mask, const std::vector<InstanceView*>& new_views);
     protected:
       virtual bool are_children_disjoint(Color c1, Color c2);
       virtual bool are_closing_partition(void) const;
@@ -325,9 +353,12 @@ namespace RegionRuntime {
 #endif
     protected:
       // Physical traversal methods
-      InstanceView* map_physical_region(RegionMapper &rm);
-      void update_valid_views(PhysicalState &state, InstanceView* new_view, bool dirty);
-      void update_valid_views(PhysicalState &state, const std::vector<InstanceView*>& new_views, bool dirty);
+      InstanceView* map_physical_region(const PhysicalUser &user, RegionMapper &rm);
+      void issue_update_copy(InstanceView *dst, RegionMapper &rm, FieldMask copy_mask);
+      void perform_copy_operation(RegionMapper &rm, InstanceView *src, InstanceView *dst, const FieldMask &copy_mask);
+      void invalidate_instance_views(ContextID ctx, const FieldMask &invalid_mask, bool clean);
+      void find_valid_instance_views(ContextID ctx, 
+          std::list<std::pair<InstanceView*,FieldMask> > &valid_instances, const FieldMask &field_mask);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
@@ -337,6 +368,9 @@ namespace RegionRuntime {
       bool added;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Partition Node 
+    /////////////////////////////////////////////////////////////
     class PartitionNode : public RegionTreeNode {
     public:
       friend class RegionTreeForest;
@@ -356,7 +390,7 @@ namespace RegionRuntime {
       void initialize_physical_context(ContextID ctx);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
-      void close_physical_tree(const PhysicalUser &user, RegionMapper &rm, const std::vector<InstanceView*> &targets, bool leave_open);
+      virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);
     protected:
       virtual bool are_children_disjoint(Color c1, Color c2);
       virtual bool are_closing_partition(void) const;
@@ -374,6 +408,60 @@ namespace RegionRuntime {
       bool added;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Instance Manager 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Instance managers are the objects that represent physical
+     * instances and keeps track of when they can be garbage
+     * collected.  Once all InstanceViews have removed their
+     * reference then they can be collected.
+     */
+    class InstanceManager {
+    public:
+
+    private:
+      unsigned references;
+      bool remote;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Instance View 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Instance views correspond to the view to a single physical
+     * instance from a given location in the region tree.  Instance
+     * views also manage the references from that viewpoint.  Once
+     * all the references from tasks and the region tree are removed
+     * from the instance view, then it will remove its reference
+     * from the instance manager which can lead to the instance
+     * being garbage collected.
+     */
+    class InstanceView {
+    public:
+      InstanceView* get_subview(Color pc, Color rc);
+    public:
+      InstanceRef add_user(const PhysicalUser &user);
+      InstanceRef add_copy_user(Event copy_done);
+      // These two are methods mark when a view is valid in the region tree
+      void add_reference(void);
+      void remove_reference(void);
+    public:
+      Memory get_location(void) const;
+      Event copy_from(InstanceView *src_view, const FieldMask &copy_mask);
+    private:
+      unsigned references;
+      InstanceManager *manager;
+      InstanceView *parent;
+      std::map<std::pair<Color,Color>,InstanceView*> children;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Instance Reference 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Used for passing around references to InstanceViews
+     */
     class InstanceRef {
     public:
       bool is_virtual_ref(void) const;
@@ -390,6 +478,9 @@ namespace RegionRuntime {
       InstanceView *view;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Region Usage 
+    /////////////////////////////////////////////////////////////
     struct RegionUsage {
     public:
       RegionUsage(PrivilegeMode p, CoherenceProperty c, ReductionOpID r)
@@ -402,15 +493,20 @@ namespace RegionRuntime {
       ReductionOpID     redop;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Generic User 
+    /////////////////////////////////////////////////////////////
     struct GenericUser {
     public:
-      GenericUser(const FieldMask &m, const RegionUsage &u)
-        : field_mask(m), usage(u) { }
+      GenericUser(const FieldMask &m, const RegionUsage &u);
     public:
       FieldMask field_mask;
       RegionUsage usage;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Logical User 
+    /////////////////////////////////////////////////////////////
     struct LogicalUser : public GenericUser {
     public:
       LogicalUser(GeneralizedOperation *o, unsigned id, const FieldMask &m, const RegionUsage &u);
@@ -420,6 +516,9 @@ namespace RegionRuntime {
       GenerationID gen;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Physical User 
+    /////////////////////////////////////////////////////////////
     struct PhysicalUser : public GenericUser {
     public:
       PhysicalUser(const FieldMask &m, const RegionUsage &u, Event single, Event multi);
@@ -428,6 +527,9 @@ namespace RegionRuntime {
       Event multi_term;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Tree Closer 
+    /////////////////////////////////////////////////////////////
     class TreeCloser {
     public:
       virtual void pre_siphon(void) = 0;
@@ -435,6 +537,9 @@ namespace RegionRuntime {
       virtual void close_tree_node(RegionTreeNode *node, const FieldMask &closing_mask) = 0;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Logical Closer 
+    /////////////////////////////////////////////////////////////
     class LogicalCloser : public TreeCloser {
     public:
       LogicalCloser(const LogicalUser &u, ContextID c, std::list<LogicalUser> &users, bool closing_part);
@@ -449,15 +554,45 @@ namespace RegionRuntime {
       bool closing_partition;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Physical Closer 
+    /////////////////////////////////////////////////////////////
+    /**
+     * A class for performing a close between physical instances
+     * at adjacent (region) levels of the physical region tree.
+     * Upper targets are the InstanceViews from the upper level
+     * and lower targets are the InstanceViews from the lower level.
+     */
     class PhysicalCloser : public TreeCloser {
     public:
       PhysicalCloser(const PhysicalUser &u, RegionMapper &rm, RegionNode *close_target, bool leave_open);
+      PhysicalCloser(const PhysicalCloser &rhs, RegionNode *close_target);
     public:
       virtual void pre_siphon(void);
       virtual void post_siphon(void);
       virtual void close_tree_node(RegionTreeNode *node, const FieldMask &closing_mask);
+    public:
+      void select_targets(void);
+      void convert_views(void);
+    public:
+      const PhysicalUser &user;
+      RegionMapper &rm;
+      RegionNode *close_target;
+      Color partition_color; // color for the partition we're traversing
+      bool partition_valid;
+      bool leave_open;
+      bool targets_selected;
+      FieldMask dirty_mask;
+      std::vector<InstanceView*> lower_targets;
+      std::vector<InstanceView*> upper_targets;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Region Analyzer 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Used for doing logical traversals of the region tree.
+     */
     class RegionAnalyzer {
     public:
       RegionAnalyzer(ContextID ctx_id, GeneralizedOperation *op, unsigned idx, const RegionRequirement &req);
@@ -471,15 +606,23 @@ namespace RegionRuntime {
       std::vector<Color> path;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Region Mapper 
+    /////////////////////////////////////////////////////////////
+    /**
+     * This is the class that is used to do physical traversals
+     * of the region tree for both sanitization and mapping
+     * physical instances.
+     */
     class RegionMapper {
     public:
 #ifdef LOW_LEVEL_LOCKS
-      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+      RegionMapper(Task *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     Lock mapper_lock, Processor target, Event single, Event multi, 
                     MappingTagID tag, bool sanitizing, bool inline_mapping, 
                     std::vector<InstanceRef> &source_copy);
 #else
-      RegionMapper(ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+      RegionMapper(Task *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     ImmovableLock mapper_lock, Processor target, Event single, Event multi, 
                     MappingTagID tag, bool sanitizing, bool inline_mapping, 
                     std::vector<InstanceRef> &source_copy);
@@ -491,6 +634,7 @@ namespace RegionRuntime {
       bool success; // for knowing whether a sanitizing walk succeeds or not
       unsigned idx;
       const RegionRequirement &req;
+      Task *task;
 #ifdef LOW_LEVEL_LOCKS
       Lock mapper_lock;
 #else

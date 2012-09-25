@@ -337,7 +337,7 @@ namespace RegionRuntime {
       // Operations on index space trees
       void create_index_space(IndexSpace space);
       void destroy_index_space(IndexSpace space); 
-      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, Color color,
+      void create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, int color,
                                   const std::map<Color,IndexSpace> &coloring); 
       void destroy_index_partition(IndexPartition pid);
       IndexPartition get_index_partition(IndexSpace parent, Color color);

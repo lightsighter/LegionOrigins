@@ -489,7 +489,7 @@ namespace RegionRuntime {
       bool map_success = true;  
       forest_ctx->lock_context();
       ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
-      RegionMapper reg_mapper(phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
+      RegionMapper reg_mapper(parent_ctx, phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
                               unmapped_event, unmapped_event, tag, false/*sanitizing*/,
                               true/*inline mapping*/, source_copy_instances);
       // Compute the path 
@@ -1723,7 +1723,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     void SingleTask::create_index_partition(IndexPartition pid, IndexSpace parent, 
-                                            bool disjoint, Color color,
+                                            bool disjoint, int color,
                                             const std::map<Color,IndexSpace> &coloring) 
     //--------------------------------------------------------------------------
     {
@@ -2425,7 +2425,7 @@ namespace RegionRuntime {
         else
         {
           // Otherwise we want to do an actual physical mapping
-          RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
+          RegionMapper reg_mapper(this, phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
                                   single_term, multi_term, tag, false/*sanitizing*/,
                                   false/*inline mapping*/, source_copy_instances);
           // Compute the path 
@@ -3276,7 +3276,7 @@ namespace RegionRuntime {
           continue;
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         // Create a sanitizing region mapper and map it
-        RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock,
+        RegionMapper reg_mapper(this, phy_ctx, idx, regions[idx], mapper, mapper_lock,
                                 Processor::NO_PROC, termination_event, termination_event,
                                 tag, true/*sanitizing*/, false/*inline mapping*/,
                                 source_copy_instances);
@@ -4536,7 +4536,7 @@ namespace RegionRuntime {
           continue;
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent); 
         // Create a sanitizing region mapper and map it
-        RegionMapper reg_mapper(phy_ctx, idx, regions[idx], mapper, mapper_lock,
+        RegionMapper reg_mapper(this, phy_ctx, idx, regions[idx], mapper, mapper_lock,
                                 Processor::NO_PROC, termination_event, termination_event,
                                 tag, true/*sanitizing*/, false/*inline mapping*/,
                                 source_copy_instances);
