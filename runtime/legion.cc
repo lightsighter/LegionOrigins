@@ -1405,7 +1405,7 @@ namespace RegionRuntime {
       for (std::set<AnyPoint>::const_iterator it = points.begin();
             it != points.end(); it++)
       {
-        free(it->buffer);
+        free(const_cast<void*>(it->buffer));
       }
       for (std::set<TaskArgument>::const_iterator it = values.begin();
             it != values.end(); it++)
@@ -1613,7 +1613,7 @@ namespace RegionRuntime {
       for (std::map<AnyPoint,FutureImpl*>::const_iterator it = futures.begin();
             it != futures.end(); it++)
       {
-        free(it->first.buffer);
+        free(const_cast<void*>(it->first.buffer));
         // Release the reference on the future impl and see if we're the last reference
         if (it->second->remove_reference())
         {

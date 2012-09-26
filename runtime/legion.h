@@ -2648,9 +2648,10 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    template<typename PT, unsigned DIM,
-      void (*TASK_PTR)(const void*,size_t,const void*,size_t,const PT[DIM],
-                      std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
+    template<typename PT, unsigned DIM, 
+      void (*TASK_PTR)(const void*,size_t,const void*,size_t,const PT[DIM], 
+                       const std::vector<RegionRequirement>&,
+                       const std::vector<PhysicalRegion>&,Context,HighLevelRuntime*)>
     void high_level_index_task_wrapper(const void *args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------
     {
