@@ -823,7 +823,9 @@ namespace RegionRuntime {
        * Get partitions and sub-regions
        */
       LogicalPartition get_logical_partition(Context ctx, LogicalRegion parent, IndexPartition handle);
-      LogicalRegion get_logical_subregion(Context ctx, LogicalPartition p, IndexSpace handle);
+      LogicalPartition get_logical_partition_by_color(Context ctx, LogicalRegion parent, Color c);
+      LogicalRegion get_logical_subregion(Context ctx, LogicalPartition parent, IndexSpace handle);
+      LogicalRegion get_logical_subregion_by_color(Context ctx, LogicalPartition parent, Color c);
 
       //////////////////////////////
       // Functions for ArgumentMaps

@@ -218,6 +218,7 @@ namespace RegionRuntime {
         }
         unlock_context();
       }
+      return NO_ERROR;
     }
 
     //--------------------------------------------------------------------------
@@ -1764,8 +1765,9 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->get_index_partition(parent, color);
+      IndexPartition result = forest_ctx->get_index_partition(parent, color);
       unlock_context();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -1781,8 +1783,9 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->get_index_subspace(pid, color);
+      IndexSpace result = forest_ctx->get_index_subspace(pid, color);
       unlock_context();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -1947,8 +1950,9 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->get_region_partition(parent, handle);
+      LogicalPartition result = forest_ctx->get_region_partition(parent, handle);
       unlock_context();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -1964,8 +1968,45 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->get_partition_subregion(pid, handle);
+      LogicalRegion result = forest_ctx->get_partition_subregion(pid, handle);
       unlock_context();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalPartition SingleTask::get_region_subcolor(LogicalRegion parent, Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (is_leaf)
+      {
+        log_task(LEVEL_ERROR,"Illegal get region partition performed in leaf task %s (ID %d)",
+                              this->variants->name, get_unique_id());
+        exit(ERROR_LEAF_TASK_VIOLATION);
+      }
+#endif
+      lock_context();
+      LogicalPartition result = forest_ctx->get_region_subcolor(parent, c);
+      unlock_context();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalRegion SingleTask::get_partition_subcolor(LogicalPartition pid, Color c)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (is_leaf)
+      {
+        log_task(LEVEL_ERROR,"Illegal get partition subregion performed in leaf task %s (ID %d)",
+                              this->variants->name, get_unique_id());
+        exit(ERROR_LEAF_TASK_VIOLATION);
+      }
+#endif
+      lock_context();
+      LogicalRegion result = forest_ctx->get_partition_subcolor(pid, c);
+      unlock_context();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -2430,7 +2471,6 @@ namespace RegionRuntime {
                                   false/*inline mapping*/, source_copy_instances);
           // Compute the path 
           // If the region was sanitized, we only need to do the path from the region itself
-          InstanceRef new_ref;
           if (regions[idx].sanitized)
           {
 #ifdef DEBUG_HIGH_LEVEL
@@ -5528,6 +5568,7 @@ namespace RegionRuntime {
           }
         }
       }
+      return result;
     }
 
     //--------------------------------------------------------------------------

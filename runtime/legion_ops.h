@@ -355,6 +355,8 @@ namespace RegionRuntime {
       void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
+      LogicalPartition get_region_subcolor(LogicalRegion parent, Color c);
+      LogicalRegion get_partition_subcolor(LogicalPartition parent, Color c);
     public:
       void unmap_physical_region(PhysicalRegion region);
     public:

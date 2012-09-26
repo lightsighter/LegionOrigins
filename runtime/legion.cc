@@ -3547,11 +3547,27 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    LogicalPartition HighLevelRuntime::get_logical_partition_by_color(Context ctx, LogicalRegion parent, Color c)
+    //--------------------------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_PARTITION);
+      return ctx->get_region_subcolor(parent, c);
+    }
+
+    //--------------------------------------------------------------------------------------------
     LogicalRegion HighLevelRuntime::get_logical_subregion(Context ctx, LogicalPartition parent, IndexSpace handle)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_SUBREGION);
       return ctx->get_partition_subregion(parent, handle);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalRegion HighLevelRuntime::get_logical_subregion_by_color(Context ctx, LogicalPartition parent, Color c)
+    //--------------------------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_SUBREGION);
+      return ctx->get_partition_subcolor(parent, c);
     }
 
     //--------------------------------------------------------------------------------------------

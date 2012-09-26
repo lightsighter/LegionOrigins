@@ -49,6 +49,8 @@ namespace RegionRuntime {
       void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
+      LogicalPartition get_region_subcolor(LogicalRegion parent, Color c);
+      LogicalRegion get_partition_subcolor(LogicalPartition parent, Color c);
     public:
       // Logical Region contexts 
       void initialize_logical_context(LogicalRegion handle, ContextID ctx);
@@ -169,6 +171,7 @@ namespace RegionRuntime {
     public:
       void add_child(IndexPartition handle, IndexPartNode *node);
       void remove_child(Color c);
+      IndexPartNode* get_child(Color c);
       bool are_disjoint(Color c1, Color c2);
       Color generate_color(void);
     public:
@@ -199,6 +202,7 @@ namespace RegionRuntime {
     public:
       void add_child(IndexSpace handle, IndexSpaceNode *node);
       void remove_child(Color c);
+      IndexSpaceNode* get_child(Color c);
       bool are_disjoint(Color c1, Color c2);
     public:
       void add_instance(PartitionNode *inst);
