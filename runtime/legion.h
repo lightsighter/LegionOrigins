@@ -1582,7 +1582,7 @@ namespace RegionRuntime {
       friend class IndexTask;
       friend class SliceTask;
       friend class PointTask;
-      AnyPoint(void *b, size_t e, unsigned d)
+      AnyPoint(const void *b, size_t e, unsigned d)
         : buffer(b), elmt_size(e), dim(d) { }
     public:
       bool operator==(const AnyPoint &rhs) const { return (buffer == rhs.buffer); }
@@ -1590,7 +1590,7 @@ namespace RegionRuntime {
       // Semantic equals
       bool equals(const AnyPoint &other) const;
     public:
-      void *buffer;
+      const void *buffer;
       size_t elmt_size;
       unsigned dim;
     };
@@ -2009,7 +2009,7 @@ namespace RegionRuntime {
     inline void ArgumentMap::set_point_arg(const PT point[DIM], const TaskArgument &arg, bool replace/*= false*/)
     //--------------------------------------------------------------------------
     {
-      impl->set_point<PT,DIM>(point,arg);
+      impl->set_point<PT,DIM>(point,arg,replace);
     }
 
     //--------------------------------------------------------------------------
