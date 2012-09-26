@@ -37,153 +37,181 @@ struct Entry {
 struct Block {
   float alpha;
   LogicalRegion r_x, r_y, r_z;
-  ptr_t<Entry> entry_x[BLOCK_SIZE], entry_y[BLOCK_SIZE], entry_z[BLOCK_SIZE];
+  unsigned entry_x[BLOCK_SIZE], entry_y[BLOCK_SIZE], entry_z[BLOCK_SIZE];
   unsigned id;
 };
 
 // computes z = alpha * x + y
-struct VectorRegions {
+struct MainArgs {
   unsigned num_elems;
   float alpha;
+  IndexSpace ispace;
+  FieldSpace fspace;
   LogicalRegion r_x, r_y, r_z;
+};
+
+class Coloring : public ColoringFunctor {
+public:
+  virtual bool is_disjoint(void) { return true; }
+  virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
+                                std::map<Color,ColoredPoints<unsigned> > &coloring) {
+    for (unsigned i = 0; i < *get_num_blocks(); i++) {
+      coloring[i] = ColoredPoints<unsigned>();
+      coloring[i].ranges.insert(std::pair<unsigned, unsigned>(BLOCK_SIZE*i, BLOCK_SIZE*(i + 1)));
+    }
+  }
 };
 
 float get_rand_float() {
   return (((float)2*rand()-RAND_MAX)/((float)RAND_MAX));
 }
 
-template<AccessorType AT>
 void top_level_task(const void *args, size_t arglen,
-		    std::vector<PhysicalRegion<AT> > &regions,
+		    const std::vector<RegionRequirement> &reqs,
+		    const std::vector<PhysicalRegion> &regions,
 		    Context ctx, HighLevelRuntime *runtime) {
   //while (!Config::args_read)
   //  usleep(1000);
 
-  VectorRegions vr;
-  vr.num_elems = *get_num_blocks() * BLOCK_SIZE;
-  vr.r_x = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
-  vr.r_y = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
-  vr.r_z = runtime->create_logical_region(ctx, sizeof(float), vr.num_elems);
+  MainArgs main_args;
+  main_args.num_elems = *get_num_blocks() * BLOCK_SIZE;
+  main_args.ispace = runtime->create_index_space(ctx, main_args.num_elems);
+  main_args.fspace = runtime->create_field_space(ctx);
+  main_args.r_x = runtime->create_logical_region(ctx, main_args.ispace, main_args.fspace);
+  main_args.r_y = runtime->create_logical_region(ctx, main_args.ispace, main_args.fspace);
+  main_args.r_z = runtime->create_logical_region(ctx, main_args.ispace, main_args.fspace);
+
+  std::vector<IndexSpaceRequirement> indexes;
+  indexes.push_back(IndexSpaceRequirement(main_args.ispace, ALLOCABLE, main_args.ispace));
+
+  std::vector<FieldSpaceRequirement> fields;
+  fields.push_back(FieldSpaceRequirement(main_args.fspace, ALLOCABLE));
+
+  std::set<FieldID> priveledge_fields;
+  std::vector<FieldID> instance_fields;
+  // Defer actual field allocation until main_task.
 
   std::vector<RegionRequirement> main_regions;
-  main_regions.push_back(RegionRequirement(vr.r_x, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_x));
-  main_regions.push_back(RegionRequirement(vr.r_y, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_y));
-  main_regions.push_back(RegionRequirement(vr.r_z, READ_WRITE, ALLOCABLE, EXCLUSIVE, vr.r_z));
+  main_regions.push_back(RegionRequirement(main_args.r_x, priveledge_fields, instance_fields,
+                                           READ_WRITE, EXCLUSIVE, main_args.r_x));
+  main_regions.push_back(RegionRequirement(main_args.r_y, priveledge_fields, instance_fields,
+                                           READ_WRITE, EXCLUSIVE, main_args.r_y));
+  main_regions.push_back(RegionRequirement(main_args.r_z, priveledge_fields, instance_fields,
+                                           READ_WRITE, EXCLUSIVE, main_args.r_z));
 
-  Future f = runtime->execute_task(ctx, TASKID_MAIN, main_regions,
-				   TaskArgument(&vr, sizeof(VectorRegions)));
+  Future f = runtime->execute_task(ctx, TASKID_MAIN, indexes, fields, main_regions,
+				   TaskArgument(&main_args, sizeof(MainArgs)));
   //f.get_void_result();
 
   // Destroy our logical regions clean up the region trees
-  runtime->destroy_logical_region(ctx, vr.r_x);
-  runtime->destroy_logical_region(ctx, vr.r_y);
-  runtime->destroy_logical_region(ctx, vr.r_z);
+  runtime->destroy_logical_region(ctx, main_args.r_x);
+  runtime->destroy_logical_region(ctx, main_args.r_y);
+  runtime->destroy_logical_region(ctx, main_args.r_z);
 }
 
-template<AccessorType AT>
 void main_task(const void *args, size_t arglen,
-	       std::vector<PhysicalRegion<AT> > &regions,
+               const std::vector<RegionRequirement> &reqs,
+               const std::vector<PhysicalRegion> &regions,
 	       Context ctx, HighLevelRuntime *runtime) {
-  VectorRegions *vr = (VectorRegions *)args;
-  PhysicalRegion<AT> r_x = regions[0];
-  PhysicalRegion<AT> r_y = regions[1];
-  PhysicalRegion<AT> r_z = regions[2];
+  MainArgs *main_args = (MainArgs *)args;
+  PhysicalRegion r_x = regions[0];
+  PhysicalRegion r_y = regions[1];
+  PhysicalRegion r_z = regions[2];
 
-  vr->alpha = get_rand_float();
-  printf("alpha: %f\n", vr->alpha);
+  main_args->alpha = get_rand_float();
+  printf("alpha: %f\n", main_args->alpha);
 
-  // Allocating space in the regions
+  // Set up index and field spaces
+  IndexAllocator alloc = runtime->create_index_allocator(ctx, main_args->ispace);
+  FieldAllocator field_alloc = runtime->create_field_allocator(ctx, main_args->fspace);
+  FieldID field_id = field_alloc.allocate_field(sizeof(float));
+
+  // Allocate space in the regions
   std::vector<Block> blocks(*get_num_blocks());
-  std::vector<std::set<utptr_t> > color_x(*get_num_blocks());
-  std::vector<std::set<utptr_t> > color_y(*get_num_blocks());
-  std::vector<std::set<utptr_t> > color_z(*get_num_blocks());
   printf("Allocating...");
+  unsigned initial_index = alloc.alloc(main_args->num_elems);
+  unsigned next_index = initial_index;
   for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    blocks[i].alpha = vr->alpha;
+    blocks[i].alpha = main_args->alpha;
     blocks[i].id = i;
     for (unsigned j = 0; j < BLOCK_SIZE; j++) {
-      ptr_t<Entry> entry_x = r_x.template alloc<Entry>();
-      blocks[i].entry_x[j] = entry_x;
-      color_x[i].insert(entry_x);
-      
-      ptr_t<Entry> entry_y = r_y.template alloc<Entry>();
-      blocks[i].entry_y[j] = entry_y;
-      color_y[i].insert(entry_y);
-
-      ptr_t<Entry> entry_z = r_z.template alloc<Entry>();
-      blocks[i].entry_z[j] = entry_z;
-      color_z[i].insert(entry_z);
+      blocks[i].entry_x[j] = next_index;
+      blocks[i].entry_y[j] = next_index;
+      blocks[i].entry_z[j] = next_index;
+      next_index++;
     }
   }
   printf("Done\n");
 
-  // Partitioning the regions
-  Partition p_x = runtime->create_partition(ctx, vr->r_x, color_x, true);
-  Partition p_y = runtime->create_partition(ctx, vr->r_y, color_y, true);
-  Partition p_z = runtime->create_partition(ctx, vr->r_z, color_z, true);
+  // Partition the regions
+  printf("Paritioning...");
+  IndexSpace colors = runtime->create_index_space(ctx, *get_num_blocks());
+  runtime->create_index_allocator(ctx, colors).alloc(*get_num_blocks());
+  Coloring coloring;
+  IndexPartition partition = runtime->create_index_partition(ctx, main_args->ispace, colors, coloring);
+  LogicalPartition p_x = runtime->get_logical_partition(ctx, main_args->r_x, partition);
+  LogicalPartition p_y = runtime->get_logical_partition(ctx, main_args->r_y, partition);
+  LogicalPartition p_z = runtime->get_logical_partition(ctx, main_args->r_y, partition);
   for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    blocks[i].r_x = runtime->get_subregion(ctx, p_x, i);
-    blocks[i].r_y = runtime->get_subregion(ctx, p_y, i);
-    blocks[i].r_z = runtime->get_subregion(ctx, p_z, i);
+    blocks[i].r_x = runtime->get_logical_subregion_by_color(ctx, p_x, i);
+    blocks[i].r_y = runtime->get_logical_subregion_by_color(ctx, p_y, i);
+    blocks[i].r_z = runtime->get_logical_subregion_by_color(ctx, p_z, i);
   }
+  printf("Done\n");
 
-  // Constructing index space
-  std::vector<Range> index_space;
-  index_space.push_back(Range(0, *get_num_blocks()-1));
+  // Unmap all regions
+  runtime->unmap_region(ctx, r_x);
+  runtime->unmap_region(ctx, r_y);
+  runtime->unmap_region(ctx, r_z);
 
   // Argument map
-  ArgumentMap arg_map;
+  ArgumentMap arg_map = runtime->create_argument_map(ctx);
   for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    IndexPoint index; index.push_back(i);
-    arg_map[index] = TaskArgument(&(blocks[i]), sizeof(Block));
+    unsigned point[1] = {i};
+    arg_map.set_point_arg<unsigned, 1>(point, TaskArgument(&(blocks[i]), sizeof(Block)));
   }
 
-  // Color map
-  std::map<IndexPoint, Color> color_map;
-  for (unsigned i = 0; i < *get_num_blocks(); i++) {
-    IndexPoint index; index.push_back(i);
-    color_map[index] = i;
-  }
+  // No further allocation of indexes or fields will be performed
+  std::vector<IndexSpaceRequirement> index_reqs;
+  index_reqs.push_back(IndexSpaceRequirement(main_args->ispace, NO_MEMORY, main_args->ispace));
+  std::vector<FieldSpaceRequirement> field_reqs;
+  field_reqs.push_back(FieldSpaceRequirement(main_args->fspace, NO_MEMORY));
+
+  // Need access to fields created above
+  std::set<FieldID> priveledge_fields;
+  priveledge_fields.insert(field_id);
+  std::vector<FieldID> instance_fields;
+  instance_fields.push_back(field_id);
 
   // Empty global argument
   TaskArgument global(NULL, 0);
 
   // Regions for init task
   std::vector<RegionRequirement> init_regions;
-  init_regions.push_back(RegionRequirement(p_x.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-  init_regions.push_back(RegionRequirement(p_y.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
-
-  // unmap the parent regions that we might use
-  runtime->unmap_region(ctx, r_x);
-  runtime->unmap_region(ctx, r_y);
+  init_regions.push_back(RegionRequirement(p_x, 0, priveledge_fields, instance_fields, WRITE_ONLY, EXCLUSIVE, main_args->r_x));
+  init_regions.push_back(RegionRequirement(p_y, 0, priveledge_fields, instance_fields, WRITE_ONLY, EXCLUSIVE, main_args->r_y));
 
   // Launch init task
   FutureMap init_f =
-    runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, index_space,
-				 init_regions, global, arg_map, false);
+    runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, main_args->ispace,
+                                 index_reqs, field_reqs, init_regions, global, arg_map, false);
   //init_f.wait_all_results();
-  init_f.release();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
-  RegionRuntime::DetailedTimer::clear_timers();
 
   // Regions for add task
   std::vector<RegionRequirement> add_regions;
-  add_regions.push_back(RegionRequirement(p_x.id, color_map, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_x));
-  add_regions.push_back(RegionRequirement(p_y.id, color_map, READ_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_y));
-  add_regions.push_back(RegionRequirement(p_z.id, color_map, WRITE_ONLY, NO_MEMORY, EXCLUSIVE, vr->r_z));
-
-  // Unmap the regions that haven't already been unmapped
-  runtime->unmap_region(ctx, r_z);
+  add_regions.push_back(RegionRequirement(p_x, 0, priveledge_fields, instance_fields, READ_ONLY, EXCLUSIVE, main_args->r_x));
+  add_regions.push_back(RegionRequirement(p_y, 0, priveledge_fields, instance_fields, READ_ONLY, EXCLUSIVE, main_args->r_y));
+  add_regions.push_back(RegionRequirement(p_z, 0, priveledge_fields, instance_fields, WRITE_ONLY, EXCLUSIVE, main_args->r_z));
 
   // Launch add task
   FutureMap add_f =
-    runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, index_space,
-                                 add_regions, global, arg_map, false);
+    runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, main_args->ispace,
+                                 index_reqs, field_reqs, add_regions, global, arg_map, false);
   //add_f.wait_all_results();
-  add_f.release();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
@@ -194,15 +222,19 @@ void main_task(const void *args, size_t arglen,
 
   // Validate the results
   {
-    PhysicalRegion<AccessorGeneric> reg_x =
-      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_x,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_x));
-    PhysicalRegion<AccessorGeneric> reg_y =
-      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_y,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_y));
-    PhysicalRegion<AccessorGeneric> reg_z = 
-      runtime->map_region<AccessorGeneric>(ctx, RegionRequirement(vr->r_z,READ_ONLY,NO_MEMORY,EXCLUSIVE,vr->r_z));
-    reg_x.wait_until_valid();
-    reg_y.wait_until_valid();
-    reg_z.wait_until_valid();
+    PhysicalRegion r_x =
+      runtime->map_region(ctx, RegionRequirement(main_args->r_x, priveledge_fields, instance_fields, READ_ONLY, EXCLUSIVE, main_args->r_x));
+    PhysicalRegion r_y =
+      runtime->map_region(ctx, RegionRequirement(main_args->r_y, priveledge_fields, instance_fields, READ_ONLY, EXCLUSIVE, main_args->r_y));
+    PhysicalRegion r_z = 
+      runtime->map_region(ctx, RegionRequirement(main_args->r_z, priveledge_fields, instance_fields, READ_ONLY, EXCLUSIVE, main_args->r_z));
+    r_x.wait_until_valid();
+    r_y.wait_until_valid();
+    r_z.wait_until_valid();
+
+    RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
+    RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
+    RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_z = r_z.get_accessor<AccessorGeneric>();
 
 #if 0
     printf("z values: ");
@@ -210,8 +242,8 @@ void main_task(const void *args, size_t arglen,
     {
       for (unsigned j = 0; j < BLOCK_SIZE; j++)
       {
-        ptr_t<Entry> entry_z = blocks[i].entry_z[j];
-        Entry z_val = reg_z.read(entry_z);
+        unsigned entry_z = blocks[i].entry_z[j];
+        Entry z_val = a_z.read(ptr_t<Entry>(entry_z));
         printf("%f ",z_val.v);
       }
     }
@@ -223,14 +255,14 @@ void main_task(const void *args, size_t arglen,
     bool success = true;
     for (unsigned i = 0; i < *get_num_blocks(); i++) {
       for (unsigned j = 0; j < BLOCK_SIZE; j++) {
-        ptr_t<Entry> entry_x = blocks[i].entry_x[j];
-        ptr_t<Entry> entry_y = blocks[i].entry_y[j];
-        ptr_t<Entry> entry_z = blocks[i].entry_z[j];
+        unsigned entry_x = blocks[i].entry_x[j];
+        unsigned entry_y = blocks[i].entry_y[j];
+        unsigned entry_z = blocks[i].entry_z[j];
 
-        Entry x_val = reg_x.read(entry_x);
-        Entry y_val = reg_y.read(entry_y);
-        Entry z_val = reg_z.read(entry_z);
-        float compute = vr->alpha * x_val.v + y_val.v;
+        Entry x_val = a_x.read(ptr_t<Entry>(entry_x));
+        Entry y_val = a_y.read(ptr_t<Entry>(entry_y));
+        Entry z_val = a_z.read(ptr_t<Entry>(entry_z));
+        float compute = main_args->alpha * x_val.v + y_val.v;
         if (z_val.v != compute)
         {
           printf("Failure at %d of block %d.  Expected %f but received %f\n",
@@ -253,31 +285,34 @@ void main_task(const void *args, size_t arglen,
       printf("FAILURE!\n");
 
     // Unmap the regions now that we're done with them
-    runtime->unmap_region(ctx, reg_x);
-    runtime->unmap_region(ctx, reg_y);
-    runtime->unmap_region(ctx, reg_z);
+    //runtime->unmap_region(ctx, r_x);
+    //runtime->unmap_region(ctx, r_y);
+    //runtime->unmap_region(ctx, r_z);
   }
 }
 
-template<AccessorType AT>
 void init_vectors_task(const void *global_args, size_t global_arglen,
                        const void *local_args, size_t local_arglen,
-                       const IndexPoint &point,
-                       std::vector<PhysicalRegion<AT> > &regions,
+                       const unsigned point[1],
+                       const std::vector<RegionRequirement> &reqs,
+                       const std::vector<PhysicalRegion> &regions,
                        Context ctx, HighLevelRuntime *runtime) {
-  //Block *block = (Block *)local_args;
-  PhysicalRegion<AT> r_x = regions[0];
-  PhysicalRegion<AT> r_y = regions[1];
+  PhysicalRegion r_x = regions[0];
+  PhysicalRegion r_y = regions[1];
 
-#if 0
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
+
+#if 1
+  Block *block = (Block *)local_args;
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
     Entry entry_x;
     entry_x.v = get_rand_float();
-    r_x.write(block->entry_x[i], entry_x);
+    a_x.write(ptr_t<Entry>(block->entry_x[i]), entry_x);
 
     Entry entry_y;
     entry_y.v = get_rand_float();
-    r_y.write(block->entry_y[i], entry_y);
+    a_y.write(ptr_t<Entry>(block->entry_y[i]), entry_y);
   }
 #else
   {
@@ -286,7 +321,7 @@ void init_vectors_task(const void *global_args, size_t global_arglen,
     {
       Entry entry_x;
       entry_x.v = get_rand_float();
-      r_x.write(itr->next<Entry>(), entry_x);
+      a_x.write(itr->next<Entry>(), entry_x);
     }
     delete itr;
   }
@@ -296,31 +331,35 @@ void init_vectors_task(const void *global_args, size_t global_arglen,
     {
       Entry entry_y;
       entry_y.v = get_rand_float();
-      r_y.write(itr->next<Entry>(), entry_y);
+      a_y.write(itr->next<Entry>(), entry_y);
     }
     delete itr;
   }
 #endif
 }
 
-template<AccessorType AT>
 void add_vectors_task(const void *global_args, size_t global_arglen,
                       const void *local_args, size_t local_arglen,
-                      const IndexPoint &point,
-                      std::vector<PhysicalRegion<AT> > &regions,
+                      const unsigned point[1],
+                      const std::vector<RegionRequirement> &reqs,
+                      const std::vector<PhysicalRegion> &regions,
                       Context ctx, HighLevelRuntime *runtime) {
   Block *block = (Block *)local_args;
-  PhysicalRegion<AT> r_x = regions[0];
-  PhysicalRegion<AT> r_y = regions[1];
-  PhysicalRegion<AT> r_z = regions[2];
+  PhysicalRegion r_x = regions[0];
+  PhysicalRegion r_y = regions[1];
+  PhysicalRegion r_z = regions[2];
+
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_z = r_z.get_accessor<AccessorGeneric>();
 
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
-    float x = r_x.read(block->entry_x[i]).v;
-    float y = r_y.read(block->entry_y[i]).v;
+    float x = a_x.read(ptr_t<Entry>(block->entry_x[i])).v;
+    float y = a_y.read(ptr_t<Entry>(block->entry_y[i])).v;
     
     Entry entry_z;
     entry_z.v = block->alpha * x + y;
-    r_z.write(block->entry_z[i], entry_z);
+    a_z.write(ptr_t<Entry>(block->entry_z[i]), entry_z);
   }
 }
 
@@ -355,12 +394,7 @@ public:
     num_procs = m->get_all_processors().size();
   }
 
-  virtual bool compact_partition(const Partition &partition, MappingTagID tag) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    return false;
-  }
-
-  virtual bool spawn_child_task(const Task* task)
+  virtual bool spawn_task(const Task* task)
   {
     switch(task->task_id) {
     case TOP_LEVEL_TASK_ID:
@@ -413,8 +447,8 @@ public:
     for (unsigned i = 0; i < tasks.size(); i++) {
       if (tasks[i]->steal_count < MAX_STEAL_COUNT)
       {
-        fprintf(stdout,"Stealing task %d (unique id %d) from processor %d by processor %d\n",
-            tasks[i]->task_id, tasks[i]->unique_id, local_proc.id, thief.id);
+        fprintf(stdout,"Stealing task %d from processor %d by processor %d\n",
+                tasks[i]->task_id, local_proc.id, thief.id);
         to_steal.insert(tasks[i]);
       }
       if (to_steal.size() >= 8)
@@ -451,20 +485,22 @@ public:
     Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
   }
 
-  virtual void select_copy_source(const std::set<Memory> &current_instances,
-                                  const Memory &dst, Memory &chosen_src) {
+  virtual void rank_copy_sources(const std::set<Memory> &current_instances,
+                                const Memory &dst, std::vector<Memory> &chosen_order) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     if (current_instances.size() == 1) {
-      chosen_src = *current_instances.begin();
+      chosen_order.push_back(*current_instances.begin());
       return;
     }
 
-    Mapper::select_copy_source(current_instances, dst, chosen_src);
+    Mapper::rank_copy_sources(current_instances, dst, chosen_order);
   }
 
-  virtual void split_index_space(const Task *task, const std::vector<Range> &index_space,
-                                  std::vector<RangeSplit> &chunks)
+  virtual void slice_index_space(const Task *task, const IndexSpace &index_space,
+                                  std::vector<IndexSpace> &slice)
   {
+    // TODO: Update for new mapper interface
+#if 0
     // Split things into pieces of 8
     unsigned chunk_size = 1; // points
     assert(index_space.size() == 1);
@@ -483,6 +519,7 @@ public:
       else
         cur_proc++;
     }
+#endif
   }
 };
 #endif
@@ -531,11 +568,6 @@ public:
       }
     }
     global_memory = best_global;
-  }
-
-  virtual bool compact_partition(const Partition &partition, MappingTagID tag) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    return false;
   }
 
   virtual Processor select_initial_processor(const Task *task) {
@@ -615,15 +647,15 @@ public:
     Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
   }
 
-  virtual void select_copy_source(const std::set<Memory> &current_instances,
-                                  const Memory &dst, Memory &chosen_src) {
+  virtual void rank_copy_sources(const std::set<Memory> &current_instances,
+                                 const Memory &dst, std::vector<Memory> &chosen_order) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     if (current_instances.size() == 1) {
-      chosen_src = *current_instances.begin();
+      chosen_order.push_back(*current_instances.begin());
       return;
     }
     
-    Mapper::select_copy_source(current_instances, dst, chosen_src);
+    Mapper::rank_copy_sources(current_instances, dst, chosen_order);
   }
 };
 
@@ -643,10 +675,10 @@ int main(int argc, char **argv) {
 
   HighLevelRuntime::set_registration_callback(create_mappers);
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
-  HighLevelRuntime::register_single_task<top_level_task<AccessorGeneric> >(TOP_LEVEL_TASK_ID, Processor::LOC_PROC, "top_level_task");
-  HighLevelRuntime::register_single_task<main_task<AccessorGeneric> >(TASKID_MAIN, Processor::LOC_PROC, "main_task");
-  HighLevelRuntime::register_index_task<init_vectors_task<AccessorGeneric> >(TASKID_INIT_VECTORS, Processor::LOC_PROC, "init_vectors");
-  HighLevelRuntime::register_index_task<add_vectors_task<AccessorGeneric> >(TASKID_ADD_VECTORS, Processor::LOC_PROC, "add_vectors");
+  HighLevelRuntime::register_single_task<top_level_task>(TOP_LEVEL_TASK_ID, Processor::LOC_PROC, false, "top_level_task");
+  HighLevelRuntime::register_single_task<main_task>(TASKID_MAIN, Processor::LOC_PROC, false, "main_task");
+  HighLevelRuntime::register_index_task<unsigned,1,init_vectors_task>(TASKID_INIT_VECTORS, Processor::LOC_PROC, true, "init_vectors");
+  HighLevelRuntime::register_index_task<unsigned,1,add_vectors_task>(TASKID_ADD_VECTORS, Processor::LOC_PROC, true, "add_vectors");
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-blocks")) {
