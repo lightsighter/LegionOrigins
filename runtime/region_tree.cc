@@ -622,6 +622,9 @@ namespace RegionRuntime {
     void RegionTreeForest::initialize_logical_context(LogicalRegion handle, ContextID ctx)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       get_node(handle)->initialize_logical_context(ctx);
     }
 
@@ -629,6 +632,9 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_region(RegionAnalyzer &az)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_space = get_node(az.start.field_space);
       // Build the logical user and then do the traversal
       LogicalUser user(az.op, az.idx, field_space->get_field_mask(az.fields), az.usage);
@@ -641,6 +647,9 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_index_space_deletion(ContextID ctx, IndexSpace sp, DeletionOperation *op)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       IndexSpaceNode *index_node = get_node(sp);
       FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
       // Perform the deletion registration across all instances
@@ -655,6 +664,9 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_index_part_deletion(ContextID ctx, IndexPartition part, DeletionOperation *op)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       IndexPartNode *index_node = get_node(part);
       FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
       // Perform the deletion registration across all instances
@@ -669,6 +681,9 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_field_space_deletion(ContextID ctx, FieldSpace sp, DeletionOperation *op)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(sp);
       FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
       // Perform the deletion operation across all instances
@@ -683,6 +698,9 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_field_deletion(ContextID ctx, FieldSpace sp, const std::set<FieldID> &to_free, DeletionOperation *op)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(sp);
       // Get the mask for the single field
       FieldMask deletion_mask = field_node->get_field_mask(to_free);
@@ -698,6 +716,9 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_region_deletion(ContextID ctx, LogicalRegion handle, DeletionOperation *op)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
       get_node(handle)->register_deletion_operation(ctx, op, deletion_mask); 
     }
@@ -706,6 +727,9 @@ namespace RegionRuntime {
     void RegionTreeForest::analyze_partition_deletion(ContextID ctx, LogicalPartition handle, DeletionOperation *op)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
       get_node(handle)->register_deletion_operation(ctx, op, deletion_mask);
     }
@@ -714,6 +738,9 @@ namespace RegionRuntime {
     InstanceRef RegionTreeForest::initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
 
     }
 
@@ -721,14 +748,32 @@ namespace RegionRuntime {
     void RegionTreeForest::map_region(RegionMapper &rm, LogicalRegion start_region)
     //--------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      FieldSpaceNode *field_node = get_node(rm.req.region.field_space);
+      FieldMask field_mask = field_node->get_field_mask(rm.req.instance_fields);
+      PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
+      get_node(start_region)->register_physical_region(user, rm);
     }
 
     //--------------------------------------------------------------------------
-    Event RegionTreeForest::close_to_instance(InstanceRef ref, std::vector<InstanceRef> &source_copies)
+    Event RegionTreeForest::close_to_instance(const InstanceRef &ref, RegionMapper &rm)
     //--------------------------------------------------------------------------
     {
-
+      FieldSpaceNode *field_node = get_node(rm.req.region.field_space);
+      FieldMask field_mask = field_node->get_field_mask(rm.req.instance_fields);
+      PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
+      RegionNode *close_node = get_node(rm.req.region);
+      PhysicalCloser closer(user, rm, close_node, false/*leave open*/); 
+      closer.targets_selected = true;
+      closer.upper_targets.push_back(ref.view);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(closer.upper_targets.back()->logical_region == close_node);
+#endif
+      close_node->issue_final_close_operation(user, closer);
+      // Now get the event for when the close is done
+      return ref.view->close();
     }
 
     //--------------------------------------------------------------------------
@@ -1829,6 +1874,11 @@ namespace RegionRuntime {
           continue;
         }
         FieldMask overlap = it->valid_fields & current_mask;
+        // Ask the closer if it wants to continue
+        if (!closer.closing_state(*it))
+        {
+          return false;
+        }
         // Now check the state 
         switch (it->open_state)
         {
@@ -2124,6 +2174,11 @@ namespace RegionRuntime {
         {
           // If we're sanitizing, get views for all of the regions with
           // valid data and make them valid here
+          // Get a list of valid views for this region and add them to
+          // the valid instances
+          update_valid_views(rm.ctx, user.field_mask);
+          // No need to close anything up since we're sanitizing
+          rm.success = true;
         }
         else
         {
@@ -2133,20 +2188,24 @@ namespace RegionRuntime {
           // can just return
           if (new_view == NULL)
           {
-            rm.result = InstanceRef(); // virtual instance
+            rm.success = false;
             return;
           }
           
-          std::vector<InstanceView*> close_targets(1);
-          close_targets[0] = new_view;
-          bool select_targets = false;
-          bool targets_dirty = HAS_WRITE(user.usage);
           // If we mapped the region close up any partitions below that
           // might have valid data that we need for our instance
           PhysicalCloser closer(user, rm, this, IS_READ_ONLY(user.usage));
+          closer.upper_targets.push_back(new_view);
+          closer.targets_selected = true;
           siphon_open_children(closer, state, user, user.field_mask);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(closer.success);
+#endif
           // Note that when the siphon operation is done it will automatically
           // update the set of valid instances
+          // Now add our user and get the resulting reference back
+          rm.result = new_view->add_user(user);
+          rm.success = true;
         }
       }
       else
@@ -2157,6 +2216,12 @@ namespace RegionRuntime {
         // Close up any partitions that might have data that we need
         PhysicalCloser closer(user, rm, this, IS_READ_ONLY(user.usage));
         bool open_only = siphon_open_children(closer, state, user, user.field_mask, next_part);
+        // Check to see if we failed the close
+        if (!closer.success)
+        {
+          rm.success = false;
+          return;
+        }
         PartitionNode *child = get_child(next_part);
         if (open_only)
           child->open_physical_tree(user, rm);
@@ -2182,19 +2247,21 @@ namespace RegionRuntime {
         rm.path.pop_back();
         if (rm.sanitizing)
         {
-
+          update_valid_views(rm.ctx, user.field_mask);
+          rm.success = true;
         }
         else
         {
           InstanceView *new_view = map_physical_region(user, rm);
           if (new_view == NULL)
-          {
-            rm.result = InstanceRef(); // virtual instance
             return;
-          }
+
           // No need to perform any close operations since this
           // was an open operation.  Dirty determined by the kind of task
           update_valid_views(rm.ctx, user.field_mask, HAS_WRITE(user.usage), new_view);
+          // Add our user and get the reference back
+          rm.result = new_view->add_user(user);
+          rm.success = true;
         }
       }
       else
@@ -2219,6 +2286,7 @@ namespace RegionRuntime {
       assert(physical_states.find(closer.rm.ctx) != physical_states.end());
 #endif
       PhysicalState &state = physical_states[closer.rm.ctx];
+      closer.pre_region(row_source->color);
       // Figure out if we have dirty data.  If we do, issue copies back to
       // each of the target instances specified by the closer.  Note we
       // don't need to issue copies if the target view is already in
@@ -2232,8 +2300,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!state.valid_views.empty());
 #endif
-        // Tell the physical closer to select targets if it hasn't already done so
-        closer.select_targets();
         for (std::vector<InstanceView*>::const_iterator it = closer.lower_targets.begin();
               it != closer.lower_targets.end(); it++)
         {
@@ -2249,11 +2315,15 @@ namespace RegionRuntime {
       // Create a new closer object corresponding to this node
       PhysicalCloser next_closer(closer, this);
       siphon_open_children(next_closer, state, closer.user, closing_mask);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(next_closer.success);
+#endif
       // Need to update was dirty with whether any of our sub-children were dirty
       closer.dirty_mask |= (dirty_fields | next_closer.dirty_mask);
 
       if (!closer.leave_open)
         invalidate_instance_views(closer.rm.ctx, closing_mask, true/*clean*/);
+      closer.post_region();
     }
 
     //--------------------------------------------------------------------------
@@ -2277,6 +2347,13 @@ namespace RegionRuntime {
       return get_child(c);
     }
 
+    //--------------------------------------------------------------------------
+    Color RegionNode::get_color(void) const
+    //--------------------------------------------------------------------------
+    {
+      return row_source->color;
+    }
+
 #ifdef DEBUG_HIGH_LEVEL
     //--------------------------------------------------------------------------
     bool RegionNode::color_match(Color c)
@@ -2293,6 +2370,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_states.find(ctx) != physical_states.end());
+      assert(new_view->logical_region == this);
 #endif
       PhysicalState &state = physical_states[ctx];
       // Add our reference first in case the new view is also currently in
@@ -2340,6 +2418,9 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = new_views.begin();
             it != new_views.end(); it++)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->logical_region == this);
+#endif
         if (state.valid_views.find(*it) == state.valid_views.end())
         {
           // New valid view, update everything accordingly
@@ -2361,7 +2442,7 @@ namespace RegionRuntime {
     {
       // Get the list of valid regions for fields we want to use 
       std::list<std::pair<InstanceView*,FieldMask> > valid_instances;
-      find_valid_instance_views(rm.ctx, valid_instances, user.field_mask);
+      find_valid_instance_views(rm.ctx, valid_instances, user.field_mask, user.field_mask, true/*needs space*/);
       // Ask the mapper for the list of memories of where to create the instance
       std::map<Memory,bool> valid_memories;
       for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it =
@@ -2384,11 +2465,78 @@ namespace RegionRuntime {
         rm.mapper->map_task_region(rm.task, rm.target, rm.tag, rm.inline_mapping,
                                    rm.req, rm.idx, valid_memories, chosen_order, enable_WAR);
       }
+      InstanceView *result = NULL;
+      FieldMask needed_fields; 
       // Go through each of the memories provided by the mapper
-      for (std::vector<Memory>::const_iterator it = chosen_order.begin();
-            it != chosen_order.end(); it++)
+      for (std::vector<Memory>::const_iterator mit = chosen_order.begin();
+            mit != chosen_order.end(); mit++)
       {
-        
+        // See if it has any valid instances
+        if (valid_memories.find(*mit) != valid_memories.end())
+        {
+          // Already have a valid instance with at least a few valid fields, figure
+          // out if it has all or some of the fields valid
+          if (valid_memories[*mit])
+          {
+            // We've got an instance with all the valid fields, go find it
+            for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it =
+                  valid_instances.begin(); it != valid_instances.end(); it++)
+            {
+              if (it->first->get_location() != (*mit))
+                continue;
+              if (!(user.field_mask - it->second))
+              {
+                result = it->first;
+                // No need to set needed fields since everything is valid
+                break;
+              }
+            }
+#ifdef DEBUG_HIGH_LEVEL
+            assert(result != NULL);
+            assert(!needed_fields);
+#endif
+            break; // found what we wanted
+          }
+          else
+          {
+            // Find the valid instance with the most valid fields and 
+            // Strip out entires along the way to avoid 
+            int covered_fields = 0;
+            for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it =
+                  valid_instances.begin(); it != valid_instances.end(); it++)
+            {
+              if (it->first->get_location() != (*mit))
+                continue;
+              int cf = FieldMask::pop_count(it->second);
+              if (cf > covered_fields)
+              {
+                covered_fields = cf;
+                result = it->first;
+                needed_fields = user.field_mask - it->second; 
+              }
+            }
+#ifdef DEBUG_HIGH_LEVEL
+            assert(result != NULL);
+            assert(!!needed_fields);
+#endif
+            break;
+          }
+        }
+        // If it didn't find a valid instance, try to make one
+        result = create_instance(*mit, user.field_mask); 
+        if (result != NULL)
+        {
+          // We successfully made an instance
+          needed_fields = user.field_mask;
+          break;
+        }
+      }
+      // Figure out if successfully got an instance that we needed
+      // and we still need to issue any copies to get up to date data
+      // for any fields
+      if (result != NULL && !!needed_fields)
+      {
+        issue_update_copy(result, rm, needed_fields); 
       }
     }
 
@@ -2401,7 +2549,7 @@ namespace RegionRuntime {
 #endif
       // Get the list of valid regions for all the fields we need to do the copy for
       std::list<std::pair<InstanceView*,FieldMask> > valid_instances;
-      find_valid_instance_views(rm.ctx, valid_instances, copy_mask);
+      find_valid_instance_views(rm.ctx, valid_instances, copy_mask, copy_mask, false/*needs space*/);
       // No valid copies anywhere, so we're done
       if (valid_instances.empty())
         return;
@@ -2491,6 +2639,10 @@ namespace RegionRuntime {
                                             InstanceView *dst, const FieldMask &copy_mask)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      // Copies should always be done between two views at the same level of the tree
+      assert(src->logical_region == dst->logical_region);
+#endif
       Event copy_done = dst->copy_from(src, copy_mask);
       rm.source_copy_instances.push_back(dst->add_copy_user(copy_done));
     }
@@ -2518,6 +2670,98 @@ namespace RegionRuntime {
       }
       if (clean)
         state.dirty_mask -= invalid_mask;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::find_valid_instance_views(ContextID ctx, 
+            std::list<std::pair<InstanceView*,FieldMask> > &valid_views,
+            const FieldMask &valid_mask, const FieldMask &field_mask, bool needs_space)             
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_states.find(ctx) != physical_states.end());
+#endif
+      PhysicalState &state = physical_states[ctx];
+      // If we can go up the tree, go up first
+      FieldMask up_mask = valid_mask - state.dirty_mask;
+      if (!state.context_top && !!up_mask)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent != NULL);
+        assert(parent->parent != NULL);
+#endif
+        parent->parent->find_valid_instance_views(ctx, valid_views, 
+                                        up_mask, field_mask, needs_space);
+        // Convert everything coming back down
+        const Color rp = parent->row_source->color;
+        const Color rc = row_source->color;
+        for (std::list<std::pair<InstanceView*,FieldMask> >::iterator it =
+              valid_views.begin(); it != valid_views.end(); it++)
+        {
+          it->first = it->first->get_subview(rp,rc);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(it->first->logical_region == this);
+#endif
+        }
+      }
+      // Now figure out which of our valid views we can add
+      for (std::map<InstanceView*,FieldMask>::const_iterator it = state.valid_views.begin();
+            it != state.valid_views.end(); it++)
+      {
+        // If we need the physical instance to be at least as big as
+        // the needed fields, check that first
+        if (needs_space && !!(field_mask - it->first->get_physical_mask()))
+          continue;
+        // See if there are any overlapping valid fields
+        FieldMask overlap = valid_mask & it->second;
+        if (!overlap)
+          continue;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(it->first->logical_region == this);
+#endif
+        valid_views.push_back(std::pair<InstanceView*,FieldMask>(it->first,overlap));
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceView* RegionNode::create_instance(Memory location, const FieldMask &field_mask)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::issue_final_close_operation(const PhysicalUser &user, PhysicalCloser &closer)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_states.find(closer.rm.ctx) != physical_states.end());
+#endif
+      PhysicalState &state = physical_states[closer.rm.ctx];
+      siphon_open_children(closer, state, user, user.field_mask);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(closer.success);
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::update_valid_views(ContextID ctx, const FieldMask &field_mask)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_states.find(ctx) != physical_states.end());
+#endif
+      PhysicalState &state = physical_states[ctx];
+      std::list<std::pair<InstanceView*,FieldMask> > new_valid_views;
+      find_valid_instance_views(ctx, new_valid_views, field_mask, field_mask, false/*needs space*/);
+      for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it =
+            new_valid_views.begin(); it != new_valid_views.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(it->first->logical_region == this);
+#endif
+        update_valid_views(ctx, it->second, false/*dirty*/, it->first);
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -2646,8 +2890,9 @@ namespace RegionRuntime {
         assert(rm.sanitizing); // This should only be the end if we're sanitizing
 #endif
         rm.path.pop_back();
-
+        parent->update_valid_views(rm.ctx, user.field_mask);
         // No need to close anything up here since we were just sanitizing
+        rm.success = true;
       }
       else
       {
@@ -2658,6 +2903,12 @@ namespace RegionRuntime {
         // Use the parent node as the target of any close operations
         PhysicalCloser closer(user, rm, parent, IS_READ_ONLY(user.usage));
         bool open_only = siphon_open_children(closer, state, user, user.field_mask, next_reg);
+        // Check to see if the close was successful  
+        if (!closer.success)
+        {
+          rm.success = false;
+          return;
+        }
         RegionNode *child = get_child(next_reg);
         if (open_only)
           child->open_physical_tree(user, rm);
@@ -2683,6 +2934,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(rm.sanitizing); // should only end on a partition if sanitizing
 #endif
+        parent->update_valid_views(rm.ctx, user.field_mask);
+        rm.success = true;
       }
       else
       {
@@ -2712,11 +2965,9 @@ namespace RegionRuntime {
       // figure out which of our open children we need to close.  If we do
       // need to issue a close to any of them, update the target_views with
       // new views corresponding to the logical region we're going to be closing.
-      closer.partition_color = row_source->color;
-      closer.partition_valid = true;
+      closer.pre_partition(row_source->color);
       siphon_open_children(closer, state, closer.user, closing_mask);
-      closer.partition_color = 0;
-      closer.partition_valid = false;
+      closer.post_partition();
     }
 
     //--------------------------------------------------------------------------
@@ -2738,6 +2989,13 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return get_child(c);
+    }
+
+    //--------------------------------------------------------------------------
+    Color PartitionNode::get_color(void) const
+    //--------------------------------------------------------------------------
+    {
+      return row_source->color;
     }
 
 #ifdef DEBUG_HIGH_LEVEL
@@ -2808,6 +3066,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    bool LogicalCloser::closing_state(const RegionTreeNode::FieldState &state)
+    //--------------------------------------------------------------------------
+    {
+      // Always continue with the closing
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
     void LogicalCloser::close_tree_node(RegionTreeNode *node, const FieldMask &closing_mask)
     //--------------------------------------------------------------------------
     {
@@ -2822,12 +3088,22 @@ namespace RegionRuntime {
     PhysicalCloser::PhysicalCloser(const PhysicalUser &u, RegionMapper &r,
                                     RegionNode *ct, bool lo)
       : user(u), rm(r), close_target(ct), leave_open(lo), 
-        targets_selected(false)
+        targets_selected(false), partition_valid(false), success(true)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(close_target != NULL);
 #endif
+    }
+
+    //--------------------------------------------------------------------------
+    PhysicalCloser::PhysicalCloser(const PhysicalCloser &rhs, RegionNode *ct)
+      : user(rhs.user), rm(rhs.rm), close_target(ct), leave_open(rhs.leave_open),
+        targets_selected(rhs.targets_selected), partition_valid(false), success(true)
+    //--------------------------------------------------------------------------
+    {
+      if (targets_selected)
+        upper_targets = rhs.lower_targets;
     }
     
     //--------------------------------------------------------------------------
@@ -2850,17 +3126,151 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    bool PhysicalCloser::closing_state(const RegionTreeNode::FieldState &state)
+    //--------------------------------------------------------------------------
+    {
+      // Check to see if we need to select our targets
+      if (!targets_selected && ((state.open_state == RegionTreeNode::OPEN_EXCLUSIVE) ||
+                                (state.open_state == RegionTreeNode::OPEN_REDUCE)))
+      {
+        // We're going to need to issue a close so make some targets
+         
+        // First get the list of valid instances
+        std::list<std::pair<InstanceView*,FieldMask> > valid_views;
+        close_target->find_valid_instance_views(rm.ctx, valid_views, user.field_mask, 
+                                                user.field_mask, true/*needs space*/);
+        // Get the set of memories for which we have valid instances
+        std::set<Memory> valid_memories;
+        for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it =
+              valid_views.begin(); it != valid_views.end(); it++)
+        {
+          valid_memories.insert(it->first->get_location());
+        }
+        // Now ask the mapper what it wants to do
+        bool create_one = true;
+        std::set<Memory>    to_reuse;
+        std::vector<Memory> to_create;
+        {
+          DetailedTimer::ScopedPush sp(TIME_MAPPER);
+          AutoLock m_lock(rm.mapper_lock);
+          rm.mapper->rank_copy_targets(rm.task, rm.req, valid_memories, to_reuse, to_create, create_one);
+        }
+        // Now process the results
+        // First see if we should re-use any instances
+        for (std::set<Memory>::const_iterator mit = to_reuse.begin();
+              mit != to_reuse.end(); mit++)
+        {
+          // Make sure it was a valid choice 
+          if (valid_memories.find(*mit) == valid_memories.end())
+            continue;
+          InstanceView *best = NULL;
+          FieldMask best_mask;
+          unsigned num_valid_fields = 0;
+          for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it = valid_views.begin();
+                it != valid_views.end(); it++)
+          {
+            if (it->first->get_location() != (*mit))
+              continue;
+            unsigned valid_fields = FieldMask::pop_count(it->second);
+            if (valid_fields > num_valid_fields)
+            {
+              num_valid_fields = valid_fields;
+              best = it->first;
+              best_mask = it->second;
+            }
+          }
+#ifdef DEBUG_HIGH_LEVEL
+          assert(best != NULL);
+#endif
+          // Update any of the fields that are different from the current valid mask
+          FieldMask need_update = user.field_mask - best_mask;
+          if (!!need_update)
+            close_target->issue_update_copy(best, rm, need_update);
+          upper_targets.push_back(best);
+        }
+        // Now see if we want to try to create any new instances
+        for (std::vector<Memory>::const_iterator it = to_create.begin();
+              it != to_create.end(); it++)
+        {
+          // Try making an instance in the memory 
+          InstanceView *new_view = close_target->create_instance(*it, user.field_mask);
+          if (new_view != NULL)
+          {
+            // Update all the fields
+            close_target->issue_update_copy(new_view, rm, user.field_mask);
+            upper_targets.push_back(new_view);
+            // If we were only supposed to make one, then we're done
+            if (create_one)
+              break;
+          }
+        }
+        targets_selected = true;
+        // See if we succeeded in making a target instance
+        if (upper_targets.empty())
+        {
+          // We failed, have to try again later
+          success = false;
+          return false;
+        }
+      }
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
     void PhysicalCloser::close_tree_node(RegionTreeNode *node, const FieldMask &closing_mask)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lower_targets.empty());
 #endif
-      convert_views();
       // Convert the upper InstanceViews to the lower instance views
       node->close_physical_tree(*this, closing_mask); 
-      // We can also clear our lower views here since we're done with them
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalCloser::pre_region(Color region_color)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lower_targets.empty());
+      assert(partition_valid);
+#endif
+      for (std::vector<InstanceView*>::const_iterator it = lower_targets.begin();
+            it != lower_targets.end(); it++)
+      {
+        lower_targets.push_back((*it)->get_subview(partition_color,region_color));
+#ifdef DEBUG_HIGH_LEVEL
+        assert(lower_targets.back() != NULL);
+#endif
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalCloser::post_region(void)
+    //--------------------------------------------------------------------------
+    {
       lower_targets.clear();
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalCloser::pre_partition(Color pc)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!partition_valid);
+#endif
+      partition_color = pc;
+      partition_valid = true;
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalCloser::post_partition(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(partition_valid);
+#endif
+      partition_valid = false;
     }
 
     /////////////////////////////////////////////////////////////
@@ -2880,6 +3290,26 @@ namespace RegionRuntime {
       {
         fields[i++] = *it;
       }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Region Analyzer 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    RegionMapper::RegionMapper(Task *t, ContextID c, unsigned id, const RegionRequirement &r, Mapper *m,
+#ifdef LOW_LEVEL_LOCKS
+                                Lock m_lock,
+#else
+                                ImmovableLock m_lock,
+#endif
+                                Processor tar, Event single, Event multi, MappingTagID tg, bool sanit,
+                                bool in_map, std::vector<InstanceRef> &source_copy)
+      : ctx(c), sanitizing(sanit), inline_mapping(in_map), success(false), idx(id), req(r), task(t),
+        mapper_lock(m_lock), mapper(m), tag(tg), target(tar), single_term(single), multi_term(multi),
+        source_copy_instances(source_copy), result(InstanceRef())
+    //--------------------------------------------------------------------------
+    {
     }
 
   }; // namespace HighLevel

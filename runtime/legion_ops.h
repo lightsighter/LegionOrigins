@@ -394,7 +394,7 @@ namespace RegionRuntime {
     protected:
       void release_source_copy_instances(void);
       void flush_deletions(void);
-      void issue_restoring_copies(std::set<Event> &wait_on_events);
+      void issue_restoring_copies(std::set<Event> &wait_on_events, Event single, Event multi);
     protected:
       unsigned unmapped; // number of regions still unmapped
       std::vector<bool> non_virtual_mapped_region;

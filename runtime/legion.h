@@ -1303,13 +1303,20 @@ namespace RegionRuntime {
       /**
        * A copy-up operation is occuring to write dirty data back to a parent physical
        * instance.  To perform the copy-up, the compiler is asking for a target location to
-       * perform the copy-up operation.  Give a ranking for the memory locations to
-       * place the physical instance of the copy-up target.  The current valid target
-       * instances are also provided although maybe empty.
+       * perform the copy-up operation.  The mapper must give at least one memory to perform
+       * the close operation to.  The mapper can chose to re-use an existing instance or
+       * to create a new one in one or memories.  In order for the closer operation to
+       * succeed, there must be at least one valid target region.  If the mapper choses
+       * to not reuse any existing instances and all the new creations fail to allocate
+       * the necessary space.  The close operation will be deferred until later.  The
+       * last parameter lets the mapper say whether the runtime should only try to create
+       * one or all of the instances (default is true).
        */
       virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
                                     const std::set<Memory> &current_instances,
-                                    std::vector<Memory> &future_ranking);
+                                    std::set<Memory> &to_reuse,
+                                    std::vector<Memory> &to_create,
+                                    bool &create_one);
 
       /**
        * A copy operation needs to be performed to move data to a physical instance

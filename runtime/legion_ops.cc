@@ -2680,15 +2680,24 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::issue_restoring_copies(std::set<Event> &wait_on_events)
+    void SingleTask::issue_restoring_copies(std::set<Event> &wait_on_events, 
+                                          Event single_event, Event multi_event)
     //--------------------------------------------------------------------------
     {
       for (unsigned idx = 0; idx < physical_instances.size(); idx++)
       {
         if (!physical_instances[idx].is_virtual_ref())
         {
-          Event close_event = forest_ctx->close_to_instance(physical_instances[idx], close_copy_instances);
-          wait_on_events.insert(close_event);
+          // Only need to do the close if there is a possiblity of dirty data
+          if (HAS_WRITE(regions[idx]))
+          {
+            ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
+            RegionMapper rm(this, phy_ctx, idx, regions[idx], NULL/*shouldn't need it*/, mapper_lock,
+                            Processor::NO_PROC, single_event, multi_event,
+                            tag, false/*sanitizing*/, false/*inline mapping*/, source_copy_instances);
+            Event close_event = forest_ctx->close_to_instance(physical_instances[idx], rm);
+            wait_on_events.insert(close_event);
+          }
         }
       }
     }
@@ -3612,7 +3621,7 @@ namespace RegionRuntime {
         unlock();
       }
       // Issue the restoring copies for this task
-      issue_restoring_copies(cleanup_events);
+      issue_restoring_copies(cleanup_events, termination_event, termination_event);
       unlock_context();
 
       if (remote)
@@ -4267,7 +4276,7 @@ namespace RegionRuntime {
         unlock();
       }
       // Issue the restoring copies for this task
-      issue_restoring_copies(cleanup_events);
+      issue_restoring_copies(cleanup_events, point_termination_event, slice_owner->termination_event);
       unlock_context();
       // notify the slice owner that this task has been mapped
       slice_owner->point_task_mapped(this);
