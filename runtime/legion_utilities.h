@@ -174,6 +174,10 @@ namespace RegionRuntime {
       inline BitMask& operator-=(const BitMask &rhs);
       // Test to see if everything is zeros
       inline bool operator!(void) const;
+    public:
+      static inline int pop_count(const BitMask<unsigned,MAX> &mask);
+      static inline int pop_count(const BitMask<unsigned long,MAX> &mask);
+      static inline int pop_count(const BitMask<unsigned long long,MAX> &mask);
     private:
       T bit_vector[MAX/(8*sizeof(T))];
     };
@@ -730,6 +734,45 @@ namespace RegionRuntime {
           return false;
       }
       return true;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    /*static*/ inline int BitMask<T,MAX>::pop_count(const BitMask<unsigned,MAX> &mask)
+    //-------------------------------------------------------------------------
+    {
+      int result = 0;
+      for (int idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result += __builtin_popcount(mask[idx]);
+      }
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    /*static*/ inline int BitMask<T,MAX>::pop_count(const BitMask<unsigned long,MAX> &mask)
+    //-------------------------------------------------------------------------
+    {
+      int result = 0;
+      for (int idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result += __builtin_popcountl(mask[idx]);
+      }
+      return result;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX>
+    /*static*/ inline int BitMask<T,MAX>::pop_count(const BitMask<unsigned long long,MAX> &mask)
+    //-------------------------------------------------------------------------
+    {
+      int result = 0;
+      for (int idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        result += __builtin_popcountll(mask[idx]);
+      }
+      return result;
     }
 #undef BIT_ELMTS
 

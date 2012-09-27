@@ -108,6 +108,11 @@ namespace RegionRuntime {
       size_t compute_leaked_return_size(void);
       void pack_leaked_return(Serializer &rez);
       void unpack_leaked_return(Deserializer &derez); // will unpack leaked references and remove them
+    protected:
+      friend class InstanceManager;
+      friend class InstanceView;
+      void register_manager(InstanceManager *manager);
+      void register_view(InstanceView *view);
     private: // Begin internal methods
       IndexSpaceNode* create_node(IndexSpace sp, IndexPartNode *par, Color c, bool add);
       IndexPartNode* create_node(IndexPartition p, IndexSpaceNode *par, Color c, bool dis, bool add);
@@ -152,6 +157,10 @@ namespace RegionRuntime {
       std::list<LogicalRegion> created_region_trees;
       std::list<LogicalRegion> deleted_regions;
       std::list<LogicalPartition> deleted_partitions;
+    private:
+      // References to delete when cleaning up
+      std::vector<InstanceManager*> managers;
+      std::vector<InstanceView*> views;
     };
 
     /////////////////////////////////////////////////////////////
@@ -422,81 +431,6 @@ namespace RegionRuntime {
     };
 
     /////////////////////////////////////////////////////////////
-    // Instance Manager 
-    /////////////////////////////////////////////////////////////
-    /**
-     * Instance managers are the objects that represent physical
-     * instances and keeps track of when they can be garbage
-     * collected.  Once all InstanceViews have removed their
-     * reference then they can be collected.
-     */
-    class InstanceManager {
-    public:
-
-    private:
-      unsigned references;
-      bool remote;
-    };
-
-    /////////////////////////////////////////////////////////////
-    // Instance View 
-    /////////////////////////////////////////////////////////////
-    /**
-     * Instance views correspond to the view to a single physical
-     * instance from a given location in the region tree.  Instance
-     * views also manage the references from that viewpoint.  Once
-     * all the references from tasks and the region tree are removed
-     * from the instance view, then it will remove its reference
-     * from the instance manager which can lead to the instance
-     * being garbage collected.
-     */
-    class InstanceView {
-    public:
-      InstanceView* get_subview(Color pc, Color rc);
-    public:
-      InstanceRef add_user(const PhysicalUser &user);
-      InstanceRef add_copy_user(Event copy_done);
-      // These two are methods mark when a view is valid in the region tree
-      void add_reference(void);
-      void remove_reference(void);
-    public:
-      Memory get_location(void) const;
-      Event copy_from(InstanceView *src_view, const FieldMask &copy_mask);
-      const FieldMask& get_physical_mask(void) const;
-      Event close(void);
-    public:
-      InstanceManager *const manager;
-      InstanceView *const parent;
-      RegionNode *const logical_region;
-    private:
-      unsigned references;
-      std::map<std::pair<Color,Color>,InstanceView*> children;
-    };
-
-    /////////////////////////////////////////////////////////////
-    // Instance Reference 
-    /////////////////////////////////////////////////////////////
-    /**
-     * Used for passing around references to InstanceViews
-     */
-    class InstanceRef {
-    public:
-      bool is_virtual_ref(void) const;
-      Event get_ready_event(void) const;
-      bool has_required_lock(void) const;
-      Lock get_required_lock(void) const;
-      PhysicalInstance get_instance(void) const;
-      void remove_reference(void) const;
-    private:
-      friend class RegionTreeForest;
-      Event ready_event;
-      Lock required_lock;
-      Memory location;
-      PhysicalInstance instance;
-      InstanceView *view;
-    };
-
-    /////////////////////////////////////////////////////////////
     // Region Usage 
     /////////////////////////////////////////////////////////////
     struct RegionUsage {
@@ -545,6 +479,130 @@ namespace RegionRuntime {
       Event multi_term;
     };
 
+    /////////////////////////////////////////////////////////////
+    // Instance Manager 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Instance managers are the objects that represent physical
+     * instances and keeps track of when they can be garbage
+     * collected.  Once all InstanceViews have removed their
+     * reference then they can be collected.
+     */
+    class InstanceManager {
+    public:
+
+    public:
+      void add_reference(void);
+      void remove_reference(void);
+      Event issue_copy(InstanceManager *source_manager, Event precondition, const FieldMask &mask);
+    private:
+      friend class InstanceView;
+      unsigned references;
+      bool remote;
+      Memory location;
+      PhysicalInstance instance;
+      Lock lock;
+      FieldMask allocated_fields;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Instance View 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Instance views correspond to the view to a single physical
+     * instance from a given location in the region tree.  Instance
+     * views also manage the references from that viewpoint.  Once
+     * all the references from tasks and the region tree are removed
+     * from the instance view, then it will remove its reference
+     * from the instance manager which can lead to the instance
+     * being garbage collected.
+     */
+    class InstanceView {
+    protected:
+      struct TaskUser {
+      public:
+        TaskUser(void);
+        TaskUser(const PhysicalUser u, unsigned ref)
+          : user(u), references(ref), use_multi(false) { }
+      public:
+        PhysicalUser user;
+        unsigned references;
+        bool use_multi;
+      };
+    public:
+      InstanceView(InstanceManager *man, InstanceView *par, RegionNode *reg, RegionTreeForest *ctx);
+    public:
+      InstanceView* get_subview(Color pc, Color rc);
+    public:
+      InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
+      InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
+      // These two are methods mark when a view is valid in the region tree
+      void add_reference(void);
+      void remove_reference(void);
+      void remove_user(UniqueID uid);
+      void remove_copy(Event copy);
+    public:
+      inline Memory get_location(void) const { return manager->location; }
+      inline const FieldMask& get_physical_mask(void) const { return manager->allocated_fields; }
+      Event perform_final_close(const FieldMask &mask);
+      void copy_from(RegionMapper &rm, InstanceView *src_view, const FieldMask &copy_mask);
+      void find_copy_preconditions(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
+    private:
+      void check_state_change(bool adding);
+      void find_dependences_above(std::set<Event> &wait_on, const PhysicalUser &user);
+      void find_dependences_above(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
+      bool find_dependences_below(std::set<Event> &wait_on, const PhysicalUser &user);
+      bool find_dependences_below(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
+      bool find_local_dependences(std::set<Event> &wait_on, const PhysicalUser &user);
+      bool find_local_dependences(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
+      void update_valid_event(Event new_valid, const FieldMask &mask);
+      template<typename T>
+      void remove_invalid_elements(std::map<T,FieldMask> &elements, const FieldMask &new_mask);
+    public:
+      InstanceManager *const manager;
+      InstanceView *const parent;
+      RegionNode *const logical_region;
+      RegionTreeForest *const context;
+    private:
+      unsigned references;
+      std::map<std::pair<Color,Color>,InstanceView*> children;
+      std::map<UniqueID,TaskUser> users;
+      std::map<UniqueID,TaskUser> added_users;
+      std::map<Event,ReductionOpID> copy_users; // if redop > 0 then writing reduction, otherwise just a read
+      std::map<Event,ReductionOpID> added_copy_users;
+      std::map<UniqueID,FieldMask> epoch_users;
+      std::map<Event,FieldMask> epoch_copy_users;
+      std::map<Event,FieldMask> valid_events;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Instance Reference 
+    /////////////////////////////////////////////////////////////
+    /**
+     * Used for passing around references to InstanceViews
+     */
+    class InstanceRef {
+    public:
+      InstanceRef(void);
+      InstanceRef(Event ready, Memory loc, PhysicalInstance inst, 
+                  InstanceView *v, bool copy = false, Lock lock = Lock::NO_LOCK);
+    public:
+      inline bool is_virtual_ref(void) const { return (view == NULL); }
+      inline Event get_ready_event(void) const { return ready_event; }
+      inline bool has_required_lock(void) const { return required_lock.exists(); }
+      inline Lock get_required_lock(void) const { return required_lock; }
+      inline PhysicalInstance get_instance(void) const { return instance; }
+      void remove_reference(UniqueID uid);
+    private:
+      friend class RegionTreeForest;
+      Event ready_event;
+      Memory location;
+      PhysicalInstance instance;
+      Lock required_lock;
+      bool copy;
+      InstanceView *view;
+    };
+    
     /////////////////////////////////////////////////////////////
     // Tree Closer 
     /////////////////////////////////////////////////////////////
@@ -642,12 +700,12 @@ namespace RegionRuntime {
     class RegionMapper {
     public:
 #ifdef LOW_LEVEL_LOCKS
-      RegionMapper(Task *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+      RegionMapper(TaskContext *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     Lock mapper_lock, Processor target, Event single, Event multi, 
                     MappingTagID tag, bool sanitizing, bool inline_mapping, 
                     std::vector<InstanceRef> &source_copy);
 #else
-      RegionMapper(Task *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+      RegionMapper(TaskContext *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     ImmovableLock mapper_lock, Processor target, Event single, Event multi, 
                     MappingTagID tag, bool sanitizing, bool inline_mapping, 
                     std::vector<InstanceRef> &source_copy);
@@ -660,7 +718,7 @@ namespace RegionRuntime {
       bool final_closing;
       unsigned idx;
       const RegionRequirement &req;
-      Task *task;
+      TaskContext *task;
 #ifdef LOW_LEVEL_LOCKS
       Lock mapper_lock;
 #else

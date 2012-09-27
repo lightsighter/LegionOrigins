@@ -773,7 +773,7 @@ namespace RegionRuntime {
 #endif
       close_node->issue_final_close_operation(user, closer);
       // Now get the event for when the close is done
-      return ref.view->close();
+      return ref.view->perform_final_close(field_mask);
     }
 
     //--------------------------------------------------------------------------
@@ -1220,6 +1220,20 @@ namespace RegionRuntime {
         exit(ERROR_INVALID_PARTITION_ENTRY);
       }
       return it->second;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::register_manager(InstanceManager *manager)
+    //--------------------------------------------------------------------------
+    {
+      managers.push_back(manager);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::register_view(InstanceView *view)
+    //--------------------------------------------------------------------------
+    {
+      views.push_back(view);
     }
 
     /////////////////////////////////////////////////////////////
@@ -2204,7 +2218,7 @@ namespace RegionRuntime {
           // Note that when the siphon operation is done it will automatically
           // update the set of valid instances
           // Now add our user and get the resulting reference back
-          rm.result = new_view->add_user(user);
+          rm.result = new_view->add_user(rm.task->get_unique_id(), user);
           rm.success = true;
         }
       }
@@ -2260,7 +2274,7 @@ namespace RegionRuntime {
           // was an open operation.  Dirty determined by the kind of task
           update_valid_views(rm.ctx, user.field_mask, HAS_WRITE(user.usage), new_view);
           // Add our user and get the reference back
-          rm.result = new_view->add_user(user);
+          rm.result = new_view->add_user(rm.task->get_unique_id(), user);
           rm.success = true;
         }
       }
@@ -2643,8 +2657,7 @@ namespace RegionRuntime {
       // Copies should always be done between two views at the same level of the tree
       assert(src->logical_region == dst->logical_region);
 #endif
-      Event copy_done = dst->copy_from(src, copy_mask);
-      rm.source_copy_instances.push_back(dst->add_copy_user(copy_done));
+      dst->copy_from(rm, src, copy_mask);
     }
 
     //--------------------------------------------------------------------------
@@ -3008,6 +3021,654 @@ namespace RegionRuntime {
 #endif
 
     /////////////////////////////////////////////////////////////
+    // Instance Manager 
+    /////////////////////////////////////////////////////////////
+
+    /////////////////////////////////////////////////////////////
+    // Instance View 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    InstanceView::InstanceView(InstanceManager *man, InstanceView *par, 
+                               RegionNode *reg, RegionTreeForest *ctx)
+      : manager(man), parent(par), logical_region(reg), 
+        context(ctx), references(0)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceView* InstanceView::get_subview(Color pc, Color rc)
+    //--------------------------------------------------------------------------
+    {
+      std::pair<Color,Color> key(pc,rc);
+      if (children.find(key) == children.end())
+      {
+        // If it doesn't exist yet, make it, otherwise re-use it
+        PartitionNode *pnode = logical_region->get_child(pc);
+        RegionNode *rnode = pnode->get_child(rc);
+        InstanceView *subview = new InstanceView(manager, this, rnode, context);
+        children[key] = subview;
+        context->register_view(subview);
+        return subview;
+      }
+      return children[key];
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceRef InstanceView::add_user(UniqueID uid, const PhysicalUser &user)
+    //--------------------------------------------------------------------------
+    {
+      // Find any dependences above or below for a specific user 
+      std::set<Event> wait_on;
+      if (parent != NULL)
+        parent->find_dependences_above(wait_on, user);
+      bool all_dominated = find_dependences_below(wait_on, user);
+      Event wait_event = Event::merge_events(wait_on);
+      // If we dominated all the users below update the valid event
+      if (all_dominated)
+        update_valid_event(wait_event, user.field_mask);
+      // Now update the list of users
+      if (manager->remote)
+      {
+        std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
+        if (it == added_users.end())
+        {
+          added_users[uid] = TaskUser(user, 1);
+        }
+        else
+        {
+          it->second.use_multi = true;
+          it->second.references++;
+        }
+      }
+      else
+      {
+        std::map<UniqueID,TaskUser>::iterator it = users.find(uid);
+        if (it == users.end())
+        {
+          users[uid] = TaskUser(user, 1);
+        }
+        else
+        {
+          it->second.use_multi = true;
+          it->second.references++;
+        }
+      }
+      return InstanceRef(wait_event, manager->location, manager->instance,
+                          this, false/*copy*/, (IS_ATOMIC(user.usage) ? manager->lock : Lock::NO_LOCK));
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceRef InstanceView::add_copy_user(ReductionOpID redop, 
+                                            Event copy_term, const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      if (manager->remote)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(added_copy_users.find(copy_term) == added_copy_users.end());
+#endif
+        if (added_copy_users.empty())
+          check_state_change(true/*adding*/);
+        added_copy_users[copy_term] = redop;
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(copy_users.find(copy_term) == copy_users.end());
+#endif
+        if (copy_users.empty())
+          check_state_change(true/*adding*/);
+        copy_users[copy_term] = redop;
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(epoch_copy_users.find(copy_term) == epoch_copy_users.end());
+#endif
+      epoch_copy_users[copy_term] = mask;
+      return InstanceRef(copy_term, manager->location, manager->instance,
+                          this, true/*copy*/);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::add_reference(void)
+    //--------------------------------------------------------------------------
+    {
+      // If we were at zero, tell our InstanceManager we've got a valid reference again
+      if (references == 0)
+        check_state_change(true/*adding*/);
+      references++;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::remove_reference(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references > 0);
+#endif
+      references--;
+      if (references == 0)
+        check_state_change(false/*adding*/);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::remove_user(UniqueID uid)
+    //--------------------------------------------------------------------------
+    {
+      // If we're not remote we can check the original set of users,
+      // otherwise deletions should only come out of the added users
+      if (!manager->remote)
+      {
+        std::map<UniqueID,TaskUser>::iterator it = users.find(uid);
+        if (it != users.end())
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(it->second.references > 0);
+#endif
+          it->second.references--;
+          if (it->second.references == 0)
+          {
+            users.erase(it);
+            // Also erase it from the epoch users if it is there
+            epoch_users.erase(uid);
+            if (users.empty())
+              check_state_change(false/*adding*/);
+          }
+          // Found our user, so we're done
+          return;
+        } 
+      }
+      std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(it != added_users.end());
+      assert(it->second.references > 0);
+#endif
+      it->second.references--;
+      if (it->second.references == 0)
+      {
+        added_users.erase(it);
+        epoch_users.erase(uid);
+        if (added_users.empty())
+          check_state_change(false/*adding*/);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::remove_copy(Event copy_e)
+    //--------------------------------------------------------------------------
+    {
+      if (!manager->remote)
+      {
+        std::map<Event,ReductionOpID>::iterator it = copy_users.find(copy_e);
+        if (it != copy_users.end())
+        {
+          copy_users.erase(it);
+          epoch_copy_users.erase(copy_e);
+          if (copy_users.empty())
+            check_state_change(false/*adding*/);
+          // Found our user, so we're done
+          return;
+        }
+      }
+      std::map<Event,ReductionOpID>::iterator it = added_copy_users.find(copy_e);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(it != added_copy_users.end());
+#endif
+      added_copy_users.erase(it);
+      epoch_copy_users.erase(copy_e);
+      if (added_copy_users.empty())
+        check_state_change(false/*adding*/);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::copy_from(RegionMapper &rm, InstanceView *src_view, const FieldMask &copy_mask)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(logical_region == src_view->logical_region);
+#endif
+      // Find the copy preconditions
+      std::set<Event> preconditions;
+      find_copy_preconditions(preconditions, true/*writing*/, rm.req.redop, copy_mask);
+      src_view->find_copy_preconditions(preconditions, false/*writing*/, rm.req.redop, copy_mask);
+      Event copy_pre = Event::merge_events(preconditions);
+      Event copy_post = manager->issue_copy(src_view->manager, copy_pre, copy_mask);
+      // If this is a write copy, update the valid event, otherwise
+      // add it as a reduction copy to this instance
+      if (rm.req.redop == 0)
+        update_valid_event(copy_post, copy_mask);
+      else
+        add_copy_user(rm.req.redop, copy_post, copy_mask);
+      // Add a new user to the source, no need to pass redop since this is a read
+      src_view->add_copy_user(0, copy_post, copy_mask);
+    }
+
+    //--------------------------------------------------------------------------
+    Event InstanceView::perform_final_close(const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      std::set<Event> wait_on;
+#ifdef DEBUG_HIGH_LEVEL
+      bool dominated = 
+#endif
+      find_dependences_below(wait_on, true/*writing*/, 0, mask);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(dominated);
+#endif
+      return Event::merge_events(wait_on);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_copy_preconditions(std::set<Event> &wait_on, bool writing, 
+                            ReductionOpID redop, const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      // Find any dependences above or below for a copy reader
+      if (parent != NULL)
+        parent->find_dependences_above(wait_on, writing, redop, mask);
+      find_dependences_below(wait_on, writing, redop, mask);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::check_state_change(bool adding)
+    //--------------------------------------------------------------------------
+    {
+      if ((references == 0) && users.empty() && added_users.empty() &&
+          copy_users.empty() && added_copy_users.empty())
+      {
+        if (adding)
+          manager->add_reference();
+        else
+          manager->remove_reference();
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_dependences_above(std::set<Event> &wait_on, const PhysicalUser &user)
+    //--------------------------------------------------------------------------
+    {
+      find_local_dependences(wait_on, user);
+      if (parent != NULL)
+        parent->find_dependences_above(wait_on, user);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_dependences_above(std::set<Event> &wait_on, bool writing, 
+                                            ReductionOpID redop, const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      find_local_dependences(wait_on, writing, redop, mask);
+      if (parent != NULL)
+        parent->find_dependences_above(wait_on, writing, redop, mask);
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::find_dependences_below(std::set<Event> &wait_on, const PhysicalUser &user)
+    //--------------------------------------------------------------------------
+    {
+      bool all_dominated = find_local_dependences(wait_on, user);
+      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
+            children.begin(); it != children.end(); it++)
+      {
+        bool dominated = it->second->find_dependences_below(wait_on, user);
+        all_dominated = all_dominated && dominated;
+      }
+      return all_dominated;
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::find_dependences_below(std::set<Event> &wait_on, bool writing,
+                                          ReductionOpID redop, const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      bool all_dominated = find_local_dependences(wait_on, writing, redop, mask);
+      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
+            children.begin(); it != children.end(); it++)
+      {
+        bool dominated = it->second->find_dependences_below(wait_on, writing, redop, mask);
+        all_dominated = all_dominated && dominated;
+      }
+      return all_dominated;
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::find_local_dependences(std::set<Event> &wait_on, const PhysicalUser &user)
+    //--------------------------------------------------------------------------
+    {
+      bool all_dominated = true;
+      // Find any valid events we need to wait on
+      for (std::map<Event,FieldMask>::const_iterator it = valid_events.begin();
+            it != valid_events.end(); it++)
+      {
+        // Check for field disjointness
+        if (!(it->second * user.field_mask))
+        {
+          wait_on.insert(it->first);
+        }
+      }
+      
+      // Go through all of the current epoch users and see if we have any dependences
+      for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
+            it != epoch_users.end(); it++)
+      {
+        // Check for field disjointness 
+        if (!(it->second * user.field_mask))
+        {
+          std::map<UniqueID,TaskUser>::const_iterator finder = users.find(it->first);
+          if (finder == users.end())
+          {
+            finder = added_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(finder != added_users.end());
+#endif
+          }
+          DependenceType dtype = check_dependence_type(finder->second.user.usage, user.usage);
+          switch (dtype)
+          {
+            // Atomic and simultaneous are not dependences here since we know that they
+            // are using the same physical instance
+            case NO_DEPENDENCE:
+            case ATOMIC_DEPENDENCE:
+            case SIMULTANEOUS_DEPENDENCE:
+              {
+                all_dominated = false;
+                break;
+              }
+            case TRUE_DEPENDENCE:
+            case ANTI_DEPENDENCE:
+              {
+                // Has a dependence, figure out which event to add
+                if (finder->second.use_multi)
+                  wait_on.insert(finder->second.user.multi_term);
+                else
+                  wait_on.insert(finder->second.user.single_term);
+                break;
+              }
+            default:
+              assert(false); // should never get here
+          }
+        }
+      }
+
+      if (IS_READ_ONLY(user.usage))
+      {
+        // Wait for all reduction copy operations to finish
+        for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          // Check for disjointnes on fields
+          if (!(it->second * user.field_mask))
+          {
+            std::map<Event,ReductionOpID>::const_iterator finder = copy_users.find(it->first);
+            if (finder == copy_users.end())
+            {
+              finder = added_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != added_copy_users.end());
+#endif
+            }
+            if (finder->second != 0)
+              wait_on.insert(finder->first);
+            else
+              all_dominated = false;
+          }
+        }
+      }
+      else if (IS_REDUCE(user.usage))
+      {
+        // Wait on all read operations and reductions of a different type
+        for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          // Check for disjointnes on fields
+          if (!(it->second * user.field_mask))
+          {
+            std::map<Event,ReductionOpID>::const_iterator finder = copy_users.find(it->first);
+            if (finder == copy_users.end())
+            {
+              finder = added_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != added_copy_users.end());
+#endif
+            }
+            if (finder->second != user.usage.redop)
+              wait_on.insert(finder->first);
+            else
+              all_dominated = false;
+          }
+        }
+      }
+      else
+      {
+        // Wait until all copy operations are done
+        for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          // Check for disjointnes on fields
+          if (!(it->second * user.field_mask))
+          {
+            std::map<Event,ReductionOpID>::const_iterator finder = copy_users.find(it->first);
+            if (finder == copy_users.end())
+            {
+              finder = added_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != added_copy_users.end());
+#endif
+            }
+            wait_on.insert(finder->first);
+          }
+        }
+      }
+      return all_dominated;
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::find_local_dependences(std::set<Event> &wait_on, bool writing,
+                                            ReductionOpID redop, const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      bool all_dominated = true;
+      // Find any valid events we need to wait on
+      for (std::map<Event,FieldMask>::const_iterator it = valid_events.begin();
+            it != valid_events.end(); it++)
+      {
+        // Check for field disjointness
+        if (!(it->second * mask))
+        {
+          wait_on.insert(it->first);
+        }
+      }
+
+      if (writing)
+      {
+        // Record dependences on all users except ones with the same non-zero redop id
+        for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
+              it != epoch_users.end(); it++)
+        {
+          // check for field disjointness
+          if (!(it->second * mask))
+          {
+            std::map<UniqueID,TaskUser>::const_iterator finder = users.find(it->first);
+            if (finder == users.end())
+            {
+              finder = added_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != added_users.end());
+#endif
+            }
+            if ((redop != 0) && (finder->second.user.usage.redop == redop))
+              all_dominated = false;
+            else
+            {
+              if (finder->second.use_multi)
+                wait_on.insert(finder->second.user.multi_term);
+              else
+                wait_on.insert(finder->second.user.single_term);
+            }
+          }
+        }
+        // Also handle the copy users
+        for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          if (!(it->second * mask))
+          {
+            if (redop != 0)
+            {
+              // If we're doing a reduction, see if they can happen in parallel
+              std::map<Event,ReductionOpID>::const_iterator finder = copy_users.find(it->first);
+              if (finder == copy_users.end())
+              {
+                finder = added_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(finder != added_copy_users.end());
+#endif
+              }
+              if (finder->second == redop)
+                all_dominated = false;
+              else
+                wait_on.insert(it->first);
+            }
+            else
+              wait_on.insert(it->first);
+          }
+        }
+      }
+      else
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(redop == 0);
+#endif
+        // We're reading, find any users or copies that have a write that we need to wait for
+        for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
+              it != epoch_users.end(); it++)
+        {
+          if (!(it->second * mask))
+          {
+            std::map<UniqueID,TaskUser>::const_iterator finder = users.find(it->first);
+            if (finder == users.end())
+            {
+              finder = added_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != added_users.end());
+#endif
+            }
+            if (HAS_WRITE(finder->second.user.usage))
+            {
+              if (finder->second.use_multi)
+                wait_on.insert(finder->second.user.multi_term);
+              else
+                wait_on.insert(finder->second.user.single_term);
+            }
+            else
+              all_dominated = false;
+          }
+        }
+        // Also see if we have any copy users in non-reduction mode
+        for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+              it != epoch_copy_users.end(); it++)
+        {
+          if (!(it->second * mask))
+          {
+            std::map<Event,ReductionOpID>::const_iterator finder = copy_users.find(it->first);
+            if (finder == copy_users.end())
+            {
+              finder = added_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != added_copy_users.end());
+#endif
+            }
+            if (finder->second == 0)
+              all_dominated = false;
+            else
+              wait_on.insert(it->first);
+          }
+        }
+      }
+      return all_dominated;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::update_valid_event(Event new_valid, const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      // Go through all the epoch users and remove ones from the new valid mask
+      remove_invalid_elements<UniqueID>(epoch_users, mask);
+      remove_invalid_elements<Event>(epoch_copy_users, mask);
+
+      // Then update the set of valid events
+      remove_invalid_elements<Event>(valid_events, mask);
+      valid_events[new_valid] = mask;
+
+      // Do it for all children
+      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
+            children.begin(); it != children.end(); it++)
+      {
+        it->second->update_valid_event(new_valid, mask);
+      }
+    }
+    
+    //--------------------------------------------------------------------------
+    template<typename T>
+    void InstanceView::remove_invalid_elements(std::map<T,FieldMask> &elements,
+                                                      const FieldMask &new_mask)
+    //--------------------------------------------------------------------------
+    {
+      typename std::vector<T> to_delete;
+      for (typename std::map<T,FieldMask>::iterator it = elements.begin();
+            it != elements.end(); it++)
+      {
+        it->second -= new_mask;
+        if (!it->second)
+          to_delete.push_back(it->first);
+      }
+      for (typename std::vector<T>::const_iterator it = to_delete.begin();
+            it != to_delete.end(); it++)
+      {
+        elements.erase(*it);
+      }
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Instance Ref 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    InstanceRef::InstanceRef(void)
+      : ready_event(Event::NO_EVENT), required_lock(Lock::NO_LOCK),
+        location(Memory::NO_MEMORY), instance(PhysicalInstance::NO_INST),
+        view(NULL)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceRef::InstanceRef(Event ready, Memory loc, PhysicalInstance inst,
+                             InstanceView *v, bool c /*= false*/, Lock lock /*= Lock::NO_LOCK*/)
+      : ready_event(ready), required_lock(lock), location(loc), 
+        instance(inst), copy(c), view(v)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceRef::remove_reference(UniqueID uid)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(view != NULL);
+#endif
+      // Remove the reference and set the view to NULL so
+      // we can't accidentally remove the reference again
+      if (copy)
+        view->remove_copy(ready_event);
+      else
+        view->remove_user(uid);
+      view = NULL;
+    }
+
+    /////////////////////////////////////////////////////////////
     // Generic User 
     /////////////////////////////////////////////////////////////
 
@@ -3297,7 +3958,7 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    RegionMapper::RegionMapper(Task *t, ContextID c, unsigned id, const RegionRequirement &r, Mapper *m,
+    RegionMapper::RegionMapper(TaskContext *t, ContextID c, unsigned id, const RegionRequirement &r, Mapper *m,
 #ifdef LOW_LEVEL_LOCKS
                                 Lock m_lock,
 #else

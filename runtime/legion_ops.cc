@@ -151,6 +151,7 @@ namespace RegionRuntime {
     {
       this->context_owner = false;
       this->forest_ctx = rhs->forest_ctx;
+      this->unique_id = rhs->unique_id;
     }
 
     //--------------------------------------------------------------------------
