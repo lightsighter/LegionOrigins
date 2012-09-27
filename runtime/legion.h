@@ -618,6 +618,7 @@ namespace RegionRuntime {
       inline bool operator<(const IndexAllocator &rhs) const;
       inline bool operator==(const IndexAllocator &rhs) const;
     private:
+      // TODO: make sure this gets reclaimed properly
       IndexSpaceAllocator space;
     };
 
@@ -1678,27 +1679,6 @@ namespace RegionRuntime {
     ////////////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    LogicalRegion::LogicalRegion(RegionTreeID tid, IndexSpace index, FieldSpace field)
-      : tree_id(tid), index_space(index), field_space(field)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    LogicalRegion::LogicalRegion(void)
-      : tree_id(0), index_space(IndexSpace::NO_SPACE), field_space(FieldSpace::NO_SPACE)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    LogicalRegion::LogicalRegion(const LogicalRegion &rhs)
-      : tree_id(rhs.tree_id), index_space(rhs.index_space), field_space(rhs.field_space)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
     inline LogicalRegion& LogicalRegion::operator=(const LogicalRegion &rhs) 
     //--------------------------------------------------------------------------
     {
@@ -1763,27 +1743,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return field_space;
-    }
-
-    //--------------------------------------------------------------------------
-    LogicalPartition::LogicalPartition(RegionTreeID tid, IndexPartition pid, FieldSpace field)
-      : tree_id(tid), index_partition(pid), field_space(field)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    LogicalPartition::LogicalPartition(void)
-      : tree_id(0), index_partition(0), field_space(FieldSpace::NO_SPACE)
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
-    LogicalPartition::LogicalPartition(const LogicalPartition &rhs)
-      : tree_id(rhs.tree_id), index_partition(rhs.index_partition), field_space(rhs.field_space)
-    //--------------------------------------------------------------------------
-    {
     }
 
     //--------------------------------------------------------------------------

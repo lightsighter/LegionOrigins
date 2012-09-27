@@ -20,6 +20,7 @@ namespace RegionRuntime {
     class GeneralizedOperation : public Lockable { // include Lockable for fine-grained locking inside object
     public:
       GeneralizedOperation(HighLevelRuntime *rt);
+      virtual ~GeneralizedOperation(void);
     public:
       bool activate_base(GeneralizedOperation *parent);
       void deactivate_base(void);
@@ -75,6 +76,7 @@ namespace RegionRuntime {
     class MappingOperation : public GeneralizedOperation {
     public:
       MappingOperation(HighLevelRuntime *rt);
+      virtual ~MappingOperation(void);
     public:
       void initialize(Context ctx, const RegionRequirement &req, MapperID id, MappingTagID tag);
       void initialize(Context ctx, unsigned idx, MapperID id, MappingTagID tag);
@@ -134,6 +136,7 @@ namespace RegionRuntime {
     class DeletionOperation : public GeneralizedOperation {
     public:
       DeletionOperation(HighLevelRuntime *rt);
+      virtual ~DeletionOperation(void);
     public:
       void initialize_index_space_deletion(Context parent, IndexSpace space);
       void initialize_index_partition_deletion(Context parent, IndexPartition part);
@@ -182,6 +185,7 @@ namespace RegionRuntime {
     class TaskContext : public Task, public GeneralizedOperation {
     public:
       TaskContext(HighLevelRuntime *rt, ContextID id);
+      virtual ~TaskContext(void);
     public:
       bool activate_task(GeneralizedOperation *parent);
       void deactivate_task(void);
@@ -293,6 +297,7 @@ namespace RegionRuntime {
     class SingleTask : public TaskContext {
     public:
       SingleTask(HighLevelRuntime *rt, ContextID id);
+      virtual ~SingleTask(void);
     public:
       bool activate_single(GeneralizedOperation *parent);
       void deactivate_single(void);
@@ -428,6 +433,7 @@ namespace RegionRuntime {
     class MultiTask : public TaskContext {
     public:
       MultiTask(HighLevelRuntime *rt, ContextID id);
+      virtual ~MultiTask(void);
     public:
       bool activate_multi(GeneralizedOperation *parent);
       void deactivate_multi(void);
@@ -512,6 +518,7 @@ namespace RegionRuntime {
     public:
       friend class HighLevelRuntime;
       IndividualTask(HighLevelRuntime *rt, ContextID id);
+      virtual ~IndividualTask(void);
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);
@@ -590,6 +597,7 @@ namespace RegionRuntime {
     public:
       friend class SliceTask;
       PointTask(HighLevelRuntime *rt, ContextID id); 
+      virtual ~PointTask(void);
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);
@@ -647,6 +655,7 @@ namespace RegionRuntime {
     class IndexTask : public MultiTask {
     public:
       IndexTask(HighLevelRuntime *rt, ContextID id); 
+      virtual ~IndexTask(void);
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);
@@ -728,6 +737,7 @@ namespace RegionRuntime {
     class SliceTask : public MultiTask {
     public:
       SliceTask(HighLevelRuntime *rt, ContextID id);
+      virtual ~SliceTask(void);
     public:
       // Functions from GeneralizedOperation
       virtual void trigger(void);

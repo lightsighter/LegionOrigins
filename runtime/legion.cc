@@ -56,6 +56,56 @@ namespace RegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Logical Region  
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    LogicalRegion::LogicalRegion(RegionTreeID tid, IndexSpace index, FieldSpace field)
+      : tree_id(tid), index_space(index), field_space(field)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalRegion::LogicalRegion(void)
+      : tree_id(0), index_space(IndexSpace::NO_SPACE), field_space(FieldSpace::NO_SPACE)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalRegion::LogicalRegion(const LogicalRegion &rhs)
+      : tree_id(rhs.tree_id), index_space(rhs.index_space), field_space(rhs.field_space)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Logical Partition 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    LogicalPartition::LogicalPartition(RegionTreeID tid, IndexPartition pid, FieldSpace field)
+      : tree_id(tid), index_partition(pid), field_space(field)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalPartition::LogicalPartition(void)
+      : tree_id(0), index_partition(0), field_space(FieldSpace::NO_SPACE)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalPartition::LogicalPartition(const LogicalPartition &rhs)
+      : tree_id(rhs.tree_id), index_partition(rhs.index_partition), field_space(rhs.field_space)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    /////////////////////////////////////////////////////////////
     // Task
     /////////////////////////////////////////////////////////////
 
@@ -1055,14 +1105,12 @@ namespace RegionRuntime {
       return generic.convert<LowLevel::AT>();                                     \
     }
 #endif
-#if 0
     GET_ACCESSOR_IMPL(AccessorGeneric)
-    GET_ACCESSOR_IMPL(AccessorArray)
-    GET_ACCESSOR_IMPL(AccessorArrayReductionFold)
-    GET_ACCESSOR_IMPL(AccessorGPU)
-    GET_ACCESSOR_IMPL(AccessorGPUReductionFold)
-    GET_ACCESSOR_IMPL(AccessorReductionList)
-#endif
+    //GET_ACCESSOR_IMPL(AccessorArray)
+    //GET_ACCESSOR_IMPL(AccessorArrayReductionFold)
+    //GET_ACCESSOR_IMPL(AccessorGPU)
+    //GET_ACCESSOR_IMPL(AccessorGPUReductionFold)
+    //GET_ACCESSOR_IMPL(AccessorReductionList)
 #undef GET_ACCESSOR_IMPL
 
     /////////////////////////////////////////////////////////////
@@ -2361,7 +2409,6 @@ namespace RegionRuntime {
                       ImmovableLock m_lock,
 #endif
                       MappingTagID tag);
-      ~PredicateCustom(void);
     public:
       virtual bool notify(bool value);
       virtual void wait_for_evaluation(void);
@@ -2868,6 +2915,19 @@ namespace RegionRuntime {
       table[ADVERTISEMENT_ID]   = HighLevelRuntime::advertise_work;
       table[TERMINATION_ID]     = HighLevelRuntime::detect_termination;
       table[CUSTOM_PREDICATE_ID]= HighLevelRuntime::custom_predicate_eval;
+    }
+
+    //--------------------------------------------------------------------------
+    TaskVariantCollection* HighLevelRuntime::find_collection(Processor::TaskFuncID tid)
+    //--------------------------------------------------------------------------
+    {
+      std::map<Processor::TaskFuncID,TaskVariantCollection*>& table = HighLevelRuntime::get_collection_table();
+      if (table.find(tid) == table.end())
+      {
+        log_run(LEVEL_ERROR, "Unable to find task variant collection for tasks with ID %d", tid);
+        exit(ERROR_MISSING_TASK_COLLECTION);
+      }
+      return table[tid];
     }
 
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
@@ -3581,6 +3641,22 @@ namespace RegionRuntime {
 #endif
       active_argument_maps.insert(arg_map);
       return ArgumentMap(arg_map);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    IndexAllocator HighLevelRuntime::create_index_allocator(Context ctx, IndexSpace handle)
+    //--------------------------------------------------------------------------------------------
+    {
+      // TODO: fix this so that it picks a memory somehow
+      IndexSpaceAllocator alloc = handle.create_allocator(Memory::NO_MEMORY);
+      return IndexAllocator(alloc);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    FieldAllocator HighLevelRuntime::create_field_allocator(Context ctx, FieldSpace handle)
+    //--------------------------------------------------------------------------------------------
+    {
+      return FieldAllocator(handle, ctx, this);
     }
 
     //--------------------------------------------------------------------------------------------

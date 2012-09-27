@@ -87,6 +87,7 @@ namespace RegionRuntime {
       ERROR_INVALID_PARTITION_ENTRY = 52,
       ERROR_ALIASED_INTRA_TASK_REGIONS = 53,
       ERROR_MAX_FIELD_OVERFLOW = 54,
+      ERROR_MISSING_TASK_COLLECTION = 55,
     };
 
     // enum and namepsaces don't really get along well

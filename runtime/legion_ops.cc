@@ -32,6 +32,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    GeneralizedOperation::~GeneralizedOperation(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
     bool GeneralizedOperation::activate_base(GeneralizedOperation *parent /*= NULL*/)
     //--------------------------------------------------------------------------
     {
@@ -256,6 +262,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    MappingOperation::~MappingOperation(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
     void MappingOperation::initialize(Context ctx, const RegionRequirement &req, MapperID id, MappingTagID t)
     //--------------------------------------------------------------------------
     {
@@ -400,7 +412,7 @@ namespace RegionRuntime {
       unmapped_event.trigger();
       // Now we can go about removing our references
       parent_ctx->lock_context();
-      physical_instance.remove_reference(); 
+      physical_instance.remove_reference(unique_id); 
       parent_ctx->unlock_context();
       physical_instance = InstanceRef(); // virtual ref
 
@@ -491,7 +503,7 @@ namespace RegionRuntime {
       bool map_success = true;  
       forest_ctx->lock_context();
       ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
-      RegionMapper reg_mapper(parent_ctx, phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
+      RegionMapper reg_mapper(parent_ctx, unique_id, phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
                               unmapped_event, unmapped_event, tag, false/*sanitizing*/,
                               true/*inline mapping*/, source_copy_instances);
       // Compute the path 
@@ -653,6 +665,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     DeletionOperation::DeletionOperation(HighLevelRuntime *rt)
       : GeneralizedOperation(rt)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    DeletionOperation::~DeletionOperation(void)
     //--------------------------------------------------------------------------
     {
     }
@@ -906,6 +924,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     TaskContext::TaskContext(HighLevelRuntime *rt, ContextID id)
       : Task(), GeneralizedOperation(rt), ctx_id(id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    TaskContext::~TaskContext(void)
     //--------------------------------------------------------------------------
     {
     }
@@ -1458,6 +1482,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     SingleTask::SingleTask(HighLevelRuntime *rt, ContextID id)
       : TaskContext(rt,id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    SingleTask::~SingleTask(void)
     //--------------------------------------------------------------------------
     {
     }
@@ -2030,7 +2060,7 @@ namespace RegionRuntime {
         if (!clone_instances[idx].is_virtual_ref())
         {
           physical_region_impls[idx]->invalidate();
-          clone_instances[idx].remove_reference();
+          clone_instances[idx].remove_reference(unique_id);
           clone_instances[idx] = InstanceRef(); // make it a virtual ref now
         }
         unlock();
@@ -2467,7 +2497,7 @@ namespace RegionRuntime {
         else
         {
           // Otherwise we want to do an actual physical mapping
-          RegionMapper reg_mapper(this, phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
+          RegionMapper reg_mapper(this, unique_id, phy_ctx, idx, regions[idx], mapper, mapper_lock, target, 
                                   single_term, multi_term, tag, false/*sanitizing*/,
                                   false/*inline mapping*/, source_copy_instances);
           // Compute the path 
@@ -2534,7 +2564,7 @@ namespace RegionRuntime {
         lock();
         for (unsigned idx = 0; idx < physical_instances.size(); idx++)
         {
-          physical_instances[idx].remove_reference();
+          physical_instances[idx].remove_reference(unique_id);
         }
         forest_ctx->unlock_context();
         physical_instances.clear();
@@ -2657,7 +2687,7 @@ namespace RegionRuntime {
     {
       for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
       {
-        source_copy_instances[idx].remove_reference();
+        source_copy_instances[idx].remove_reference(unique_id);
       }
       source_copy_instances.clear();
     }
@@ -2693,7 +2723,7 @@ namespace RegionRuntime {
           if (HAS_WRITE(regions[idx]))
           {
             ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
-            RegionMapper rm(this, phy_ctx, idx, regions[idx], NULL/*shouldn't need it*/, mapper_lock,
+            RegionMapper rm(this, unique_id, phy_ctx, idx, regions[idx], NULL/*shouldn't need it*/, mapper_lock,
                             Processor::NO_PROC, single_event, multi_event,
                             tag, false/*sanitizing*/, false/*inline mapping*/, source_copy_instances);
             Event close_event = forest_ctx->close_to_instance(physical_instances[idx], rm);
@@ -2710,6 +2740,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     MultiTask::MultiTask(HighLevelRuntime *rt, ContextID id)
       : TaskContext(rt, id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    MultiTask::~MultiTask(void)
     //--------------------------------------------------------------------------
     {
     }
@@ -3015,6 +3051,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    IndividualTask::~IndividualTask(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
     bool IndividualTask::activate(GeneralizedOperation *parent /*= NULL*/)
     //--------------------------------------------------------------------------
     {
@@ -3136,7 +3178,8 @@ namespace RegionRuntime {
       }
       else
       {
-        
+        // TODO: handle predication
+        assert(false); 
       }
     }
 
@@ -3326,7 +3369,7 @@ namespace RegionRuntime {
           continue;
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         // Create a sanitizing region mapper and map it
-        RegionMapper reg_mapper(this, phy_ctx, idx, regions[idx], mapper, mapper_lock,
+        RegionMapper reg_mapper(this, unique_id, phy_ctx, idx, regions[idx], mapper, mapper_lock,
                                 Processor::NO_PROC, termination_event, termination_event,
                                 tag, true/*sanitizing*/, false/*inline mapping*/,
                                 source_copy_instances);
@@ -3772,14 +3815,14 @@ namespace RegionRuntime {
         {
           if (!physical_instances[idx].is_virtual_ref())
           {
-            physical_instances[idx].remove_reference();
+            physical_instances[idx].remove_reference(unique_id);
           }
         }
         // We also remove the source copy instances that got generated by
         // any close copies that were performed
         for (unsigned idx = 0; idx < close_copy_instances.size(); idx++)
         {
-          close_copy_instances[idx].remove_reference();
+          close_copy_instances[idx].remove_reference(unique_id);
         }
         unlock_context();
         physical_instances.clear();
@@ -4019,6 +4062,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    PointTask::~PointTask(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
     bool PointTask::activate(GeneralizedOperation *parent /*= NULL*/)
     //--------------------------------------------------------------------------
     {
@@ -4044,6 +4093,14 @@ namespace RegionRuntime {
       }
       deactivate_single();
       runtime->free_point_task(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void PointTask::trigger(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should never be called
+      assert(false);
     }
 
     //--------------------------------------------------------------------------
@@ -4316,12 +4373,12 @@ namespace RegionRuntime {
         {
           if (!physical_instances[idx].is_virtual_ref())
           {
-            physical_instances[idx].remove_reference();
+            physical_instances[idx].remove_reference(unique_id);
           }
         }
         for (unsigned idx = 0; idx < close_copy_instances.size(); idx++)
         {
-          close_copy_instances[idx].remove_reference();
+          close_copy_instances[idx].remove_reference(unique_id);
         }
         unlock_context();
         physical_instances.clear();
@@ -4379,6 +4436,29 @@ namespace RegionRuntime {
       slice_owner->handle_future(local_point,result, result_size); 
     }
 
+    //--------------------------------------------------------------------------
+    void PointTask::unmap_all_regions(void)
+    //--------------------------------------------------------------------------
+    {
+      // Go through all our regions and if they were mapped, release the reference
+#ifdef DEBUG_HIGH_LEVEL
+      assert(non_virtual_mapped_region.size() == physical_instances.size());
+#endif
+      // Move any non-virtual mapped references to the source copy references.
+      // We can't just remove the references because they might cause the instance
+      // to get deleted before the copy completes.
+      // TODO: how do we handel the pending copy events for these copies?
+      // When do we know that is safe to remove the references because our
+      // task will no longer depend on the event for when the copy is done.
+      for (unsigned idx = 0; idx < physical_instances.size(); idx++)
+      {
+        if (non_virtual_mapped_region[idx])
+          source_copy_instances.push_back(physical_instances[idx]);
+      }
+      physical_instances.clear();
+      non_virtual_mapped_region.clear();
+    }
+
     /////////////////////////////////////////////////////////////
     // Index Task
     /////////////////////////////////////////////////////////////
@@ -4386,6 +4466,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     IndexTask::IndexTask(HighLevelRuntime *rt, ContextID id)
       : MultiTask(rt,id)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    IndexTask::~IndexTask(void)
     //--------------------------------------------------------------------------
     {
     }
@@ -4434,6 +4520,28 @@ namespace RegionRuntime {
       Context parent = parent_ctx;
       deactivate_multi();
       runtime->free_index_task(this,parent);
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexTask::trigger(void)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+      if (task_pred == Predicate::TRUE_PRED)
+      {
+        // Task evaluated should be run, put it on the ready queue
+        unlock();
+        runtime->add_to_ready_queue(this);
+      }
+      else if (task_pred == Predicate::FALSE_PRED)
+      {
+        unlock();
+      }
+      else
+      {
+        // TODO: handle predication
+        assert(false); 
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -4586,7 +4694,7 @@ namespace RegionRuntime {
           continue;
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent); 
         // Create a sanitizing region mapper and map it
-        RegionMapper reg_mapper(this, phy_ctx, idx, regions[idx], mapper, mapper_lock,
+        RegionMapper reg_mapper(this, unique_id, phy_ctx, idx, regions[idx], mapper, mapper_lock,
                                 Processor::NO_PROC, termination_event, termination_event,
                                 tag, true/*sanitizing*/, false/*inline mapping*/,
                                 source_copy_instances);
@@ -4764,7 +4872,7 @@ namespace RegionRuntime {
       {
         for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
         {
-          source_copy_instances[idx].remove_reference();
+          source_copy_instances[idx].remove_reference(unique_id);
         }
         source_copy_instances.clear();
       }
@@ -5164,6 +5272,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    SliceTask::~SliceTask(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
     bool SliceTask::activate(GeneralizedOperation *parent /*= NULL*/)
     //--------------------------------------------------------------------------
     {
@@ -5207,6 +5321,14 @@ namespace RegionRuntime {
       }
       deactivate_multi();
       runtime->free_slice_task(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::trigger(void)
+    //--------------------------------------------------------------------------
+    {
+      // should never be called
+      assert(false);
     }
 
     //--------------------------------------------------------------------------
@@ -5859,6 +5981,13 @@ namespace RegionRuntime {
       {
         index_owner->handle_future(point,result,result_size);
       }
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::set_denominator(unsigned long value)
+    //--------------------------------------------------------------------------
+    {
+      this->denominator = value;
     }
 
     //--------------------------------------------------------------------------

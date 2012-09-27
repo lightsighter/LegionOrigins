@@ -59,7 +59,8 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     class Serializer {
     public:
-      Serializer(size_t buffer_size);
+      Serializer(size_t num_bytes)
+        : total_bytes(num_bytes), buffer((char*)malloc(num_bytes)), index(0) { }
       ~Serializer(void) 
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -92,7 +93,8 @@ namespace RegionRuntime {
     public:
       friend class HighLevelRuntime;
       friend class TaskContext;
-      Deserializer(const void *buffer, size_t buffer_size);
+      Deserializer(const void *buffer, size_t buffer_size)
+        : location((const char*)buffer), remaining_bytes(buffer_size) { }
       ~Deserializer(void)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -187,13 +189,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     
     //--------------------------------------------------------------------------
-    Serializer::Serializer(size_t num_bytes)
-      : total_bytes(num_bytes), buffer((char*)malloc(num_bytes)), index(0) 
-    //--------------------------------------------------------------------------
-    {
-    }
-
-    //--------------------------------------------------------------------------
     template<typename T>
     inline void Serializer::serialize(const T &element)
     //--------------------------------------------------------------------------
@@ -222,13 +217,6 @@ namespace RegionRuntime {
     {
       total_bytes += more_bytes;
       buffer = (char*)realloc(buffer,total_bytes); 
-    }
-
-    //--------------------------------------------------------------------------
-    Deserializer::Deserializer(const void *buffer, size_t buffer_size)
-      : location((const char*)buffer), remaining_bytes(buffer_size)
-    //--------------------------------------------------------------------------
-    {
     }
 
     //-------------------------------------------------------------------------- 

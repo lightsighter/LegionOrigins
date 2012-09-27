@@ -175,6 +175,8 @@ namespace RegionRuntime {
       friend class IndexPartNode;
       friend class RegionNode;
       friend class PartitionNode;
+      friend class InstanceManager;
+      friend class InstanceView;
       IndexSpaceNode(IndexSpace sp, IndexPartNode *par,
                 Color c, bool add);
     public:
@@ -206,6 +208,8 @@ namespace RegionRuntime {
       friend class IndexSpaceNode;
       friend class RegionNode;
       friend class PartitionNode;
+      friend class InstanceManager;
+      friend class InstanceView;
       IndexPartNode(IndexPartition p, IndexSpaceNode *par,
                 Color c, bool dis, bool add);
     public:
@@ -234,6 +238,8 @@ namespace RegionRuntime {
     class FieldSpaceNode {
     public:
       friend class RegionTreeForest;
+      friend class InstanceManager;
+      friend class InstanceView;
       FieldSpaceNode(FieldSpace sp);
       typedef std::pair<size_t,unsigned/*idx*/> FieldInfo;
     public:
@@ -341,6 +347,8 @@ namespace RegionRuntime {
     public:
       friend class RegionTreeForest;
       friend class PartitionNode;
+      friend class InstanceManager;
+      friend class InstanceView;
       RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
                  FieldSpaceNode *col_src, bool add);
     public:
@@ -396,6 +404,8 @@ namespace RegionRuntime {
     public:
       friend class RegionTreeForest;
       friend class RegionNode;
+      friend class InstanceManager;
+      friend class InstanceView;
       PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src,
                     bool add);
     public:
@@ -435,6 +445,8 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     struct RegionUsage {
     public:
+      RegionUsage(void)
+        : privilege(NO_ACCESS), prop(EXCLUSIVE), redop(0) { }
       RegionUsage(PrivilegeMode p, CoherenceProperty c, ReductionOpID r)
         : privilege(p), prop(c), redop(r) { }
       RegionUsage(const RegionRequirement &req)
@@ -450,6 +462,7 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     struct GenericUser {
     public:
+      GenericUser(void) { }
       GenericUser(const FieldMask &m, const RegionUsage &u);
     public:
       FieldMask field_mask;
@@ -461,6 +474,7 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     struct LogicalUser : public GenericUser {
     public:
+      LogicalUser(void) : GenericUser(), op(NULL), idx(0), gen(0) { }
       LogicalUser(GeneralizedOperation *o, unsigned id, const FieldMask &m, const RegionUsage &u);
     public:
       GeneralizedOperation *op;
@@ -473,6 +487,7 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     struct PhysicalUser : public GenericUser {
     public:
+      PhysicalUser(void) : GenericUser(), single_term(Event::NO_EVENT), multi_term(Event::NO_EVENT) { }
       PhysicalUser(const FieldMask &m, const RegionUsage &u, Event single, Event multi);
     public:
       Event single_term;
@@ -494,9 +509,21 @@ namespace RegionRuntime {
     public:
       void add_reference(void);
       void remove_reference(void);
-      Event issue_copy(InstanceManager *source_manager, Event precondition, const FieldMask &mask);
+      Event issue_copy(InstanceManager *source_manager, Event precondition, 
+                        const FieldMask &mask, IndexSpaceNode *index_space);
+    public:
+      inline Memory get_location(void) const { return location; }
+      inline PhysicalInstance get_instance(void) const
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(instance.exists());
+#endif
+        return instance;
+      }
+      inline const FieldMask& get_allocated_fields(void) const { return allocated_fields; }
+      inline bool is_remote(void) const { return remote; }
+      inline Lock get_lock(void) const { return lock; }
     private:
-      friend class InstanceView;
       unsigned references;
       bool remote;
       Memory location;
@@ -521,7 +548,8 @@ namespace RegionRuntime {
     protected:
       struct TaskUser {
       public:
-        TaskUser(void);
+        TaskUser(void)
+          : references(0), use_multi(false) { }
         TaskUser(const PhysicalUser u, unsigned ref)
           : user(u), references(ref), use_multi(false) { }
       public:
@@ -542,8 +570,8 @@ namespace RegionRuntime {
       void remove_user(UniqueID uid);
       void remove_copy(Event copy);
     public:
-      inline Memory get_location(void) const { return manager->location; }
-      inline const FieldMask& get_physical_mask(void) const { return manager->allocated_fields; }
+      inline Memory get_location(void) const { return manager->get_location(); }
+      inline const FieldMask& get_physical_mask(void) const { return manager->get_allocated_fields(); }
       Event perform_final_close(const FieldMask &mask);
       void copy_from(RegionMapper &rm, InstanceView *src_view, const FieldMask &copy_mask);
       void find_copy_preconditions(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
@@ -700,12 +728,12 @@ namespace RegionRuntime {
     class RegionMapper {
     public:
 #ifdef LOW_LEVEL_LOCKS
-      RegionMapper(TaskContext *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+      RegionMapper(Task *t, UniqueID uid, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     Lock mapper_lock, Processor target, Event single, Event multi, 
                     MappingTagID tag, bool sanitizing, bool inline_mapping, 
                     std::vector<InstanceRef> &source_copy);
 #else
-      RegionMapper(TaskContext *t, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
+      RegionMapper(Task *t, UniqueID uid, ContextID id, unsigned idx, const RegionRequirement &req, Mapper *mapper, 
                     ImmovableLock mapper_lock, Processor target, Event single, Event multi, 
                     MappingTagID tag, bool sanitizing, bool inline_mapping, 
                     std::vector<InstanceRef> &source_copy);
@@ -718,7 +746,8 @@ namespace RegionRuntime {
       bool final_closing;
       unsigned idx;
       const RegionRequirement &req;
-      TaskContext *task;
+      Task *task;
+      UniqueID uid;
 #ifdef LOW_LEVEL_LOCKS
       Lock mapper_lock;
 #else

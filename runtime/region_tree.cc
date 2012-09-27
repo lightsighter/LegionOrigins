@@ -870,6 +870,27 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void RegionTreeForest::unpack_and_remove_reference(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------
+    size_t RegionTreeForest::compute_region_tree_updates_return(void)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::pack_region_tree_updates_return(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------
     void RegionTreeForest::unpack_region_tree_updates_return(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
@@ -2218,7 +2239,7 @@ namespace RegionRuntime {
           // Note that when the siphon operation is done it will automatically
           // update the set of valid instances
           // Now add our user and get the resulting reference back
-          rm.result = new_view->add_user(rm.task->get_unique_id(), user);
+          rm.result = new_view->add_user(rm.uid, user);
           rm.success = true;
         }
       }
@@ -2274,7 +2295,7 @@ namespace RegionRuntime {
           // was an open operation.  Dirty determined by the kind of task
           update_valid_views(rm.ctx, user.field_mask, HAS_WRITE(user.usage), new_view);
           // Add our user and get the reference back
-          rm.result = new_view->add_user(rm.task->get_unique_id(), user);
+          rm.result = new_view->add_user(rm.uid, user);
           rm.success = true;
         }
       }
@@ -3024,6 +3045,28 @@ namespace RegionRuntime {
     // Instance Manager 
     /////////////////////////////////////////////////////////////
 
+    //--------------------------------------------------------------------------
+    void InstanceManager::add_reference(void)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceManager::remove_reference(void)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
+    //--------------------------------------------------------------------------
+    Event InstanceManager::issue_copy(InstanceManager *source_manager, Event precondition,
+                                      const FieldMask &field_mask, IndexSpaceNode *index_space)
+    //--------------------------------------------------------------------------
+    {
+
+    }
+
     /////////////////////////////////////////////////////////////
     // Instance View 
     /////////////////////////////////////////////////////////////
@@ -3069,7 +3112,7 @@ namespace RegionRuntime {
       if (all_dominated)
         update_valid_event(wait_event, user.field_mask);
       // Now update the list of users
-      if (manager->remote)
+      if (manager->is_remote())
       {
         std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
         if (it == added_users.end())
@@ -3095,8 +3138,8 @@ namespace RegionRuntime {
           it->second.references++;
         }
       }
-      return InstanceRef(wait_event, manager->location, manager->instance,
-                          this, false/*copy*/, (IS_ATOMIC(user.usage) ? manager->lock : Lock::NO_LOCK));
+      return InstanceRef(wait_event, manager->get_location(), manager->get_instance(),
+                          this, false/*copy*/, (IS_ATOMIC(user.usage) ? manager->get_lock() : Lock::NO_LOCK));
     }
 
     //--------------------------------------------------------------------------
@@ -3104,7 +3147,7 @@ namespace RegionRuntime {
                                             Event copy_term, const FieldMask &mask)
     //--------------------------------------------------------------------------
     {
-      if (manager->remote)
+      if (manager->is_remote())
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert(added_copy_users.find(copy_term) == added_copy_users.end());
@@ -3126,7 +3169,7 @@ namespace RegionRuntime {
       assert(epoch_copy_users.find(copy_term) == epoch_copy_users.end());
 #endif
       epoch_copy_users[copy_term] = mask;
-      return InstanceRef(copy_term, manager->location, manager->instance,
+      return InstanceRef(copy_term, manager->get_location(), manager->get_instance(),
                           this, true/*copy*/);
     }
 
@@ -3158,7 +3201,7 @@ namespace RegionRuntime {
     {
       // If we're not remote we can check the original set of users,
       // otherwise deletions should only come out of the added users
-      if (!manager->remote)
+      if (!manager->is_remote())
       {
         std::map<UniqueID,TaskUser>::iterator it = users.find(uid);
         if (it != users.end())
@@ -3198,7 +3241,7 @@ namespace RegionRuntime {
     void InstanceView::remove_copy(Event copy_e)
     //--------------------------------------------------------------------------
     {
-      if (!manager->remote)
+      if (!manager->is_remote())
       {
         std::map<Event,ReductionOpID>::iterator it = copy_users.find(copy_e);
         if (it != copy_users.end())
@@ -3233,7 +3276,7 @@ namespace RegionRuntime {
       find_copy_preconditions(preconditions, true/*writing*/, rm.req.redop, copy_mask);
       src_view->find_copy_preconditions(preconditions, false/*writing*/, rm.req.redop, copy_mask);
       Event copy_pre = Event::merge_events(preconditions);
-      Event copy_post = manager->issue_copy(src_view->manager, copy_pre, copy_mask);
+      Event copy_post = manager->issue_copy(src_view->manager, copy_pre, copy_mask, logical_region->row_source);
       // If this is a write copy, update the valid event, otherwise
       // add it as a reduction copy to this instance
       if (rm.req.redop == 0)
@@ -3958,7 +4001,7 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    RegionMapper::RegionMapper(TaskContext *t, ContextID c, unsigned id, const RegionRequirement &r, Mapper *m,
+    RegionMapper::RegionMapper(Task *t, UniqueID u, ContextID c, unsigned id, const RegionRequirement &r, Mapper *m,
 #ifdef LOW_LEVEL_LOCKS
                                 Lock m_lock,
 #else
@@ -3966,7 +4009,7 @@ namespace RegionRuntime {
 #endif
                                 Processor tar, Event single, Event multi, MappingTagID tg, bool sanit,
                                 bool in_map, std::vector<InstanceRef> &source_copy)
-      : ctx(c), sanitizing(sanit), inline_mapping(in_map), success(false), idx(id), req(r), task(t),
+      : ctx(c), uid(u), sanitizing(sanit), inline_mapping(in_map), success(false), idx(id), req(r), task(t),
         mapper_lock(m_lock), mapper(m), tag(tg), target(tar), single_term(single), multi_term(multi),
         source_copy_instances(source_copy), result(InstanceRef())
     //--------------------------------------------------------------------------
