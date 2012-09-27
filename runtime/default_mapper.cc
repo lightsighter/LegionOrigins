@@ -122,6 +122,16 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void Mapper::select_tasks_to_schedule(const std::list<Task*> &ready_tasks,
+                                          std::vector<bool> &ready_mask)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_mapper(LEVEL_SPEW,"Select tasks to schedule in default mapper on processor %x",
+                 local_proc.id);
+      // TODO
+    }
+
+    //--------------------------------------------------------------------------------------------
     bool Mapper::spawn_task(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
@@ -134,7 +144,7 @@ namespace RegionRuntime {
     bool Mapper::map_task_locally(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Map task locally for task %s (ID %d in default mapper on processor %x",
+      log_mapper(LEVEL_SPEW,"Map task %s (ID %d) locally in default mapper on processor %x",
                  task->variants->name, task->task_id, local_proc.id);
       return false;
     }
@@ -307,6 +317,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    bool Mapper::map_region_virtually(const Task *task, const RegionRequirement &req, unsigned index)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_mapper(LEVEL_SPEW,"Map region virtually for task %s (ID %d) in default mapper on processor %x",
+                 task->variants->name, task->task_id, local_proc.id);
+      return false;
+    }
+
+    //--------------------------------------------------------------------------------------------
     void Mapper::map_task_region(const Task *task, Processor target, MappingTagID tag, bool inline_mapping,
                                  const RegionRequirement &req, unsigned index,
                                  const std::map<Memory,bool/*all-fields-up-to-date*/> &current_instances,
@@ -337,6 +356,25 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    void Mapper::notify_failed_mapping(const Task *task, const RegionRequirement &req,
+                                       unsigned index, bool inline_mapping)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_mapper(LEVEL_SPEW,"Notify failed mapping for task %s (ID %d) in default mapper on processor %x",
+                 task->variants->name, task->task_id, local_proc.id);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void Mapper::select_region_layout(const Task *task, const RegionRequirement &req, unsigned index,
+                                      const Memory & chosen_mem)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_mapper(LEVEL_SPEW,"Select region layout for task %s (ID %d) in default mapper on processor %x",
+                 task->variants->name, task->task_id, local_proc.id);
+      // TODO
+    }
+
+    //--------------------------------------------------------------------------------------------
     void Mapper::rank_copy_targets(const Task *task, const RegionRequirement &req,
                                    const std::set<Memory> &current_instances,
                                    std::set<Memory> &to_reuse,
@@ -344,7 +382,7 @@ namespace RegionRuntime {
                                    bool &create_one)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Rank copy targets in default mapper for task %s (ID %d) on processor %x",
+      log_mapper(LEVEL_SPEW,"Rank copy targets for task %s (ID %d) in default mapper on processor %x",
                  task->variants->name, task->task_id, local_proc.id);
       // TODO: Do something more intelligent here
       to_create = memory_stack;
@@ -353,8 +391,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     void Mapper::rank_copy_sources(const std::set<Memory> &current_instances,
                                    const Memory &dst, std::vector<Memory> &chosen_order)
-    //void Mapper::select_copy_source(const std::set<Memory> &current_instances,
-    //                                const Memory &dst, Memory &chosen_src)
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Select copy source in default mapper on processor %x", local_proc.id);
@@ -404,6 +440,15 @@ namespace RegionRuntime {
           assert(false);
         }
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    bool Mapper::speculate_on_predicate(MappingTagID tag, bool &speculative_value)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_mapper(LEVEL_SPEW,"Speculate on predicate in default mapper on processor %x",
+                 local_proc.id);
+      return false;
     }
 
 // FIXME: We'll likely need something significantly different for this
