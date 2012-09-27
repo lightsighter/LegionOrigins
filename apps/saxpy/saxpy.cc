@@ -480,9 +480,11 @@ public:
   virtual void rank_copy_targets(const Task *task,
                                  const RegionRequirement &req,
                                  const std::set<Memory> &current_instances,
-                                 std::vector<Memory> &future_ranking) {
+                                 std::set<Memory> &to_reuse,
+                                 std::vector<Memory> &to_create,
+                                 bool &create_one) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
+    Mapper::rank_copy_targets(task, req, current_instances, to_reuse, to_create, create_one);
   }
 
   virtual void rank_copy_sources(const std::set<Memory> &current_instances,
@@ -642,9 +644,11 @@ public:
   virtual void rank_copy_targets(const Task *task,
                                  const RegionRequirement &req,
                                  const std::set<Memory> &current_instances,
-                                 std::vector<Memory> &future_ranking) {
+                                 std::set<Memory> &to_reuse,
+                                 std::vector<Memory> &to_create,
+                                 bool &create_one) {
     RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
-    Mapper::rank_copy_targets(task, req, current_instances, future_ranking);
+    Mapper::rank_copy_targets(task, req, current_instances, to_reuse, to_create, create_one);
   }
 
   virtual void rank_copy_sources(const std::set<Memory> &current_instances,
