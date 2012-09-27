@@ -122,11 +122,11 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool Mapper::spawn_child_task(const Task *task)
+    bool Mapper::spawn_task(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Spawn child task %s (ID %d) in default mapper on processor %x",
-          task->variants->name, task->task_id, local_proc.id);
+      log_mapper(LEVEL_SPEW,"Spawn task %s (ID %d) in default mapper on processor %x",
+                 task->variants->name, task->task_id, local_proc.id);
       return true;
     }
 
@@ -135,7 +135,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Map task locally for task %s (ID %d in default mapper on processor %x",
-          task->variants->name, task->task_id, local_proc.id);
+                 task->variants->name, task->task_id, local_proc.id);
       return false;
     }
 
@@ -144,7 +144,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Select initial processor for task %s (ID %d) in default mapper on processor %x",
-            task->variants->name, task->task_id, local_proc.id);
+                 task->variants->name, task->task_id, local_proc.id);
       // For the default mapper place it on our local processor, we'll let the load 
       // balancing figure out how to move things around
       // Check to see if there is a variant for our processor
@@ -196,7 +196,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void Mapper::permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
-                                                    std::set<const Task*> &to_steal)
+                                   std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Permit task steal in default mapper on processor %x",local_proc.id);
@@ -210,9 +210,8 @@ namespace RegionRuntime {
       {
         if ((*it)->steal_count < max_steal_count)
         {
-          log_mapper(LEVEL_DEBUG,"Task %s (ID %d) (unique id %d) stolen from processor %x by processor %x",
-               (*it)->variants->name, (*it)->task_id, 
-               (*it)->unique_id, local_proc.id, thief.id);
+          log_mapper(LEVEL_DEBUG,"Task %s (ID %d) stolen from processor %x by processor %x",
+                     (*it)->variants->name, (*it)->task_id, local_proc.id, thief.id);
           to_steal.insert(*it);
           total_stolen++;
           // Check to see if we're done
@@ -238,20 +237,29 @@ namespace RegionRuntime {
               for (std::vector<RegionRequirement>::const_iterator reg_it2 = (*inner_it)->regions.begin();
                     reg_it2 != (*inner_it)->regions.end(); reg_it2++)
               {
-                // Check to make sure they have the same type of region requirement
-                // If they do, just interpret them as regions (this will work evey if they're both partitions)
-                if ((reg_it1->func_type == reg_it2->func_type) &&
-                    (reg_it1->handle.region == reg_it2->handle.region))
+                // Check to make sure they have the same type of region requirement, and that
+                // the region (or partition) is the same.
+                if (reg_it1->handle_type == reg_it2->handle_type)
                 {
-                  shared = true;
-                  break;
+                  if ((reg_it1->handle_type == SINGULAR) &&
+                      (reg_it1->region == reg_it2->region))
+                  {
+                    shared = true;
+                    break;
+                  }
+                  if ((reg_it1->handle_type == PROJECTION) &&
+                      (reg_it1->partition == reg_it2->partition))
+                  {
+                    shared = true;
+                    break;
+                  }
                 }
               }
               if (shared)
               {
-                log_mapper(LEVEL_DEBUG,"Task %s (ID %d) (unique id %d) stolen from processor %x by "
-                    "processor %x", (*inner_it)->variants->name,
-                    (*inner_it)->task_id, (*inner_it)->unique_id, local_proc.id, thief.id);
+                log_mapper(LEVEL_DEBUG,"Task %s (ID %d) stolen from processor %x by processor %x",
+                           (*inner_it)->variants->name, (*inner_it)->task_id, local_proc.id,
+                           thief.id);
                 // Add it to the list of steals and either return or break
                 to_steal.insert(*inner_it);
                 total_stolen++;
@@ -267,25 +275,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::split_index_space(const Task *task, const std::vector<Constraint> &index_space,
-                                                      std::vector<ConstraintSplit> &chunks)
+    void Mapper::slice_index_space(const Task *task, const IndexSpace &index_space,
+                                   std::vector<IndexSplit> &slice)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Split constraint space in default mapper for task %s (ID %d) (unique id %d) on "
-          "processor %x", task->variants->name, task->task_id,
-          task->unique_id, local_proc.id);
-      assert(false);
-      // TODO: Implement something for this
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void Mapper::split_index_space(const Task *task, const std::vector<Range> &index_space,
-                                    std::vector<RangeSplit> &chunks)
-    //--------------------------------------------------------------------------------------------
-    {
-      log_mapper(LEVEL_SPEW,"Split range space in default mapper for task %s (ID %d) (unique id %d) on "
-          "processor %x", task->variants->name, task->task_id,
-          task->unique_id, local_proc.id);
+      log_mapper(LEVEL_SPEW,"Split range space in default mapper for task %s (ID %d) on processor %x",
+                 task->variants->name, task->task_id, local_proc.id);
+// FIXME: Update for new mapper interface!
+#if 0
       // We'll try to split the range space into some factor of the number of processors
       // specified by the splitting factor
       unsigned goal_num_chunks = proc_group.size() * splitting_factor;
@@ -304,15 +301,17 @@ namespace RegionRuntime {
       {
         std::vector<Range> chunk = index_space;
         unsigned cur_proc = 0;
-        decompose_range_space(0, depth, index_space, chunk, chunks, cur_proc,proc_group);
+        decompose_range_space(0, depth, index_space, chunk, slice, cur_proc, proc_group);
       }
+#endif
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
-                                  const std::set<Memory> &current_instances,
-                                  std::vector<Memory> &target_ranking, 
-                                  bool &enable_WAR_optimization)
+    void Mapper::map_task_region(const Task *task, Processor target, MappingTagID tag, bool inline_mapping,
+                                 const RegionRequirement &req, unsigned index,
+                                 const std::map<Memory,bool/*all-fields-up-to-date*/> &current_instances,
+                                 std::vector<Memory> &target_ranking,
+                                 bool &enable_WAR_optimization)
     //--------------------------------------------------------------------------------------------
     {
       if(task->tag == MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION) {
@@ -322,18 +321,16 @@ namespace RegionRuntime {
 	return;
       }
 
-      log_mapper(LEVEL_INFO, "Region=%d tag=%d",
-		 req.handle.region.id, req.tag);
+      log_mapper(LEVEL_INFO, "Region=? tag=%d", req.tag);
       if(req.tag == MAPTAG_DEFAULT_MAPPER_NOMAP_REGION) {
-	log_mapper(LEVEL_INFO, "Mapping tag requests no mapping for region %d", req.handle.region.id);
+	log_mapper(LEVEL_INFO, "Mapping tag requests no mapping for region ?");
 	target_ranking.push_back(Memory::NO_MEMORY);
 	enable_WAR_optimization = false;
 	return;
       }
 
-      log_mapper(LEVEL_SPEW,"Map task region in default mapper for region %d of task %s (ID %d) "
-          "(unique id %d) on processor %x",req.handle.region.id, task->variants->name, 
-          task->task_id, task->unique_id, local_proc.id);
+      log_mapper(LEVEL_SPEW,"Map task region in default mapper for region ? of task %s (ID %d) "
+                 "on processor %x", task->variants->name, task->task_id, local_proc.id);
       // Just give our processor stack
       target_ranking = memory_stack;
       enable_WAR_optimization = war_enabled;
@@ -341,78 +338,76 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     void Mapper::rank_copy_targets(const Task *task, const RegionRequirement &req,
-                                    const std::set<Memory> &current_instances,
-                                    std::vector<Memory> &future_ranking)
+                                   const std::set<Memory> &current_instances,
+                                   std::set<Memory> &to_reuse,
+                                   std::vector<Memory> &to_create,
+                                   bool &create_one)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Rank copy targets in default mapper for task %s (ID %d) (unique id %d) "
-          "on processor %x", task->variants->name, task->task_id, task->unique_id,local_proc.id);
-      future_ranking = memory_stack;
+      log_mapper(LEVEL_SPEW,"Rank copy targets in default mapper for task %s (ID %d) on processor %x",
+                 task->variants->name, task->task_id, local_proc.id);
+      // TODO: Do something more intelligent here
+      to_create = memory_stack;
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::select_copy_source(const std::set<Memory> &current_instances,
-                                    const Memory &dst, Memory &chosen_src)
+    void Mapper::rank_copy_sources(const std::set<Memory> &current_instances,
+                                   const Memory &dst, std::vector<Memory> &chosen_order)
+    //void Mapper::select_copy_source(const std::set<Memory> &current_instances,
+    //                                const Memory &dst, Memory &chosen_src)
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Select copy source in default mapper on processor %x", local_proc.id);
       // Handle the simple case of having the destination memory in the set of instances 
       if (current_instances.find(dst) != current_instances.end())
       {
-        chosen_src = dst;
+        chosen_order.push_back(dst);
+        return;
       }
-      else
+
+      // Pick the one with the best memory-memory bandwidth
+      // TODO: handle the case where we need a multi-hop copy
+      bool found = false;
+      unsigned max_band = 0;
+      for (std::set<Memory>::const_iterator it = current_instances.begin();
+           it != current_instances.end(); it++)
       {
-        // Pick the one with the best memory-memory bandwidth
-        // TODO: handle the case where we need a multi-hop copy
-        bool found = false;
-        unsigned max_band = 0;
-        for (std::set<Memory>::const_iterator it = current_instances.begin();
-              it != current_instances.end(); it++)
+        std::vector<Machine::MemoryMemoryAffinity> affinities;
+        int size = machine->get_mem_mem_affinity(affinities, *it, dst);
+        log_mapper(LEVEL_SPEW,"memory %x has %d affinities", it->id, size);
+        if (size > 0)
         {
-          std::vector<Machine::MemoryMemoryAffinity> affinities;
-          int size = machine->get_mem_mem_affinity(affinities, *it, dst);
-	  log_mapper(LEVEL_SPEW,"memory %x has %d affinities", it->id, size);
-          if (size > 0)
+          if (!found)
           {
-            if (!found)
+            found = true;
+            max_band = affinities[0].bandwidth;
+            chosen_order.push_back(*it);
+          }
+          else
+          {
+            if (affinities[0].bandwidth > max_band)
             {
-              found = true;
               max_band = affinities[0].bandwidth;
-              chosen_src = *it;
-            }
-            else
-            {
-              if (affinities[0].bandwidth > max_band)
-              {
-                max_band = affinities[0].bandwidth;
-                chosen_src = *it;
-              }
+              chosen_order.push_back(*it);
             }
           }
-        }
-        // Make sure that we always set a value
-        if (!found)
-        {
-          // This is the multi-hop copy because none of the memories had an affinity
-	  // SJT: just send the first one
-	  if(current_instances.size() > 0) {
-	    chosen_src = *(current_instances.begin());
-	  } else {
-	    assert(false);
-	  }
+          }
+      }
+      // Make sure that we always set a value
+      if (!found)
+      {
+        // This is the multi-hop copy because none of the memories had an affinity
+        // SJT: just send the first one
+        if(current_instances.size() > 0) {
+          chosen_order.push_back(*(current_instances.begin()));
+        } else {
+          assert(false);
         }
       }
     }
 
-    //--------------------------------------------------------------------------------------------
-    bool Mapper::compact_partition(const Partition &partition, MappingTagID tag)
-    //--------------------------------------------------------------------------------------------
-    {
-      // Still undefined what this does so don't do it
-      return false;
-    }
-
+// FIXME: We'll likely need something significantly different for this
+#if 0
     //--------------------------------------------------------------------------------------------
     void Mapper::decompose_range_space(unsigned cur_depth, unsigned max_depth,
                                         const std::vector<Range> &index_space,
@@ -446,5 +441,6 @@ namespace RegionRuntime {
         }
       }
     }
+#endif
   };
 };
