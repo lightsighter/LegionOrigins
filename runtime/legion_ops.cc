@@ -3252,7 +3252,7 @@ namespace RegionRuntime {
       // Allow this to be re-entrant in case sanitization fails
       target_proc = invoke_mapper_target_proc();
       distributed = true;
-      bool is_local = (target_proc != runtime->local_proc);
+      bool is_local = (target_proc == runtime->local_proc);
       // If the target processor isn't us we have to
       // send our task away
       if (!is_local)
