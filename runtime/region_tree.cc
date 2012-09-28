@@ -2867,13 +2867,14 @@ namespace RegionRuntime {
       assert(!rm.req.instance_fields.empty());
 #endif
       // Ask the mapper what the blocking factor should be
-      size_t blocking_factor = 1;
+      // Find the maximum value that can be returned
+      size_t blocking_factor = handle.index_space.get_valid_mask().get_num_elmts();
       // Only need to do this if there is more than one field
       if (rm.req.instance_fields.size() > 1);
       {
         DetailedTimer::ScopedPush sp(TIME_MAPPER);
         AutoLock m_lock(rm.mapper_lock);
-        rm.mapper->select_region_layout(rm.task, rm.req, rm.idx, location, blocking_factor);
+        blocking_factor = rm.mapper->select_region_layout(rm.task, rm.req, rm.idx, location, blocking_factor);
       }
       // Now get the field Mask and see if we can make the instance
       InstanceManager *manager = column_source->create_instance(location, row_source->handle, 

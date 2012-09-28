@@ -780,7 +780,7 @@ namespace RegionRuntime {
       virtual bool post_slice(void);
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size);
     protected:
-      PointTask* clone_as_point_task(void);
+      PointTask* clone_as_point_task(bool new_point);
     public:
       void set_denominator(unsigned long value);
       void point_task_mapped(PointTask *point);
@@ -817,6 +817,8 @@ namespace RegionRuntime {
       // (1/denominator indicates fraction of index space in this slice)
       unsigned long denominator; // Set explicity, no need to copy
       bool enumerating; // Set to true when we're enumerating the slice
+      LowLevel::ElementMask::Enumerator *enumerator;
+      int remaining_enumerated;
       unsigned num_unmapped_points;
       unsigned num_unfinished_points;
       // Keep track of the number of non-virtual mappings for point tasks

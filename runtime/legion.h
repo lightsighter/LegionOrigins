@@ -125,7 +125,13 @@ namespace RegionRuntime {
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
       friend class TaskContext;
+      friend class IndividualTask;
+      friend class SliceTask;
+      friend class IndexTask;
+      friend class PointTask;
       Task(); 
+    protected:
+      void set_index_point(const void *buffer, size_t point_size, unsigned dim);
     protected:
       void clone_task_from(Task *rhs);
       size_t compute_user_task_size(void);
