@@ -545,6 +545,12 @@ namespace RegionRuntime {
       void destroy(void) const;
 
       struct CopySrcDstField {
+      public:
+        CopySrcDstField(void) 
+          : inst(RegionInstance::NO_INST), offset(0), size(0) { }
+        CopySrcDstField(RegionInstance i, unsigned o, unsigned s)
+          : inst(i), offset(o), size(s) { }
+      public:
 	RegionInstance inst;
 	unsigned offset, size;
       };
