@@ -1013,7 +1013,7 @@ namespace RegionRuntime {
       if (arglen > 0)
       {
         args = malloc(arglen);
-        memcpy(a, args, arglen);
+        memcpy(args, a, arglen);
       }
       // otherwise user_args better be NULL
 #ifdef DEBUG_HIGH_LEVEL
