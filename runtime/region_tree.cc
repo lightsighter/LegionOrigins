@@ -153,6 +153,11 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     RegionTreeForest::RegionTreeForest(void)
+#ifdef LOW_LEVEL_LOCKS
+      : context_lock(Lock::create_lock())
+#else
+      : context_lock(ImmovableLock(true/*initialize*/))
+#endif
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -164,7 +169,11 @@ namespace RegionRuntime {
     RegionTreeForest::~RegionTreeForest(void)
     //--------------------------------------------------------------------------
     {
-
+#ifdef LOW_LEVEL_LOCKS
+      context_lock.destroy_lock();
+#else
+      context_lock.destroy();
+#endif
     }
 
     //--------------------------------------------------------------------------

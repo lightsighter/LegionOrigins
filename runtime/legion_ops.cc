@@ -1033,8 +1033,9 @@ namespace RegionRuntime {
       orig_proc = runtime->local_proc;
       // Intialize fields in any sub-types
       initialize_subtype_fields();
-      // Register with the parent task
-      parent->register_child_task(this);
+      // Register with the parent task, only NULL if initializing top-level task
+      if (parent != NULL)
+        parent->register_child_task(this);
     }
 
     //--------------------------------------------------------------------------
@@ -5577,7 +5578,7 @@ namespace RegionRuntime {
         {
           unlock();
 #ifdef DEBUG_HIGH_LEVEL
-          assert(points.size() >= remaining_enumerated);
+          assert(int(points.size()) >= remaining_enumerated);
 #endif
           PointTask *next_point = points[points.size()-remaining_enumerated];
           bool point_success = next_point->perform_mapping();     

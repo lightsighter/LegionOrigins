@@ -2716,8 +2716,8 @@ namespace RegionRuntime {
         // context when we're done.  This will make sure that everything gets
         // cleanedup and will help capture any leaks.
         Future f = top->get_future();
-        Serializer rez(sizeof(Future));
-        rez.serialize<Future>(f);
+        Serializer rez(sizeof(FutureImpl*));
+        rez.serialize<FutureImpl*>(f.impl);
         local_proc.spawn(TERMINATION_ID,rez.get_buffer(),sizeof(Future));
         // Now we can launch the task on the actual processor that we're running on
         top->perform_mapping();
@@ -4840,10 +4840,10 @@ namespace RegionRuntime {
     {
       Deserializer derez(args, arglen);
       // Unpack the future from the buffer
-      Future f;
-      derez.deserialize<Future>(f); 
+      FutureImpl *impl;
+      derez.deserialize<FutureImpl*>(impl);
       // This will wait until the top level task has finished
-      f.get_void_result();
+      impl->get_void_result();
       log_task(LEVEL_SPEW,"Computation has terminated, shutting down high level runtime...");
       // Once this is over, launch a kill task on all the low-level processors
       const std::set<Processor> &all_procs = machine->get_all_processors();
