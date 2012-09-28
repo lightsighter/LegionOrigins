@@ -4448,7 +4448,7 @@ namespace RegionRuntime {
       // Move any non-virtual mapped references to the source copy references.
       // We can't just remove the references because they might cause the instance
       // to get deleted before the copy completes.
-      // TODO: how do we handel the pending copy events for these copies?
+      // TODO: how do we handle the pending copy events for these copies?
       // When do we know that is safe to remove the references because our
       // task will no longer depend on the event for when the copy is done.
       for (unsigned idx = 0; idx < physical_instances.size(); idx++)
@@ -5301,6 +5301,8 @@ namespace RegionRuntime {
         remaining_bytes = 0;
         denominator = 1;
         enumerating = false;
+        enumerator = NULL;
+        remaining_enumerated = 0;
         num_unmapped_points = 0;
         num_unfinished_points = 0;
       }
@@ -5319,6 +5321,11 @@ namespace RegionRuntime {
         free(remaining_buffer);
         remaining_buffer = NULL;
         remaining_bytes = 0;
+      }
+      if (enumerator != NULL)
+      {
+        delete enumerator;
+        enumerator = NULL;
       }
       deactivate_multi();
       runtime->free_slice_task(this);
@@ -5417,8 +5424,20 @@ namespace RegionRuntime {
         {
           lock();
           enumerating = true;
-          // TODO: Enumerate the points in the index space and clone
-          // a point for each one of them
+          LowLevel::ElementMask::Enumerator *enumerator = 
+                      index_space.get_valid_mask().enumerate_enabled();
+          int value, length;
+          while (enumerator->get_next(value,length))
+          {
+            for (int idx = 0; idx < length; idx++)
+            {
+              PointTask *next_point = clone_as_point_task(true/*new point*/);
+              next_point->set_index_point(&value, sizeof(int), 1);
+              points.push_back(next_point); 
+              value++;
+            }
+          }
+          delete enumerator;
 
           num_unmapped_points = points.size();
           num_unfinished_points = points.size();
@@ -5544,33 +5563,69 @@ namespace RegionRuntime {
       num_unfinished_points = 0;
 
       bool map_success = true;
-      // TODO: Enumerate the points
+      if (enumerator == NULL)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(remaining_enumerated == 0);
+#endif
+        enumerator = index_space.get_valid_mask().enumerate_enabled();
+      }
       do
       {
-        PointTask *next_point = clone_as_point_task(); 
-        points.push_back(next_point);
-        num_unmapped_points++;
-        num_unfinished_points++;
-        unlock();
-        bool point_success = next_point->perform_mapping();
-        if (!point_success)
+        // Handle mapping any previous points
+        while (remaining_enumerated > 0)
         {
-          // TODO: save the state of the enumerator 
-          map_success = false;
+          unlock();
+#ifdef DEBUG_HIGH_LEVEL
+          assert(points.size() >= remaining_enumerated);
+#endif
+          PointTask *next_point = points[points.size()-remaining_enumerated];
+          bool point_success = next_point->perform_mapping();     
+          if (!point_success)
+          {
+            map_success = false;
+            lock();
+            break;
+          }
+          else
+          {
+            next_point->launch_task(); 
+          }
+          lock();
+          remaining_enumerated--;
+        }
+        // If we didn't succeed in mapping all the points, break out
+        if (!map_success)
           break;
-        }
-        else
+        int value;
+        // Make new points for everything, we'll map them the next
+        // time around the loop
+        if (enumerator->get_next(value, remaining_enumerated))
         {
-          next_point->launch_task();
+          // Make points for all of them 
+          for (int idx = 0; idx < remaining_enumerated; idx++)
+          {
+            PointTask *next_point = clone_as_point_task(true/*new point*/);
+            next_point->set_index_point(&value, sizeof(int), 1);
+            points.push_back(next_point);
+            num_unmapped_points++;
+            num_unfinished_points++;
+            value++;
+          }
         }
-        lock();
       }
-      while (0);
+      while (remaining_enumerated > 0);
       unlock();
       // No need to hold the lock when doing the post-slice-start since
       // we know that all the points have been enumerated at this point
       if (map_success)
+      {
+        // Can clean up our enumerator
+        delete enumerator;
+        enumerator = NULL;
+        // Call post slice start
         post_slice_start(); 
+      }
       lock();
       // Handle the case where all the children have called point_task_mapped
       // before we made it here.  The fine-grained locking here is necessary
@@ -5845,7 +5900,7 @@ namespace RegionRuntime {
         for (unsigned idx = 0; idx < num_points; idx++)
         {
           // Clone this as a point task, then unpack it
-          PointTask *next_point = clone_as_point_task();
+          PointTask *next_point = clone_as_point_task(false/*new point*/);
           next_point->unpack_task(derez);
           points.push_back(next_point);
         }
@@ -5992,14 +6047,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    PointTask* SliceTask::clone_as_point_task(void)
+    PointTask* SliceTask::clone_as_point_task(bool new_point)
     //--------------------------------------------------------------------------
     {
       PointTask *result = runtime->get_available_point_task(this);
       result->clone_task_context_from(this);
       result->slice_owner = this;
-      result->point_termination_event = UserEvent::create_user_event();
-      // TODO: Set the point buffer and get the point argument
+      if (new_point)
+        result->point_termination_event = UserEvent::create_user_event();
       return result;
     }
 

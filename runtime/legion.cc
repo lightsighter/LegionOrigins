@@ -121,6 +121,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void Task::set_index_point(const void *buffer, size_t point_size, unsigned dim)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(index_point == NULL);
+#endif
+      size_t num_bytes = point_size * dim;
+      index_point = malloc(num_bytes);
+      memcpy(index_point, buffer, num_bytes);
+      index_element_size = point_size;
+      index_dimensions = dim;
+    }
+
+    //--------------------------------------------------------------------------
     void Task::clone_task_from(Task *rhs)
     //--------------------------------------------------------------------------
     {
