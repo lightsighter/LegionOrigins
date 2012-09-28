@@ -64,7 +64,7 @@ namespace RegionRuntime {
       void analyze_partition_deletion(ContextID ctx, LogicalPartition handle, DeletionOperation *op);
     public:
       // Physical Region contexts
-      InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx);
+      InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, UniqueID uid, ContextID ctx);
       void map_region(RegionMapper &rm, LogicalRegion start_region);
       Event close_to_instance(const InstanceRef &ref, RegionMapper &rm);
     public:
@@ -109,6 +109,11 @@ namespace RegionRuntime {
       void pack_leaked_return(Serializer &rez);
       void unpack_leaked_return(Deserializer &derez); // will unpack leaked references and remove them
     protected:
+      friend class IndexSpaceNode;
+      friend class IndexPartNode;
+      friend class FieldSpaceNode;
+      friend class RegionNode;
+      friend class PartitionNode;
       friend class InstanceManager;
       friend class InstanceView;
       void register_manager(InstanceManager *manager);
@@ -178,7 +183,7 @@ namespace RegionRuntime {
       friend class InstanceManager;
       friend class InstanceView;
       IndexSpaceNode(IndexSpace sp, IndexPartNode *par,
-                Color c, bool add);
+                Color c, bool add, RegionTreeForest *ctx);
     public:
       void add_child(IndexPartition handle, IndexPartNode *node);
       void remove_child(Color c);
@@ -193,6 +198,7 @@ namespace RegionRuntime {
       const unsigned depth;
       const Color color;
       IndexPartNode *const parent;
+      RegionTreeForest *const context;
       std::map<Color,IndexPartNode*> color_map;
       std::list<RegionNode*> logical_nodes; // corresponding region nodes
       std::set<std::pair<Color,Color> > disjoint_subsets; // pairs of disjoint subsets
@@ -211,7 +217,7 @@ namespace RegionRuntime {
       friend class InstanceManager;
       friend class InstanceView;
       IndexPartNode(IndexPartition p, IndexSpaceNode *par,
-                Color c, bool dis, bool add);
+                Color c, bool dis, bool add, RegionTreeForest *ctx);
     public:
       void add_child(IndexSpace handle, IndexSpaceNode *node);
       void remove_child(Color c);
@@ -225,6 +231,7 @@ namespace RegionRuntime {
       const unsigned depth;
       const Color color;
       IndexSpaceNode *const parent;
+      RegionTreeForest *const context;
       std::map<Color,IndexSpaceNode*> color_map;
       std::list<PartitionNode*> logical_nodes; // corresponding partition nodes
       std::set<std::pair<Color,Color> > disjoint_subspaces; // for non-disjoint partitions
@@ -240,21 +247,34 @@ namespace RegionRuntime {
       friend class RegionTreeForest;
       friend class InstanceManager;
       friend class InstanceView;
-      FieldSpaceNode(FieldSpace sp);
-      typedef std::pair<size_t,unsigned/*idx*/> FieldInfo;
+      FieldSpaceNode(FieldSpace sp, RegionTreeForest *ctx);
+    public:
+      struct FieldInfo {
+      public:
+        FieldInfo(void) : field_size(0), idx(0) { }
+        FieldInfo(size_t size, unsigned id)
+          : field_size(size), idx(id) { }
+      public:
+        size_t field_size;
+        unsigned idx;
+      };
     public:
       void allocate_fields(const std::map<FieldID,size_t> &field_allocations);
       void free_fields(const std::set<FieldID> &to_free);
       bool has_field(FieldID fid);
       size_t get_field_size(FieldID fid);
+      bool is_set(FieldID fid, const FieldMask &mask) const;
     public:
       void add_instance(RegionNode *node);
       void remove_instance(RegionNode *node);
+      InstanceManager* create_instance(Memory location, IndexSpace space, 
+                    const std::vector<FieldID> &fields, size_t blocking_factor);
     public:
       FieldMask get_field_mask(const std::vector<FieldID> &fields);
       FieldMask get_field_mask(const std::set<FieldID> &fields);
     private:
       const FieldSpace handle;
+      RegionTreeForest *const context;
       // Top nodes in the trees for which this field space is used 
       std::list<RegionNode*> logical_nodes;
       std::map<FieldID,FieldInfo> fields;
@@ -308,6 +328,8 @@ namespace RegionRuntime {
         bool context_top;
       };
     public:
+      RegionTreeNode(RegionTreeForest *ctx);
+    public:
       void register_logical_region(const LogicalUser &user, RegionAnalyzer &az);
       void open_logical_tree(const LogicalUser &user, RegionAnalyzer &az);
       void open_logical_tree(const LogicalUser &user, const ContextID ctx, std::vector<Color> &path);
@@ -333,6 +355,7 @@ namespace RegionRuntime {
       virtual bool color_match(Color c) = 0;
 #endif
     protected:
+      RegionTreeForest *const context;
       std::map<ContextID,LogicalState> logical_states;
       std::map<ContextID,PhysicalState> physical_states;
     };
@@ -350,7 +373,7 @@ namespace RegionRuntime {
       friend class InstanceManager;
       friend class InstanceView;
       RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
-                 FieldSpaceNode *col_src, bool add);
+                 FieldSpaceNode *col_src, bool add, RegionTreeForest *ctx);
     public:
       void add_child(LogicalPartition handle, PartitionNode *child);
       bool has_child(Color c);
@@ -385,7 +408,7 @@ namespace RegionRuntime {
       void find_valid_instance_views(ContextID ctx, 
                                      std::list<std::pair<InstanceView*,FieldMask> > &valid_views, 
                              const FieldMask &valid_mask, const FieldMask &field_mask, bool needs_space);
-      InstanceView* create_instance(Memory location, const FieldMask &field_mask);
+      InstanceView* create_instance(Memory location, RegionMapper &rm);
       void issue_final_close_operation(const PhysicalUser &user, PhysicalCloser &closer);
       void update_valid_views(ContextID ctx, const FieldMask &field_mask);
     private:
@@ -407,7 +430,7 @@ namespace RegionRuntime {
       friend class InstanceManager;
       friend class InstanceView;
       PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src,
-                    bool add);
+                    bool add, RegionTreeForest *ctx);
     public:
       void add_child(LogicalRegion handle, RegionNode *child);
       bool has_child(Color c);
@@ -505,12 +528,8 @@ namespace RegionRuntime {
      */
     class InstanceManager {
     public:
-
-    public:
-      void add_reference(void);
-      void remove_reference(void);
-      Event issue_copy(InstanceManager *source_manager, Event precondition, 
-                        const FieldMask &mask, IndexSpaceNode *index_space);
+      InstanceManager(Memory m, PhysicalInstance inst, const std::map<FieldID,IndexSpace::CopySrcDstField> &infos,
+                      const FieldMask &mask, RegionTreeForest *ctx, bool rem, bool clone);
     public:
       inline Memory get_location(void) const { return location; }
       inline PhysicalInstance get_instance(void) const
@@ -523,13 +542,28 @@ namespace RegionRuntime {
       inline const FieldMask& get_allocated_fields(void) const { return allocated_fields; }
       inline bool is_remote(void) const { return remote; }
       inline Lock get_lock(void) const { return lock; }
+    public:
+      void add_reference(void);
+      void remove_reference(void);
+      Event issue_copy(InstanceManager *source_manager, Event precondition, 
+                        const FieldMask &mask, FieldSpaceNode *field_space, IndexSpace index_space);
+      InstanceView* create_view(InstanceView *par, RegionNode *reg);
+      void find_info(FieldID fid, std::vector<IndexSpace::CopySrcDstField> &sources);
+      InstanceManager* clone_manager(const FieldMask &mask, FieldSpaceNode *node) const;
     private:
+      void garbage_collect(void);
+    private:
+      RegionTreeForest *const context;
       unsigned references;
-      bool remote;
-      Memory location;
+      const bool remote;
+      const bool clone;
+      Fraction<unsigned long> remote_frac; // The fraction we are remote from somewhere else
+      Fraction<unsigned long> local_frac; // Fraction of this instance info that is still here
+      const Memory location;
       PhysicalInstance instance;
       Lock lock;
       FieldMask allocated_fields;
+      std::map<FieldID,IndexSpace::CopySrcDstField> field_infos;
     };
 
     /////////////////////////////////////////////////////////////
@@ -575,6 +609,7 @@ namespace RegionRuntime {
       Event perform_final_close(const FieldMask &mask);
       void copy_from(RegionMapper &rm, InstanceView *src_view, const FieldMask &copy_mask);
       void find_copy_preconditions(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
+      const PhysicalUser& find_user(UniqueID uid) const;
     private:
       void check_state_change(bool adding);
       void find_dependences_above(std::set<Event> &wait_on, const PhysicalUser &user);

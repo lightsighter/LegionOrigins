@@ -151,6 +151,8 @@ namespace RegionRuntime {
     public:
       template<unsigned int SHIFT, unsigned int MASK>
       inline void set_bit(unsigned bit);
+      template<unsigned int SHIFT, unsigned int MASK>
+      inline bool is_set(unsigned bit) const;
     public:
       inline bool operator==(const BitMask &rhs) const;
       inline bool operator<(const BitMask &rhs) const;
@@ -515,11 +517,20 @@ namespace RegionRuntime {
 
     //-------------------------------------------------------------------------
     template<typename T, unsigned int MAX> template<unsigned SHIFT, unsigned MASK>
-    void BitMask<T,MAX>::set_bit(unsigned bit)
+    inline void BitMask<T,MAX>::set_bit(unsigned bit)
     //-------------------------------------------------------------------------
     {
       unsigned idx = bit >> SHIFT;
       bit_vector[idx] |= (1ULL << (bit & MASK));
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned int MAX> template<unsigned SHIFT, unsigned MASK>
+    inline bool BitMask<T,MAX>::is_set(unsigned bit) const
+    //-------------------------------------------------------------------------
+    {
+      unsigned idx = bit >> SHIFT;
+      return (bit_vector[idx] & (1ULL << (bit & MASK)));
     }
 
     //-------------------------------------------------------------------------

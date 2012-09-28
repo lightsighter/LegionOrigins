@@ -1299,7 +1299,7 @@ namespace RegionRuntime {
        * the blocking factor.  
        */
       virtual void select_region_layout(const Task *task, const RegionRequirement &req, unsigned index,
-                                        const Memory & chosen_mem); // SJT: FIXME, PhysicalLayout &layout);
+                                        const Memory & chosen_mem, size_t blocking_factor); 
 
       /**
        * A copy-up operation is occuring to write dirty data back to a parent physical

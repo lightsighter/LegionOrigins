@@ -292,7 +292,15 @@ namespace RegionRuntime {
     friend class IndexTask;                       \
     friend class SliceTask;                       \
     friend class RegionRequirement;               \
-    friend class RegionTreeForest;
+    friend class RegionTreeForest;                \
+    friend class IndexSpaceNode;                  \
+    friend class IndexPartNode;                   \
+    friend class FieldSpaceNode;                  \
+    friend class RegionTreeNode;                  \
+    friend class RegionNode;                      \
+    friend class PartitionNode;                   \
+    friend class InstanceView;                    \
+    friend class InstanceManager;
 
     // Timing events
     enum {

@@ -2675,7 +2675,8 @@ namespace RegionRuntime {
         }
         else
         {
-          clone_instances.push_back(forest_ctx->initialize_physical_context(regions[idx].region, physical_instances[idx], ctx_id));
+          clone_instances.push_back(forest_ctx->initialize_physical_context(regions[idx].region, 
+                                                    physical_instances[idx], unique_id, ctx_id));
         }
       }
       unlock_context();

@@ -735,13 +735,28 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceRef RegionTreeForest::initialize_physical_context(LogicalRegion handle, InstanceRef ref, ContextID ctx)
+    InstanceRef RegionTreeForest::initialize_physical_context(LogicalRegion handle, InstanceRef ref, 
+                                                              UniqueID uid, ContextID ctx)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
+      assert(ref.view != NULL);
 #endif
-
+      // Initialize the physical context
+      RegionNode *top_node = get_node(handle);
+      top_node->initialize_physical_context(ctx);
+      // Find the field mask for which this task has privileges
+      const PhysicalUser &user= ref.view->find_user(uid);
+      // Now go through and make a new InstanceManager and InstanceView for the
+      // top level region and put them at the top of the tree
+      InstanceManager *clone_manager = ref.view->manager->clone_manager(user.field_mask, get_node(handle.field_space));
+      InstanceView *clone_view = clone_manager->create_view(NULL/*no parent*/, top_node);
+      // Update the state of the top level node 
+      RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
+      state.context_top = true;
+      state.valid_views[clone_view] = user.field_mask;
+      return clone_view->add_user(uid, user);  
     }
 
     //--------------------------------------------------------------------------
@@ -961,7 +976,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(index_nodes.find(sp) == index_nodes.end());
 #endif
-      IndexSpaceNode *result = new IndexSpaceNode(sp, parent, c, add);
+      IndexSpaceNode *result = new IndexSpaceNode(sp, parent, c, add, this);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result != NULL);
 #endif
@@ -979,7 +994,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(index_parts.find(p) == index_parts.end());
 #endif
-      IndexPartNode *result = new IndexPartNode(p, parent, c, dis, add);
+      IndexPartNode *result = new IndexPartNode(p, parent, c, dis, add, this);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result != NULL);
 #endif
@@ -996,7 +1011,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(field_nodes.find(sp) == field_nodes.end());
 #endif
-      FieldSpaceNode *result = new FieldSpaceNode(sp);
+      FieldSpaceNode *result = new FieldSpaceNode(sp, this);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result != NULL);
 #endif
@@ -1017,7 +1032,7 @@ namespace RegionRuntime {
       if (par == NULL)
         col_src = get_node(r.field_space);
 
-      RegionNode *result = new RegionNode(r, par, row_src, col_src, add);
+      RegionNode *result = new RegionNode(r, par, row_src, col_src, add, this);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result != NULL);
 #endif
@@ -1036,7 +1051,7 @@ namespace RegionRuntime {
       assert(part_nodes.find(p) == part_nodes.end());
 #endif
       IndexPartNode *row_src = get_node(p.index_partition);
-      PartitionNode *result = new PartitionNode(p, par, row_src, add);
+      PartitionNode *result = new PartitionNode(p, par, row_src, add, this);
 #ifdef DEBUG_HIGH_LEVEL
       assert(result != NULL);
 #endif
@@ -1262,9 +1277,9 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    IndexSpaceNode::IndexSpaceNode(IndexSpace sp, IndexPartNode *par, Color c, bool add)
+    IndexSpaceNode::IndexSpaceNode(IndexSpace sp, IndexPartNode *par, Color c, bool add, RegionTreeForest *ctx)
       : handle(sp), depth((par == NULL) ? 0 : par->depth+1),
-        color(c), parent(par), added(add)
+        color(c), parent(par), context(ctx), added(add)
     //--------------------------------------------------------------------------
     {
     }
@@ -1365,9 +1380,10 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    IndexPartNode::IndexPartNode(IndexPartition p, IndexSpaceNode *par, Color c, bool dis, bool add)
+    IndexPartNode::IndexPartNode(IndexPartition p, IndexSpaceNode *par, Color c, 
+                                  bool dis, bool add, RegionTreeForest *ctx)
       : handle(p), depth((par == NULL) ? 0 : par->depth+1),
-        color(c), parent(par), disjoint(dis), added(add)
+        color(c), parent(par), context(ctx), disjoint(dis), added(add)
     //--------------------------------------------------------------------------
     {
     }
@@ -1452,8 +1468,8 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    FieldSpaceNode::FieldSpaceNode(FieldSpace sp)
-      : handle(sp), total_index_fields(0)
+    FieldSpaceNode::FieldSpaceNode(FieldSpace sp, RegionTreeForest *ctx)
+      : handle(sp), context(ctx), total_index_fields(0)
     //--------------------------------------------------------------------------
     {
     }
@@ -1522,7 +1538,18 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(fields.find(fid) != fields.end());
 #endif
-      return fields[fid].first;
+      return fields[fid].field_size;
+    }
+
+    //--------------------------------------------------------------------------
+    bool FieldSpaceNode::is_set(FieldID fid, const FieldMask &mask) const
+    //--------------------------------------------------------------------------
+    {
+      std::map<FieldID,FieldInfo>::const_iterator finder = fields.find(fid);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(finder != fields.end());
+#endif
+      return mask.is_set<FIELD_SHIFT,FIELD_MASK>(finder->second.idx);
     }
 
     //--------------------------------------------------------------------------
@@ -1556,6 +1583,63 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    InstanceManager* FieldSpaceNode::create_instance(Memory location, IndexSpace space,
+                        const std::vector<FieldID> &new_fields, size_t blocking_factor)
+    //--------------------------------------------------------------------------
+    {
+      InstanceManager *result = NULL;
+      if (new_fields.size() == 1)
+      {
+        std::map<FieldID,FieldInfo>::const_iterator finder = fields.find(new_fields.back());
+#ifdef DEBUG_HIGH_LEVEL
+        assert(finder != fields.end());
+#endif
+
+        PhysicalInstance inst = space.create_instance(location, finder->second.field_size);
+        if (inst.exists())
+        {
+          std::map<FieldID,IndexSpace::CopySrcDstField> field_infos;
+          field_infos[new_fields.back()] = IndexSpace::CopySrcDstField(inst, 0, finder->second.field_size);
+          result = new InstanceManager(location, inst, field_infos, get_field_mask(new_fields), 
+                                        context, false/*remote*/, false/*clone*/); 
+        }
+      }
+      else
+      {
+        std::vector<size_t> field_sizes;
+        // Figure out the size of each element
+        for (unsigned idx = 0; idx < new_fields.size(); idx++)
+        {
+          std::map<FieldID,FieldInfo>::const_iterator finder = fields.find(new_fields[idx]);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != fields.end());
+#endif
+          field_sizes.push_back(finder->second.field_size);
+        }
+        // Now try and make the instance
+        PhysicalInstance inst = space.create_instance(location, field_sizes, blocking_factor);
+        if (inst.exists())
+        {
+          std::map<FieldID,IndexSpace::CopySrcDstField> field_infos;
+          unsigned accum_offset = 0;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(field_sizes.size() == new_fields.size());
+#endif
+          for (unsigned idx = 0; idx < new_fields.size(); idx++)
+          {
+            field_infos[new_fields[idx]] = IndexSpace::CopySrcDstField(inst, accum_offset, field_sizes[idx]);
+            accum_offset += field_sizes[idx];
+          }
+          result = new InstanceManager(location, inst, field_infos, get_field_mask(new_fields), 
+                                        context, false/*remote*/, false/*clone*/);
+        }
+      }
+      if (result != NULL)
+        context->register_manager(result);
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
     FieldMask FieldSpaceNode::get_field_mask(const std::vector<FieldID> &mask_fields)
     //--------------------------------------------------------------------------
     {
@@ -1566,7 +1650,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(fields.find(*it) != fields.end());
 #endif
-        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].second);
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].idx);
       }
       return result;
     }
@@ -1582,7 +1666,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(fields.find(*it) != fields.end());
 #endif
-        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].second);
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].idx);
       }
       return result;
     }
@@ -1590,6 +1674,13 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     // Region Tree Node 
     /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    RegionTreeNode::RegionTreeNode(RegionTreeForest *ctx)
+      : context(ctx)
+    //--------------------------------------------------------------------------
+    {
+    }
 
     //--------------------------------------------------------------------------
     void RegionTreeNode::register_logical_region(const LogicalUser &user, RegionAnalyzer &az)
@@ -2085,8 +2176,8 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     RegionNode::RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
-                           FieldSpaceNode *col_src, bool add)
-      : RegionTreeNode(), handle(r), parent(par), 
+                           FieldSpaceNode *col_src, bool add, RegionTreeForest *ctx)
+      : RegionTreeNode(ctx), handle(r), parent(par), 
         row_source(row_src), column_source(col_src), added(add)
     //--------------------------------------------------------------------------
     {
@@ -2188,7 +2279,18 @@ namespace RegionRuntime {
     void RegionNode::initialize_physical_context(ContextID ctx)
     //--------------------------------------------------------------------------
     {
-
+      if (physical_states.find(ctx) == physical_states.end())
+        physical_states[ctx] = PhysicalState();
+      PhysicalState &state = physical_states[ctx];
+      state.valid_views.clear();
+      state.dirty_mask = FieldMask();
+      state.context_top = false;
+      // Now do all our children
+      for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->initialize_physical_context(ctx);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2558,7 +2660,7 @@ namespace RegionRuntime {
           }
         }
         // If it didn't find a valid instance, try to make one
-        result = create_instance(*mit, user.field_mask); 
+        result = create_instance(*mit, rm); 
         if (result != NULL)
         {
           // We successfully made an instance
@@ -2758,10 +2860,35 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceView* RegionNode::create_instance(Memory location, const FieldMask &field_mask)
+    InstanceView* RegionNode::create_instance(Memory location, RegionMapper &rm) 
     //--------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!rm.req.instance_fields.empty());
+#endif
+      // Ask the mapper what the blocking factor should be
+      size_t blocking_factor = 1;
+      // Only need to do this if there is more than one field
+      if (rm.req.instance_fields.size() > 1);
+      {
+        DetailedTimer::ScopedPush sp(TIME_MAPPER);
+        AutoLock m_lock(rm.mapper_lock);
+        rm.mapper->select_region_layout(rm.task, rm.req, rm.idx, location, blocking_factor);
+      }
+      // Now get the field Mask and see if we can make the instance
+      InstanceManager *manager = column_source->create_instance(location, row_source->handle, 
+                                                      rm.req.instance_fields, blocking_factor);
+      // See if we made the instance
+      InstanceView *result = NULL;
+      if (manager != NULL)
+      {
+        // Made the instance, now make a view for it from this region
+        result = manager->create_view(NULL/*no parent*/, this);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(result != NULL); // should never happen
+#endif
+      }
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -2803,8 +2930,10 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    PartitionNode::PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src, bool add)
-      : RegionTreeNode(), handle(p), parent(par), row_source(row_src), disjoint(row_src->disjoint), added(add)
+    PartitionNode::PartitionNode(LogicalPartition p, RegionNode *par, 
+                      IndexPartNode *row_src, bool add, RegionTreeForest *ctx)
+      : RegionTreeNode(ctx), handle(p), parent(par), row_source(row_src), 
+        disjoint(row_src->disjoint), added(add)
     //--------------------------------------------------------------------------
     {
     }
@@ -2905,7 +3034,23 @@ namespace RegionRuntime {
     void PartitionNode::initialize_physical_context(ContextID ctx)
     //--------------------------------------------------------------------------
     {
-
+      if (physical_states.find(ctx) == physical_states.end())
+      {
+        physical_states[ctx] = PhysicalState();
+        physical_states[ctx].context_top = false;
+      }
+      PhysicalState &state = physical_states[ctx];
+#ifdef DEBUG_HIGH_LEVEL
+      assert(state.valid_views.empty());
+      assert(!state.context_top);
+#endif
+      state.dirty_mask = FieldMask();
+      // Handle all our children
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->initialize_physical_context(ctx);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -3046,25 +3191,120 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
+    InstanceManager::InstanceManager(Memory m, PhysicalInstance inst, 
+            const std::map<FieldID,IndexSpace::CopySrcDstField> &infos, const FieldMask &mask, 
+            RegionTreeForest *ctx, bool rem, bool cl)
+      : context(ctx), references(0), remote(rem), clone(cl), 
+        remote_frac(Fraction<unsigned long>(0,1)), local_frac(Fraction<unsigned long>(1,1)), 
+        location(m), instance(inst), allocated_fields(mask), field_infos(infos)
+    //--------------------------------------------------------------------------
+    {
+      // If we're not remote, make the lock
+      if (!remote)
+        lock = Lock::create_lock();
+      else
+        lock = Lock::NO_LOCK;
+    }
+
+    //--------------------------------------------------------------------------
     void InstanceManager::add_reference(void)
     //--------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(instance.exists());
+#endif
+      references++;
     }
 
     //--------------------------------------------------------------------------
     void InstanceManager::remove_reference(void)
     //--------------------------------------------------------------------------
     {
-
+#ifdef DEBUG_HIGH_LEVEL
+      assert(references > 0);
+#endif
+      references--;
+      if (references == 0)
+        garbage_collect();
     }
 
     //--------------------------------------------------------------------------
     Event InstanceManager::issue_copy(InstanceManager *source_manager, Event precondition,
-                                      const FieldMask &field_mask, IndexSpaceNode *index_space)
+            const FieldMask &field_mask, FieldSpaceNode *field_space, IndexSpace copy_space)
     //--------------------------------------------------------------------------
     {
+      // Iterate over our local fields and build the set of copy descriptors  
+      std::vector<IndexSpace::CopySrcDstField> srcs;
+      std::vector<IndexSpace::CopySrcDstField> dsts;
+      for (std::map<FieldID,IndexSpace::CopySrcDstField>::const_iterator it = 
+            field_infos.begin(); it != field_infos.end(); it++)
+      {
+        if (field_space->is_set(it->first, field_mask))
+        {
+          source_manager->find_info(it->first, srcs);
+          dsts.push_back(it->second);
+        }
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(srcs.size() == FieldMask::pop_count(field_mask));
+      assert(dsts.size() == FieldMask::pop_count(field_mask));
+#endif
+      return copy_space.copy(srcs, dsts, precondition);
+    }
 
+    //--------------------------------------------------------------------------
+    InstanceView* InstanceManager::create_view(InstanceView *parent, RegionNode *region)
+    //--------------------------------------------------------------------------
+    {
+      InstanceView *result = new InstanceView(this, parent, region, context);
+      context->register_view(result);
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceManager::find_info(FieldID fid, std::vector<IndexSpace::CopySrcDstField> &sources)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(field_infos.find(fid) != field_infos.end());
+#endif
+      sources.push_back(field_infos[fid]);
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceManager* InstanceManager::clone_manager(const FieldMask &mask, FieldSpaceNode *field_space) const
+    //--------------------------------------------------------------------------
+    {
+      std::map<FieldID,IndexSpace::CopySrcDstField> new_infos;
+      for (std::map<FieldID,IndexSpace::CopySrcDstField>::const_iterator it =
+            field_infos.begin(); it != field_infos.end(); it++)
+      {
+        if (field_space->is_set(it->first, mask))
+        {
+          new_infos.insert(*it);
+        }
+      }
+      InstanceManager *clone = new InstanceManager(location, instance, new_infos,
+                                                    mask, context, false/*remote*/, true/*clone*/);
+      // Register this with the context
+      context->register_manager(clone);
+      return clone;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceManager::garbage_collect(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(instance.exists());
+#endif
+      if (!remote && !clone && (references == 0) && local_frac.is_whole())
+      {
+        instance.destroy();
+        lock.destroy_lock();
+        instance = PhysicalInstance::NO_INST;
+        lock = Lock::NO_LOCK;
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -3090,7 +3330,7 @@ namespace RegionRuntime {
         // If it doesn't exist yet, make it, otherwise re-use it
         PartitionNode *pnode = logical_region->get_child(pc);
         RegionNode *rnode = pnode->get_child(rc);
-        InstanceView *subview = new InstanceView(manager, this, rnode, context);
+        InstanceView *subview = manager->create_view(this, rnode); 
         children[key] = subview;
         context->register_view(subview);
         return subview;
@@ -3276,7 +3516,8 @@ namespace RegionRuntime {
       find_copy_preconditions(preconditions, true/*writing*/, rm.req.redop, copy_mask);
       src_view->find_copy_preconditions(preconditions, false/*writing*/, rm.req.redop, copy_mask);
       Event copy_pre = Event::merge_events(preconditions);
-      Event copy_post = manager->issue_copy(src_view->manager, copy_pre, copy_mask, logical_region->row_source);
+      Event copy_post = manager->issue_copy(src_view->manager, copy_pre, copy_mask, 
+                    logical_region->column_source, logical_region->handle.index_space);
       // If this is a write copy, update the valid event, otherwise
       // add it as a reduction copy to this instance
       if (rm.req.redop == 0)
@@ -3311,6 +3552,21 @@ namespace RegionRuntime {
       if (parent != NULL)
         parent->find_dependences_above(wait_on, writing, redop, mask);
       find_dependences_below(wait_on, writing, redop, mask);
+    }
+
+    //--------------------------------------------------------------------------
+    const PhysicalUser& InstanceView::find_user(UniqueID uid) const
+    //--------------------------------------------------------------------------
+    {
+      std::map<UniqueID,TaskUser>::const_iterator finder = users.find(uid);
+      if (finder == users.end())
+      {
+        finder = added_users.find(uid);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(finder != added_users.end());
+#endif
+      }
+      return finder->second.user;
     }
 
     //--------------------------------------------------------------------------
@@ -3897,7 +4153,7 @@ namespace RegionRuntime {
               it != to_create.end(); it++)
         {
           // Try making an instance in the memory 
-          InstanceView *new_view = close_target->create_instance(*it, user.field_mask);
+          InstanceView *new_view = close_target->create_instance(*it, rm);
           if (new_view != NULL)
           {
             // Update all the fields
