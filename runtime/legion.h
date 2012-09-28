@@ -1295,11 +1295,12 @@ namespace RegionRuntime {
 
       /**
        * Once a region has been mapped into a specify memory, the programmer must select
-       * a layout for the data.  This includes specifying an ordering on the fields and
-       * the blocking factor.  
+       * a layout for the data.  This includes specifying the blocking factor.  Array-of-structs
+       * is 1 and struct-of-arrays is 'max_blocking_factor'.  Other common choices might
+       * correspond to the number of elements that can be handled by vector units.
        */
-      virtual void select_region_layout(const Task *task, const RegionRequirement &req, unsigned index,
-                                        const Memory & chosen_mem, size_t blocking_factor); 
+      virtual size_t select_region_layout(const Task *task, const RegionRequirement &req, unsigned index,
+                                        const Memory & chosen_mem, size_t max_blocking_factor); 
 
       /**
        * A copy-up operation is occuring to write dirty data back to a parent physical
