@@ -128,7 +128,12 @@ namespace RegionRuntime {
     {
       log_mapper(LEVEL_SPEW,"Select tasks to schedule in default mapper on processor %x",
                  local_proc.id);
-      // TODO
+      // TODO: Do something smarter than just running everything
+      for (std::vector<bool>::iterator ii = ready_mask.begin(), ie = ready_mask.end();
+           ii != ie; ++ii)
+      {
+        *ii = true;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
