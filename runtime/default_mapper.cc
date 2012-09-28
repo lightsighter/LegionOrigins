@@ -365,13 +365,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::select_region_layout(const Task *task, const RegionRequirement &req, unsigned index,
-                                      const Memory & chosen_mem)
+    size_t Mapper::select_region_layout(const Task *task, const RegionRequirement &req, unsigned index,
+                                        const Memory & chosen_mem, size_t max_blocking_factor)
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Select region layout for task %s (ID %d) in default mapper on processor %x",
                  task->variants->name, task->task_id, local_proc.id);
-      // TODO
+      // TODO: Return max_blocking_factor for GPU memories
+      return 1;
     }
 
     //--------------------------------------------------------------------------------------------
