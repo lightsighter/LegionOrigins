@@ -2247,6 +2247,12 @@ namespace RegionRuntime {
       return RegionAccessor<AccessorGeneric>((void *)impl);
     }
 
+    // FIXME(Elliott): Dummy to make link
+    void RegionInstance::destroy(void) const
+    {
+        assert(0 && "Dummy implementation");
+    }
+
 #ifdef OLD_INTFC
     Event RegionInstance::copy_to_untyped(RegionInstance target, Event wait_on) const
     {
@@ -2800,6 +2806,17 @@ namespace RegionRuntime {
 	return r->create_instance(m, elmt_size);
     }
 
+    // FIXME(Elliott): Dummy to make link
+    RegionInstance IndexSpace::create_instance(Memory memory,
+                                               const std::vector<size_t> &field_sizes,
+                                               size_t block_size) const
+    {
+        assert(0 && "Dummy implementation");
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+	return r->create_instance(memory, 1);
+    }
+
 #if 0
     RegionInstance IndexSpace::create_instance(Memory m, ReductionOpID redop) const
     {
@@ -2845,6 +2862,25 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
       return r->get_element_mask();
+    }
+
+    // FIXME(Elliott): Dummy, trying to link
+    Event IndexSpace::copy(const std::vector<CopySrcDstField>& srcs,
+                           const std::vector<CopySrcDstField>& dsts,
+                           Event wait_on) const
+    {
+        assert(0 && "Dummy implementation");
+        return Event();
+    }
+
+    // FIXME(Elliott): Dummy, trying to link
+    Event IndexSpace::copy(const std::vector<CopySrcDstField>& srcs,
+                           const std::vector<CopySrcDstField>& dsts,
+                           const ElementMask& mask,
+                           Event wait_on) const
+    {
+        assert(0 && "Dummy implementation");
+        return Event();
     }
 
     bool IndexSpace::Impl::activate(size_t num)

@@ -1060,8 +1060,9 @@ namespace RegionRuntime {
         SET_MASK(AccessorGeneric);
         SET_MASK(AccessorArray);
         SET_MASK(AccessorArrayReductionFold);
-        SET_MASK(AccessorGPU);
-        SET_MASK(AccessorGPUReductionFold);
+        // FIXME(Elliott): Shared low-level doesn't have these
+        //SET_MASK(AccessorGPU);
+        //SET_MASK(AccessorGPUReductionFold);
         SET_MASK(AccessorReductionList);
 #undef SET_MASK
         map_set = true;
