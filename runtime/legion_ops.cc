@@ -3647,7 +3647,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!is_leaf && (unmapped > 0)); // shouldn't be here if we're a leaf task
+      assert(!is_leaf); // shouldn't be here if we're a leaf task
 #endif
       lock_context();
       // Make sure all the deletion operations for this task have been performed
