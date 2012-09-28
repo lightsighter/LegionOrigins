@@ -505,6 +505,8 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
+      void destroy(void) const;
+
       RegionAccessor<AccessorGeneric> get_accessor(void) const;
     };
 
