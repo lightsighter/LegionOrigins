@@ -215,6 +215,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Permit task steal in default mapper on processor %x",local_proc.id);
+
+      return; // FIXME: Debugging without task stealing for the moment
+
       // First see if we're even allowed to steal anything
       if (max_steals_per_theft == 0)
         return;
