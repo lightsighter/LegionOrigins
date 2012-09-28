@@ -15,8 +15,8 @@ enum {
   TASKID_RECURSE,
 };
 
-const unsigned DEFAULT_DEPTH = 10;
-const unsigned DEFAULT_SPREAD = 10;
+const unsigned DEFAULT_DEPTH = 8;
+const unsigned DEFAULT_SPREAD = 4;
 
 struct Args {
   long expected_result;
