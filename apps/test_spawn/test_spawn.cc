@@ -75,6 +75,9 @@ long recurse_task(const void *args, size_t arglen,
                   Context ctx, HighLevelRuntime *runtime) {
   Args &my_args = *(Args *)args;
 
+  // FIXME: Debugging. Remove once done, because in theory the user should be able to specify anything.
+  assert(my_args.depth <= DEFAULT_DEPTH && my_args.spread <= DEFAULT_SPREAD);
+
   Args child_args;
   child_args.depth = my_args.depth - 1;
   child_args.spread = my_args.spread;
