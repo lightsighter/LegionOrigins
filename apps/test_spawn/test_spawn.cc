@@ -91,7 +91,7 @@ long recurse_task(const void *args, size_t arglen,
     std::vector<unsigned long> expected_results;
     std::vector<Future> results;
     for (unsigned i = 0; i < num_children; i++) {
-      unsigned long expected_result = random();
+      long expected_result = random();
       child_args.expected_result = expected_result;
       expected_results.push_back(expected_result);
       Future f = runtime->execute_task(ctx, TASKID_RECURSE, indexes, fields, child_regions,
@@ -100,14 +100,14 @@ long recurse_task(const void *args, size_t arglen,
     }
     while(!expected_results.empty() && !results.empty()) {
       Future f = results.back();
-      unsigned long expected_result = expected_results.back();
+      long expected_result = expected_results.back();
       results.pop_back();
       expected_results.pop_back();
       assert(f.get_result<long>() == expected_result);
     }
   }
 
-  return child_args.expected_result;
+  return my_args.expected_result;
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
