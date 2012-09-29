@@ -3220,6 +3220,9 @@ namespace RegionRuntime {
 #endif
       task->set_requirements(indexes, fields, regions, true/*perform checks*/);
 
+      // Need to get this before we put things on the queue to execute
+      Future result = task->get_future();
+
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
       add_to_dependence_queue(task);
@@ -3230,8 +3233,7 @@ namespace RegionRuntime {
       }
 #endif
 
-      // Return the future for when this task is done
-      return task->get_future();
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3254,6 +3256,9 @@ namespace RegionRuntime {
       task->set_requirements(indexes, fields, regions, true/*perform checks*/);
       task->set_index_space(index_space, arg_map, must);
 
+      // Need to get the future map prior to putting this on the queue to execute
+      FutureMap result = task->get_future_map();
+
       // Perform the dependence analysis
       add_to_dependence_queue(task);
 #ifdef INORDER_EXECUTION
@@ -3263,7 +3268,7 @@ namespace RegionRuntime {
       }
 #endif
 
-      return task->get_future_map();
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3288,6 +3293,9 @@ namespace RegionRuntime {
       task->set_index_space(index_space, arg_map, must);
       task->set_reduction_args(reduction, initial_value);
 
+      // Need to get this before putting it on the queue to execute
+      Future result = task->get_future();
+
       // Perform the dependence analysis
       add_to_dependence_queue(task);
 #ifdef INORDER_EXECUTION
@@ -3297,7 +3305,7 @@ namespace RegionRuntime {
       }
 #endif
 
-      return task->get_future();
+      return result;
     }
 
     //--------------------------------------------------------------------------------------------
