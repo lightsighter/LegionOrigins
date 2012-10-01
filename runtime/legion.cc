@@ -2907,6 +2907,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    /*static*/ ProjectionFnptr HighLevelRuntime::find_projection_function(ProjectionID pid)
+    //--------------------------------------------------------------------------
+    {
+      const ProjectionTable &table = get_projection_table();
+      ProjectionTable::const_iterator finder = table.find(pid);
+      if (finder == table.end())
+      {
+        log_run(LEVEL_ERROR,"Unable to find registered projection ID %d", pid);
+        exit(ERROR_INVALID_PROJECTION_ID);
+      }
+      return finder->second;
+    }
+
+    //--------------------------------------------------------------------------
     void HighLevelRuntime::register_runtime_tasks(Processor::TaskIDTable &table)
     //--------------------------------------------------------------------------
     {

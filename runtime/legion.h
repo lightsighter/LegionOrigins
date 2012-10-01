@@ -736,8 +736,8 @@ namespace RegionRuntime {
     public:
       // Register a projection function for mapping from a point in an index space to
       // a point in a partition
-      template<typename INDEX_PT, unsigned INDEX_DIM, typename PART_PT, unsigned PART_DIM,
-        void (*PROJ_PTR)(const INDEX_PT inpoint[INDEX_DIM], PART_PT projected_point[PART_DIM])>
+      template<typename INDEX_PT, unsigned INDEX_DIM,
+        Color (*PROJ_PTR)(const INDEX_PT inpoint[INDEX_DIM])>
       static ProjectionID register_projection_function(ProjectionID handle);
     protected:
       friend class LowLevel::Processor;
@@ -768,6 +768,7 @@ namespace RegionRuntime {
                                           Processor::Kind proc_kind, bool leaf);
       static void register_runtime_tasks(Processor::TaskIDTable &table);
       static TaskVariantCollection* find_collection(Processor::TaskFuncID tid);
+      static ProjectionFnptr find_projection_function(ProjectionID pid);
     protected:
       static bool is_subtype(TypeHandle parent, TypeHandle child);
     private:
@@ -2453,24 +2454,21 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    template<typename INDEX_PT, unsigned INDEX_DIM, typename PART_PT, unsigned PART_DIM,
-      void (*PROJ_PTR)(const INDEX_PT[INDEX_DIM], PART_PT[PART_DIM])>
-    void untyped_projection_wrapper(const void *input, size_t input_elem_size, unsigned input_dims,
-                                    void *output, size_t output_elem_size, unsigned output_dims)
+    template<typename INDEX_PT, unsigned INDEX_DIM,
+      Color (*PROJ_PTR)(const INDEX_PT[INDEX_DIM])>
+    Color untyped_projection_wrapper(const void *input, size_t input_elem_size, unsigned input_dims)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(input_elem_size == sizeof(INDEX_PT));
       assert(input_dims == INDEX_DIM);
-      assert(output_elem_size == sizeof(PART_PT));
-      assert(output_dims == PART_DIM);
 #endif
-      (*PROJ_PTR)(static_cast<const INDEX_PT[INDEX_DIM]>(input),static_cast<PART_PT[PART_DIM]>(output));
+      return (*PROJ_PTR)(static_cast<const INDEX_PT[INDEX_DIM]>(input));
     }
 
     //--------------------------------------------------------------------------
-    template<typename INDEX_PT, unsigned INDEX_DIM, typename PART_PT, unsigned PART_DIM,
-      void (*PROJ_PTR)(const INDEX_PT[INDEX_DIM], PART_PT[PART_DIM])>
+    template<typename INDEX_PT, unsigned INDEX_DIM,
+      Color (*PROJ_PTR)(const INDEX_PT[INDEX_DIM])>
     /*static*/ ProjectionID HighLevelRuntime::register_projection_function(ProjectionID handle)
     //--------------------------------------------------------------------------
     {
@@ -2500,7 +2498,7 @@ namespace RegionRuntime {
         assert(handle != AUTO_GENERATE_ID);
 #endif
       }
-      proj_table[handle] = untyped_projection_wrapper<INDEX_PT,INDEX_DIM,PART_PT,PART_DIM,PROJ_PTR>; 
+      proj_table[handle] = untyped_projection_wrapper<INDEX_PT,INDEX_DIM,PROJ_PTR>; 
       return handle;
     }
 

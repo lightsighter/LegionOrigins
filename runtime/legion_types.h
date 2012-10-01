@@ -88,6 +88,8 @@ namespace RegionRuntime {
       ERROR_ALIASED_INTRA_TASK_REGIONS = 53,
       ERROR_MAX_FIELD_OVERFLOW = 54,
       ERROR_MISSING_TASK_COLLECTION = 55,
+      ERROR_INVALID_IDENTITY_PROJECTION_USE = 56,
+      ERROR_INVALID_PROJECTION_ID = 57,
     };
 
     // enum and namepsaces don't really get along well
@@ -273,7 +275,7 @@ namespace RegionRuntime {
     typedef Processor::TaskFuncID TaskID;
     typedef SingleTask* Context;
     typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
-    typedef void (*ProjectionFnptr)(const void*,size_t,unsigned,void*,size_t,unsigned);
+    typedef Color (*ProjectionFnptr)(const void*,size_t,unsigned);
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;
     typedef std::map<ProjectionID,ProjectionFnptr> ProjectionTable;
