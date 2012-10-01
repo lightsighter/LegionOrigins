@@ -75,9 +75,6 @@ long recurse_task(const void *args, size_t arglen,
                   Context ctx, HighLevelRuntime *runtime) {
   Args &my_args = *(Args *)args;
 
-  // FIXME: Debugging. Remove once done, because in theory the user should be able to specify anything.
-  assert(my_args.depth <= DEFAULT_DEPTH && my_args.spread <= DEFAULT_SPREAD);
-
   Args child_args;
   child_args.depth = my_args.depth - 1;
   child_args.spread = my_args.spread;
@@ -119,7 +116,15 @@ int main(int argc, char **argv) {
   // Use high-precision clock to get more variation among runs started at around the same time.
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
-  srandom(ts.tv_nsec);
+  unsigned seed = ts.tv_nsec;
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "-seed")) {
+      seed = atoi(argv[++i]);
+      continue;
+    }
+  }
+  printf("Using seed: %u\n", seed);
+  srandom(seed);
 
   HighLevelRuntime::set_registration_callback(create_mappers);
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
