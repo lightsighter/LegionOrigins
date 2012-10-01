@@ -637,6 +637,7 @@ namespace RegionRuntime {
       virtual void handle_future(const void *result, size_t result_size);
     public:
       void unmap_all_regions(void);
+      void update_requirements(const std::vector<RegionRequirement> &reqs);
     private:
       SliceTask *slice_owner;
       UserEvent point_termination_event;

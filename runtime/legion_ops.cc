@@ -4466,6 +4466,68 @@ namespace RegionRuntime {
       non_virtual_mapped_region.clear();
     }
 
+    //--------------------------------------------------------------------------
+    void PointTask::update_requirements(const std::vector<RegionRequirement> &reqs)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(index_point != NULL);
+      assert(regions.empty());
+#endif
+      // go through the region requirements for the slice task and compute
+      // the ones for this individual point
+      for (std::vector<RegionRequirement>::const_iterator it = reqs.begin();
+            it != reqs.end(); it++)
+      {
+        if (it->handle_type == SINGULAR)
+        {
+          // Singlular so we can just copy it directly
+          regions.push_back(*it);
+        }
+        else
+        {
+          Color subregion_color;
+          // We need to compute the projected function based on this point
+          if (it->projection == 0)
+          {
+            // Handle the built-in case of isomorphic translation for 1-D points-only
+            if ((index_element_size != sizeof(Color)) ||
+                (index_dimensions != 1))
+            {
+              log_task(LEVEL_ERROR,"Projection ID 0 is invalid for tasks whose points"
+                                  " are not one dimensional unsigned integers.  Points for "
+                                  "task %s have elements of %ld bytes and %d dimensions",
+                                  this->variants->name, index_element_size, index_dimensions);
+              exit(ERROR_INVALID_IDENTITY_PROJECTION_USE);
+            }
+            subregion_color = *((Color*)index_point);  
+          }
+          else
+          {
+            ProjectionFnptr projfn = HighLevelRuntime::find_projection_function(it->projection);
+            // Compute the color for the subregion that we want
+            subregion_color = (*projfn)(index_point, index_element_size, index_dimensions);
+          }
+          lock_context();
+          LogicalRegion region_handle = forest_ctx->get_partition_subcolor(it->partition, subregion_color);
+          unlock_context();
+          // We use different constructors for reductions
+          if (it->redop == 0)
+          {
+            regions.push_back(RegionRequirement(region_handle, it->privilege_fields,
+                      it->instance_fields, it->privilege, it->prop, it->parent,
+                      it->tag, true/*verified*/, it->inst_type));
+          }
+          else
+          {
+            regions.push_back(RegionRequirement(region_handle, it->privilege_fields,
+                      it->instance_fields, it->redop, it->prop, it->parent,
+                      it->tag, true/*verified*/, it->inst_type));
+          }
+        }
+      }
+    }
+
     /////////////////////////////////////////////////////////////
     // Index Task
     /////////////////////////////////////////////////////////////
@@ -5439,6 +5501,8 @@ namespace RegionRuntime {
             {
               PointTask *next_point = clone_as_point_task(true/*new point*/);
               next_point->set_index_point(&value, sizeof(int), 1);
+              // Update the region requirements for this point
+              next_point->update_requirements(regions);
               points.push_back(next_point); 
               value++;
             }
@@ -5613,6 +5677,8 @@ namespace RegionRuntime {
           {
             PointTask *next_point = clone_as_point_task(true/*new point*/);
             next_point->set_index_point(&value, sizeof(int), 1);
+            // This must be called after the point is set
+            next_point->update_requirements(regions);
             points.push_back(next_point);
             num_unmapped_points++;
             num_unfinished_points++;
