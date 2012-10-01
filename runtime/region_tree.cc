@@ -415,7 +415,7 @@ namespace RegionRuntime {
 #endif
       create_node(space);
       // Add this to the list of created field spaces
-      created_field_spaces.push_back(space);
+      created_field_spaces.insert(space);
     }
 
     //--------------------------------------------------------------------------
@@ -450,16 +450,11 @@ namespace RegionRuntime {
       destroy_node(target_node);
       // Check to see if it was on the list of our created field spaces
       // in which case we need to remove it
-      for (std::list<FieldSpace>::iterator it = created_field_spaces.begin();
-            it != created_field_spaces.end(); it++)
+      std::set<FieldSpace>::iterator finder = created_field_spaces.find(space);
+      if (finder != created_field_spaces.end())
       {
-        if ((*it) == space)
-        {
-          created_field_spaces.erase(it);
-          // No longer need to mark this as deleted
-          deleted_field_spaces.pop_back();
-          break;
-        }
+        created_field_spaces.erase(finder);
+        deleted_field_spaces.pop_back();
       }
     }
 
@@ -806,21 +801,192 @@ namespace RegionRuntime {
                                                               const std::vector<RegionRequirement> &regions)
     //--------------------------------------------------------------------------
     {
+      // Find the sets of trees we need to send
+      for (std::vector<IndexSpaceRequirement>::const_iterator it = indexes.begin();
+            it != indexes.end(); it++)
+      {
+        if (it->privilege != NO_MEMORY)
+        {
+          IndexSpaceNode *node = get_node(it->handle);
+          check_aliasing_and_add(node); 
+        }
+      }
+      for (std::vector<FieldSpaceRequirement>::const_iterator it = fields.begin();
+            it != fields.end(); it++)
+      {
+        if (it->privilege != NO_MEMORY)
+        {
+          FieldSpaceNode *node = get_node(it->handle);
+          if (send_field_nodes.find(node) == send_field_nodes.end())
+            send_field_nodes.insert(node);
+        }
+      }
+      for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
+            it != regions.end(); it++)
+      {
+        if (it->privilege != NO_ACCESS)
+        {
+          RegionNode *node = NULL;
+          if (it->handle_type == SINGULAR)
+            node = get_node(it->region);
+          else
+            node = get_node(it->partition)->parent;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(node != NULL);
+#endif
+          // Check the index and field space nodes first
+          check_aliasing_and_add(node->row_source);
+          if (send_field_nodes.find(node->column_source) == send_field_nodes.end())
+            send_field_nodes.insert(node->column_source);
+          // Now check for the logical region node
+          check_aliasing_and_add(node);
+        }
+      }
 
+      size_t result = 3*sizeof(size_t);  // number of top nodes for each type 
+      // Now we have list of unique nodes to send, so compute the sizes
+      for (std::set<IndexSpaceNode*>::const_iterator it = send_index_nodes.begin();
+            it != send_index_nodes.end(); it++)
+      {
+        result += (*it)->compute_tree_size();
+      }
+      for (std::set<FieldSpaceNode*>::const_iterator it = send_field_nodes.begin();
+            it != send_field_nodes.end(); it++)
+      {
+        result += (*it)->compute_node_size();
+      }
+      for (std::set<RegionNode*>::const_iterator it = send_logical_nodes.begin();
+            it != send_logical_nodes.end(); it++)
+      {
+        result += (*it)->compute_tree_size();
+      }
+
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::check_aliasing_and_add(IndexSpaceNode *node)
+    //--------------------------------------------------------------------------
+    {
+      if (send_index_nodes.find(node) != send_index_nodes.end())
+        return;
+      std::vector<Color> path;
+      std::vector<IndexSpaceNode*> to_remove;
+      // Go through the current set to send and see if anything overlaps
+      // so we remove any aliasing
+      bool add = true;
+      for (std::set<IndexSpaceNode*>::const_iterator it = send_index_nodes.begin();
+            it != send_index_nodes.end(); it++)
+      {
+        if (compute_index_path(node->handle, (*it)->handle, path))
+        {
+          // Current is child of next, remove current, add child
+          to_remove.push_back(*it);
+          path.clear();
+          continue;
+        }
+        path.clear();
+        if (!compute_index_path((*it)->handle, node->handle, path))
+        {
+          add = false;
+          break;
+        }
+        path.clear();
+      }
+      if (add)
+        send_index_nodes.insert(node);
+      // Remove any nodes that are no longer valid
+      for (std::vector<IndexSpaceNode*>::const_iterator it = to_remove.begin();
+            it != to_remove.end(); it++)
+      {
+        send_index_nodes.erase(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::check_aliasing_and_add(RegionNode *node)
+    //--------------------------------------------------------------------------
+    {
+      if (send_logical_nodes.find(node) != send_logical_nodes.end())
+        return;
+      std::vector<Color> path;
+      std::vector<RegionNode*> to_remove;
+      bool add = true;
+      for (std::set<RegionNode*>::const_iterator it = send_logical_nodes.begin();
+            it != send_logical_nodes.end(); it++)
+      {
+        if (compute_index_path(node->row_source->handle, (*it)->row_source->handle, path))
+        {
+          // Current is child of next, remove current, add child
+          to_remove.push_back(*it);
+          path.clear();
+          continue;
+        }
+        path.clear();
+        if (!compute_index_path((*it)->row_source->handle, node->row_source->handle, path))
+        {
+          add = false;
+          break;
+        }
+        path.clear();
+      }
+      if (add)
+        send_logical_nodes.insert(node);
+      // Remove any nodes that are no longer valid
+      for (std::vector<RegionNode*>::const_iterator it = to_remove.begin();
+            it != to_remove.end(); it++)
+      {
+        send_logical_nodes.erase(*it);
+      }
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_region_forest_shape(Serializer &rez)
     //--------------------------------------------------------------------------
     {
-
+      rez.serialize(send_index_nodes.size());
+      for (std::set<IndexSpaceNode*>::const_iterator it = send_index_nodes.begin();
+            it != send_index_nodes.end(); it++)
+      {
+        (*it)->serialize_tree(rez,false/*returning*/);
+      }
+      rez.serialize(send_field_nodes.size());
+      for (std::set<FieldSpaceNode*>::const_iterator it = send_field_nodes.begin();
+            it != send_field_nodes.end(); it++)
+      {
+        (*it)->serialize_node(rez);
+      }
+      rez.serialize(send_logical_nodes.size());
+      for (std::set<RegionNode*>::const_iterator it = send_logical_nodes.begin();
+            it != send_logical_nodes.end(); it++)
+      {
+        (*it)->serialize_tree(rez,false/*returning*/);
+      }
+      send_index_nodes.clear();
+      send_field_nodes.clear();
+      send_logical_nodes.clear();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::unpack_region_forest_shape(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
-
+      size_t num_index_trees, num_field_nodes, num_logical_trees;
+      derez.deserialize(num_index_trees);
+      for (unsigned idx = 0; idx < num_index_trees; idx++)
+      {
+        top_index_trees.push_back(IndexSpaceNode::deserialize_tree(derez, NULL/*parent*/, this, false/*returning*/));
+      }
+      derez.deserialize(num_field_nodes);
+      for (unsigned idx = 0; idx < num_field_nodes; idx++)
+      {
+        FieldSpaceNode::deserialize_node(derez, this);
+      }
+      derez.deserialize(num_logical_trees);
+      for (unsigned idx = 0; idx < num_logical_trees; idx++)
+      {
+        top_logical_trees.push_back(RegionNode::deserialize_tree(derez, NULL/*parent*/, this, false/*returning*/));
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -904,21 +1070,290 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_region_tree_updates_return(void)
     //--------------------------------------------------------------------------
     {
+      // Go through all our top trees and find the created partitions
+      for (std::list<IndexSpaceNode*>::const_iterator it = top_index_trees.begin();
+            it != top_index_trees.end(); it++)
+      {
+        (*it)->find_new_partitions(new_index_part_nodes);
+      }
+      for (std::list<RegionNode*>::const_iterator it = top_logical_trees.begin();
+            it != top_logical_trees.end(); it++)
+      {
+        (*it)->find_new_partitions(new_partition_nodes);
+      }
 
+      // Then compute the size of the computed partitions, the created nodes,
+      // and the handles for the deleted nodes
+      size_t result = 0;
+      result += sizeof(size_t); // number of new index partitions
+      result += (new_index_part_nodes.size() * sizeof(IndexSpace)); // parent handles
+      for (std::vector<IndexPartNode*>::const_iterator it = new_index_part_nodes.begin();
+            it != new_index_part_nodes.end(); it++)
+      {
+        result += (*it)->compute_tree_size();
+      }
+      result += sizeof(size_t); // number of new logical partitions
+      result += (new_partition_nodes.size() * sizeof(LogicalRegion)); // parent handles
+      for (std::vector<PartitionNode*>::const_iterator it = new_partition_nodes.begin();
+            it != new_partition_nodes.end(); it++)
+      {
+        result += (*it)->compute_tree_size();
+      }
+
+      // Pack up the created nodes
+      result += sizeof(size_t);
+      for (std::list<IndexSpace>::const_iterator it = created_index_trees.begin();
+            it != created_index_trees.end(); it++)
+      {
+        result += get_node(*it)->compute_tree_size();
+      }
+      result += sizeof(size_t);
+      for (std::set<FieldSpace>::const_iterator it = created_field_spaces.begin();
+            it != created_field_spaces.end(); it++)
+      {
+        result += get_node(*it)->compute_node_size();
+      }
+      result += sizeof(size_t);
+      for (std::list<LogicalRegion>::const_iterator it = created_region_trees.begin();
+            it != created_region_trees.end(); it++)
+      {
+        result += get_node(*it)->compute_tree_size();
+      }
+
+      // Pack up the Field Space nodes which have modified fields
+      result += sizeof(size_t); // number of field spaces with new fields 
+      for (std::map<FieldSpace,FieldSpaceNode*>::const_iterator it = field_nodes.begin();
+            it != field_nodes.end(); it++)
+      {
+        // Make sure it isn't a created node that we already sent back
+        if (created_field_spaces.find(it->first) == created_field_spaces.end())
+        {
+          if (it->second->has_modifications())
+          {
+            send_field_nodes.insert(it->second);
+            result += sizeof(it->first);
+            result += it->second->compute_field_return_size();
+          }
+        }
+      }
+
+      // Now pack up any deleted things
+      result += sizeof(size_t); // num deleted index spaces
+      result += (deleted_index_spaces.size() * sizeof(IndexSpace));
+      result += sizeof(size_t); // num deleted index parts
+      result += (deleted_index_parts.size() * sizeof(IndexPartition));
+      result += sizeof(size_t); // num deleted field spaces
+      result += (deleted_field_spaces.size() * sizeof(FieldSpace));
+      result += sizeof(size_t); // num deleted regions
+      result += (deleted_regions.size() * sizeof(LogicalRegion));
+      result += sizeof(size_t); // num deleted partitions
+      result += (deleted_partitions.size() * sizeof(LogicalPartition));
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_region_tree_updates_return(Serializer &rez)
     //--------------------------------------------------------------------------
     {
+      // Pack up any created partitions
+      rez.serialize(new_index_part_nodes.size());
+      for (std::vector<IndexPartNode*>::const_iterator it = new_index_part_nodes.begin();
+            it != new_index_part_nodes.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->parent != NULL);
+#endif
+        rez.serialize((*it)->parent->handle);
+        (*it)->serialize_tree(rez,true/*returning*/);
+      }
+      rez.serialize(new_partition_nodes.size());
+      for (std::vector<PartitionNode*>::const_iterator it = new_partition_nodes.begin();
+            it != new_partition_nodes.end(); it++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert((*it)->parent != NULL);
+#endif
+        rez.serialize((*it)->parent->handle);
+        (*it)->serialize_tree(rez,true/*returning*/);
+      }
 
+      // Pack up any created nodes
+      rez.serialize(created_index_trees.size());
+      for (std::list<IndexSpace>::const_iterator it = created_index_trees.begin();
+            it != created_index_trees.end(); it++)
+      {
+        get_node(*it)->serialize_tree(rez,true/*returning*/);
+      }
+      rez.serialize(created_field_spaces.size());
+      for (std::set<FieldSpace>::const_iterator it = created_field_spaces.begin();
+            it != created_field_spaces.end(); it++)
+      {
+        get_node(*it)->serialize_node(rez);
+      }
+      rez.serialize(created_region_trees.size());
+      for (std::list<LogicalRegion>::const_iterator it = created_region_trees.begin();
+            it != created_region_trees.end(); it++)
+      {
+        get_node(*it)->serialize_tree(rez,true/*returning*/);
+      }
+
+      // Pack up any field space nodes which had modifications
+      rez.serialize(send_field_nodes.size());
+      for (std::set<FieldSpaceNode*>::const_iterator it = send_field_nodes.begin();
+            it != send_field_nodes.end(); it++)
+      {
+        rez.serialize((*it)->handle);
+        (*it)->serialize_field_return(rez);
+      }
+
+      // Finally send back the names of everything that has been deleted
+      rez.serialize(deleted_index_spaces.size());
+      for (std::list<IndexSpace>::const_iterator it = deleted_index_spaces.begin();
+            it != deleted_index_spaces.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+      rez.serialize(deleted_index_parts.size());
+      for (std::list<IndexPartition>::const_iterator it = deleted_index_parts.begin();
+            it != deleted_index_parts.end(); it++)
+      {
+        rez.serialize(*it);
+      } 
+      rez.serialize(deleted_field_spaces.size());
+      for (std::list<FieldSpace>::const_iterator it = deleted_field_spaces.begin();
+            it != deleted_field_spaces.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+      rez.serialize(deleted_regions.size());
+      for (std::list<LogicalRegion>::const_iterator it = deleted_regions.begin();
+            it != deleted_regions.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+      rez.serialize(deleted_partitions.size());
+      for (std::list<LogicalPartition>::const_iterator it = deleted_partitions.begin();
+            it != deleted_partitions.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+      // Now we can clear all these things since they've all been sent back
+      created_index_trees.clear();
+      deleted_index_spaces.clear();
+      deleted_index_parts.clear();
+      created_field_spaces.clear();
+      deleted_field_spaces.clear();
+      created_region_trees.clear();
+      deleted_regions.clear();
+      deleted_partitions.clear();
+      // Clean up our state from sending
+      send_index_nodes.clear();
+      send_field_nodes.clear();
+      send_logical_nodes.clear();
+      new_index_part_nodes.clear();
+      new_partition_nodes.clear();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::unpack_region_tree_updates_return(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+      // Unpack new partitions
+      size_t new_index_part_nodes;
+      derez.deserialize(new_index_part_nodes);
+      for (unsigned idx = 0; idx < new_index_part_nodes; idx++)
+      {
+        IndexSpace parent_space;
+        derez.deserialize(parent_space);
+        IndexSpaceNode *parent_node = get_node(parent_space);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent_node != NULL);
+#endif
+        IndexPartNode::deserialize_tree(derez, parent_node, this, true/*returning*/);
+      }
+      size_t new_partition_nodes;
+      derez.deserialize(new_partition_nodes);
+      for (unsigned idx = 0; idx < new_partition_nodes; idx++)
+      {
+        LogicalRegion parent_handle;
+        derez.deserialize(parent_handle);
+        RegionNode *parent_node = get_node(parent_handle);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(parent_node != NULL);
+#endif
+        PartitionNode::deserialize_tree(derez, parent_node, this, true/*returning*/);
+      }
 
+      // Unpack created nodes
+      size_t new_index_trees;
+      derez.deserialize(new_index_trees);
+      for (unsigned idx = 0; idx < new_index_trees; idx++)
+      {
+        created_index_trees.push_back(IndexSpaceNode::deserialize_tree(derez, NULL, this, true/*returning*/)->handle); 
+      }
+      size_t new_field_nodes;
+      derez.deserialize(new_field_nodes);
+      for (unsigned idx = 0; idx < new_field_nodes; idx++)
+      {
+        created_field_spaces.insert(FieldSpaceNode::deserialize_node(derez, this)->handle);
+      }
+      size_t new_logical_trees;
+      derez.deserialize(new_logical_trees);
+      for (unsigned idx = 0; idx < new_logical_trees; idx++)
+      {
+        created_region_trees.push_back(RegionNode::deserialize_tree(derez, NULL, this, true/*returning*/)->handle);
+      }
+      
+      // Unpack field spaces with created fields
+      size_t modified_field_spaces;
+      derez.deserialize(modified_field_spaces);
+      for (unsigned idx = 0; idx < modified_field_spaces; idx++)
+      {
+        FieldSpace handle;
+        derez.deserialize(handle);
+        get_node(handle)->deserialize_field_return(derez);
+      }
+      
+      // Unpack everything that was deleted
+      size_t num_deleted_index_nodes;
+      derez.deserialize(num_deleted_index_nodes);
+      for (unsigned idx = 0; idx < num_deleted_index_nodes; idx++)
+      {
+        IndexSpace handle;
+        derez.deserialize(handle);
+        destroy_index_space(handle);
+      }
+      size_t num_deleted_index_parts;
+      derez.deserialize(num_deleted_index_parts);
+      for (unsigned idx = 0; idx < num_deleted_index_parts; idx++)
+      {
+        IndexPartition handle;
+        derez.deserialize(handle);
+        destroy_index_partition(handle);
+      }
+      size_t num_deleted_field_nodes;
+      derez.deserialize(num_deleted_field_nodes);
+      for (unsigned idx = 0; idx < num_deleted_field_nodes; idx++)
+      {
+        FieldSpace handle;
+        derez.deserialize(handle);
+        destroy_field_space(handle);
+      }
+      size_t num_deleted_regions;
+      derez.deserialize(num_deleted_regions);
+      for (unsigned idx = 0; idx < num_deleted_regions; idx++)
+      {
+        LogicalRegion handle;
+        derez.deserialize(handle);
+        destroy_region(handle);
+      }
+      size_t num_deleted_partitions;
+      derez.deserialize(num_deleted_partitions);
+      for (unsigned idx = 0; idx < num_deleted_partitions; idx++)
+      {
+        LogicalPartition handle;
+        derez.deserialize(handle);
+        destroy_partition(handle);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1049,6 +1484,8 @@ namespace RegionRuntime {
       if (col_src != NULL)
         col_src->add_instance(result);
       row_src->add_instance(result);
+      if (par != NULL)
+        par->add_child(r, result);
       return result;
     }
 
@@ -1066,6 +1503,8 @@ namespace RegionRuntime {
 #endif
       part_nodes[p] = result;
       row_src->add_instance(result);
+      if (par != NULL)
+        par->add_child(p, result);
       return result;
     }
 
@@ -1344,6 +1783,21 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void IndexSpaceNode::add_disjoint(Color c1, Color c2)
+    //--------------------------------------------------------------------------
+    {
+      if (c1 == c2)
+        return;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c1) != color_map.end());
+      assert(color_map.find(c2) != color_map.end());
+#endif
+      if (disjoint_subsets.find(std::pair<Color,Color>(c2,c1)) == 
+          disjoint_subsets.end())
+        disjoint_subsets.insert(std::pair<Color,Color>(c1,c2));
+    }
+
+    //--------------------------------------------------------------------------
     Color IndexSpaceNode::generate_color(void)
     //--------------------------------------------------------------------------
     {
@@ -1382,6 +1836,93 @@ namespace RegionRuntime {
         }
       }
       assert(false); // should never get here
+    }
+
+    //--------------------------------------------------------------------------
+    size_t IndexSpaceNode::compute_tree_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0; 
+      result += sizeof(handle);
+      result += sizeof(color);
+      result += sizeof(size_t); // number of children
+      result += sizeof(size_t); // number disjoint subsets
+      result += (disjoint_subsets.size() * 2 * sizeof(Color));
+      // Do all the children
+      for (std::map<Color,IndexPartNode*>::const_iterator it = 
+            color_map.begin(); it != color_map.end(); it++)
+        result += it->second->compute_tree_size();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::serialize_tree(Serializer &rez, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(handle);
+      rez.serialize(color);
+      rez.serialize(color_map.size());
+      for (std::map<Color,IndexPartNode*>::const_iterator it = 
+            color_map.begin(); it != color_map.end(); it++)
+      {
+        it->second->serialize_tree(rez, returning);
+      }
+      rez.serialize(disjoint_subsets.size());
+      for (std::set<std::pair<Color,Color> >::const_iterator it =
+            disjoint_subsets.begin(); it != disjoint_subsets.end(); it++)
+      {
+        rez.serialize(it->first);
+        rez.serialize(it->second);
+      }
+      if (returning)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(added);
+#endif
+        added = false;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ IndexSpaceNode* IndexSpaceNode::deserialize_tree(Deserializer &derez, IndexPartNode *parent,
+                                  RegionTreeForest *context, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      IndexSpace handle;
+      derez.deserialize(handle);
+      Color color;
+      derez.deserialize(color);
+      IndexSpaceNode *result_node = context->create_node(handle, parent, color, returning);
+      size_t num_children;
+      derez.deserialize(num_children);
+      for (unsigned idx = 0; idx < num_children; idx++)
+      {
+        IndexPartNode::deserialize_tree(derez, result_node, context, returning);
+      }
+      size_t num_disjoint;
+      derez.deserialize(num_disjoint);
+      for (unsigned idx = 0; idx < num_disjoint; idx++)
+      {
+        Color c1, c2;
+        derez.deserialize(c1);
+        derez.deserialize(c2);
+        result_node->add_disjoint(c1, c2);
+      }
+      return result_node;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::find_new_partitions(std::vector<IndexPartNode*> &new_parts) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!added);
+#endif
+      for (std::map<Color,IndexPartNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->find_new_partitions(new_parts);
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -1443,6 +1984,21 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void IndexPartNode::add_disjoint(Color c1, Color c2)
+    //--------------------------------------------------------------------------
+    {
+      if (c1 == c2)
+        return;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(color_map.find(c1) != color_map.end());
+      assert(color_map.find(c2) != color_map.end());
+#endif
+      if (disjoint_subspaces.find(std::pair<Color,Color>(c2,c1)) ==
+          disjoint_subspaces.end())
+        disjoint_subspaces.insert(std::pair<Color,Color>(c1,c2));
+    }
+
+    //--------------------------------------------------------------------------
     void IndexPartNode::add_instance(PartitionNode *inst)
     //--------------------------------------------------------------------------
     {
@@ -1470,6 +2026,98 @@ namespace RegionRuntime {
         }
       }
       assert(false); // should never get here
+    }
+
+    //--------------------------------------------------------------------------
+    size_t IndexPartNode::compute_tree_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(handle);
+      result += sizeof(color);
+      result += sizeof(disjoint);
+      result += sizeof(size_t); // number of children
+      for (std::map<Color,IndexSpaceNode*>::const_iterator it = 
+            color_map.begin(); it != color_map.end(); it++)
+        result += it->second->compute_tree_size();
+      result += sizeof(size_t); // number of disjoint children
+      result += (disjoint_subspaces.size() * 2 * sizeof(Color));
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::serialize_tree(Serializer &rez, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(handle);
+      rez.serialize(color);
+      rez.serialize(disjoint);
+      rez.serialize(color_map.size());
+      for (std::map<Color,IndexSpaceNode*>::const_iterator it = 
+            color_map.begin(); it != color_map.end(); it++)
+        it->second->serialize_tree(rez, returning);
+      rez.serialize(disjoint_subspaces.size());
+      for (std::set<std::pair<Color,Color> >::const_iterator it =
+            disjoint_subspaces.begin(); it != disjoint_subspaces.end(); it++)
+      {
+        rez.serialize(it->first);
+        rez.serialize(it->second);
+      }
+      if (returning)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(added);
+#endif
+        added = false;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ void IndexPartNode::deserialize_tree(Deserializer &derez, IndexSpaceNode *parent,
+                                RegionTreeForest *context, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      IndexPartition handle;
+      derez.deserialize(handle);
+      Color color;
+      derez.deserialize(color);
+      bool disjoint;
+      derez.deserialize(disjoint);
+      IndexPartNode *result = context->create_node(handle, parent, color, disjoint, returning);
+      size_t num_children;
+      derez.deserialize(num_children);
+      for (unsigned idx = 0; idx < num_children; idx++)
+      {
+        IndexSpaceNode::deserialize_tree(derez, result, context, returning);
+      }
+      size_t num_disjoint;
+      derez.deserialize(num_disjoint);
+      for (unsigned idx = 0; idx < num_disjoint; idx++)
+      {
+        Color c1, c2;
+        derez.deserialize(c1);
+        derez.deserialize(c2);
+        result->add_disjoint(c1,c2);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::find_new_partitions(std::vector<IndexPartNode*> &new_parts) const
+    //--------------------------------------------------------------------------
+    {
+      // See if we're new, if so we're done
+      if (added)
+      {
+        IndexPartNode *copy = const_cast<IndexPartNode*>(this);
+        new_parts.push_back(copy);
+        return;
+      }
+      // Otherwise continue
+      for (std::map<Color,IndexSpaceNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->find_new_partitions(new_parts);
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -1646,6 +2294,132 @@ namespace RegionRuntime {
       if (result != NULL)
         context->register_manager(result);
       return result;
+    }
+
+    //--------------------------------------------------------------------------
+    size_t FieldSpaceNode::compute_node_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(handle);
+      result += sizeof(size_t); // number of fields
+      result += (fields.size() * (sizeof(FieldID) + sizeof(FieldInfo)));
+      return result;;
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::serialize_node(Serializer &rez) const
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(handle);
+      rez.serialize(fields.size());
+      for (std::map<FieldID,FieldInfo>::const_iterator it = fields.begin();
+            it != fields.end(); it++)
+      {
+        rez.serialize(it->first);
+        rez.serialize(it->second);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ FieldSpaceNode* FieldSpaceNode::deserialize_node(Deserializer &derez, RegionTreeForest *context)
+    //--------------------------------------------------------------------------
+    {
+      FieldSpace handle;
+      derez.deserialize(handle);
+      FieldSpaceNode *result = context->create_node(handle);
+      size_t num_fields;
+      derez.deserialize(num_fields);
+      unsigned max_id = 0;
+      for (unsigned idx = 0; idx < num_fields; idx++)
+      {
+        FieldID fid;
+        derez.deserialize(fid);
+        FieldInfo info;
+        derez.deserialize(info);
+        result->fields[fid] = info;
+        if (info.idx > max_id)
+          max_id = info.idx;
+      }
+      // Ignore segmentation for now
+      result->total_index_fields = max_id;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    bool FieldSpaceNode::has_modifications(void) const
+    //--------------------------------------------------------------------------
+    {
+      return (!created_fields.empty() || !deleted_fields.empty());
+    }
+
+    //--------------------------------------------------------------------------
+    size_t FieldSpaceNode::compute_field_return_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0; 
+      result += sizeof(size_t); // number of created fields
+      result += (created_fields.size() * (sizeof(FieldID) + sizeof(size_t)));
+      result += sizeof(size_t); // number of deleted fields
+      result += (deleted_fields.size() * sizeof(FieldID)); 
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::serialize_field_return(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(created_fields.size());
+      for (std::list<FieldID>::const_iterator it = created_fields.begin();
+            it != created_fields.end(); it++)
+      {
+        rez.serialize(*it);
+        std::map<FieldID,FieldInfo>::const_iterator finder = fields.find(*it);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(finder != fields.end());
+#endif
+        rez.serialize(finder->second.field_size);
+      }
+      created_fields.clear();
+      rez.serialize(deleted_fields.size());
+      for (std::list<FieldID>::const_iterator it = deleted_fields.begin();
+            it != deleted_fields.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+      deleted_fields.clear();
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::deserialize_field_return(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      {
+        size_t num_new_fields;
+        derez.deserialize(num_new_fields);
+        std::map<FieldID,size_t> new_fields;
+        for (unsigned idx = 0; idx < num_new_fields; idx++)
+        {
+          FieldID fid;
+          derez.deserialize(fid);
+          size_t fsize;
+          derez.deserialize(fsize);
+          new_fields[fid] = fsize;
+        }
+        allocate_fields(new_fields);
+      }
+      {
+        size_t num_deleted_fields;
+        derez.deserialize(num_deleted_fields);
+        std::set<FieldID> del_fields;
+        for (unsigned idx = 0; idx < num_deleted_fields; idx++)
+        {
+          FieldID fid;
+          derez.deserialize(fid);
+          del_fields.insert(fid);
+        }
+        free_fields(del_fields);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2684,6 +3458,7 @@ namespace RegionRuntime {
       {
         issue_update_copy(result, rm, needed_fields); 
       }
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -2919,10 +3694,6 @@ namespace RegionRuntime {
     void RegionNode::update_valid_views(ContextID ctx, const FieldMask &field_mask)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(physical_states.find(ctx) != physical_states.end());
-#endif
-      PhysicalState &state = physical_states[ctx];
       std::list<std::pair<InstanceView*,FieldMask> > new_valid_views;
       find_valid_instance_views(ctx, new_valid_views, field_mask, field_mask, false/*needs space*/);
       for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it =
@@ -2932,6 +3703,72 @@ namespace RegionRuntime {
         assert(it->first->logical_region == this);
 #endif
         update_valid_views(ctx, it->second, false/*dirty*/, it->first);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    size_t RegionNode::compute_tree_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(handle);
+      result += sizeof(size_t); // number of children
+      for (std::map<Color,PartitionNode*>::const_iterator it = 
+            color_map.begin(); it != color_map.end(); it++)
+      {
+        result += it->second->compute_tree_size();
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::serialize_tree(Serializer &rez, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(handle);
+      rez.serialize(color_map.size());
+      for (std::map<Color,PartitionNode*>::const_iterator it =
+            color_map.begin(); it != color_map.end(); it++)
+      {
+        it->second->serialize_tree(rez, returning);
+      }
+      if (returning)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(added);
+#endif
+        added = false;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ RegionNode* RegionNode::deserialize_tree(Deserializer &derez, PartitionNode *parent,
+                                        RegionTreeForest *context, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      LogicalRegion handle;
+      derez.deserialize(handle);
+      RegionNode *result = context->create_node(handle, parent, returning);
+      size_t num_children;
+      derez.deserialize(num_children);
+      for (unsigned idx = 0; idx < num_children; idx++)
+      {
+        PartitionNode::deserialize_tree(derez, result, context, returning); 
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::find_new_partitions(std::vector<PartitionNode*> &new_parts) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!added); // shouldn't be here if this is true
+#endif
+      for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->find_new_partitions(new_parts);
       }
     }
 
@@ -3196,6 +4033,75 @@ namespace RegionRuntime {
     }
 #endif
 
+    //--------------------------------------------------------------------------
+    size_t PartitionNode::compute_tree_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(handle);
+      result += sizeof(size_t); // number of children
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        result += it->second->compute_tree_size();
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::serialize_tree(Serializer &rez, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(handle);
+      rez.serialize(color_map.size());
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->serialize_tree(rez, returning);
+      }
+      if (returning)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(added);
+#endif
+        added = false;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ void PartitionNode::deserialize_tree(Deserializer &derez,
+                      RegionNode *parent, RegionTreeForest *context, bool returning)
+    //--------------------------------------------------------------------------
+    {
+      LogicalPartition handle;
+      derez.deserialize(handle);
+      PartitionNode *result = context->create_node(handle, parent, returning);
+      size_t num_children;
+      derez.deserialize(num_children);
+      for (unsigned idx = 0; idx < num_children; idx++)
+      {
+        RegionNode::deserialize_tree(derez, result, context, returning);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::find_new_partitions(std::vector<PartitionNode*> &new_parts) const
+    //--------------------------------------------------------------------------
+    {
+      // If we're the top of a new partition tree, put ourselves on the list and return
+      if (added)
+      {
+        PartitionNode *copy = const_cast<PartitionNode*>(this);
+        new_parts.push_back(copy);
+        return;
+      }
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->find_new_partitions(new_parts);
+      }
+    }
+
     /////////////////////////////////////////////////////////////
     // Instance Manager 
     /////////////////////////////////////////////////////////////
@@ -3256,8 +4162,8 @@ namespace RegionRuntime {
         }
       }
 #ifdef DEBUG_HIGH_LEVEL
-      assert(srcs.size() == FieldMask::pop_count(field_mask));
-      assert(dsts.size() == FieldMask::pop_count(field_mask));
+      assert(int(srcs.size()) == FieldMask::pop_count(field_mask));
+      assert(int(dsts.size()) == FieldMask::pop_count(field_mask));
 #endif
       return copy_space.copy(srcs, dsts, precondition);
     }
@@ -4275,7 +5181,7 @@ namespace RegionRuntime {
 #endif
                                 Processor tar, Event single, Event multi, MappingTagID tg, bool sanit,
                                 bool in_map, std::vector<InstanceRef> &source_copy)
-      : ctx(c), uid(u), sanitizing(sanit), inline_mapping(in_map), success(false), idx(id), req(r), task(t),
+      : ctx(c), sanitizing(sanit), inline_mapping(in_map), success(false), idx(id), req(r), task(t), uid(u),
         mapper_lock(m_lock), mapper(m), tag(tg), target(tar), single_term(single), multi_term(multi),
         source_copy_instances(source_copy), result(InstanceRef())
     //--------------------------------------------------------------------------
