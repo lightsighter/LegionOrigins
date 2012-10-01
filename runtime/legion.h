@@ -987,12 +987,16 @@ namespace RegionRuntime {
       MappingOperation*  get_available_mapping(Context parent);
       DeletionOperation* get_available_deletion(Context parent);
     protected:
-      void free_individual_task(IndividualTask *task, Context parent);
-      void free_index_task(IndexTask *task, Context parent);
+      void free_individual_task(IndividualTask *task);
+      void free_index_task(IndexTask *task);
       void free_slice_task(SliceTask *task);
       void free_point_task(PointTask *task);
-      void free_mapping(MappingOperation *op, Context parent);
-      void free_deletion(DeletionOperation *op, Context parent);
+      void free_mapping(MappingOperation *op);
+      void free_deletion(DeletionOperation *op);
+    protected:
+      // Call this when an operation completes to tell the runtime that
+      // an operation is no longer in flight in a given context.
+      void notify_operation_complete(Context parent);
     private:
       // These tasks manage how big a task window is for each parent task
       // to prevent tasks from running too far into the future.  For each operation

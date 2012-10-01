@@ -2549,6 +2549,8 @@ namespace RegionRuntime {
       {
         ops_to_map[key] = next.first;
       }
+      // Mark this queue as ineligible since it now has something executing
+      eligible = false;
     }
 
     //--------------------------------------------------------------------------
@@ -4140,47 +4142,19 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::free_individual_task(IndividualTask *task, Context parent)
+    void HighLevelRuntime::free_individual_task(IndividualTask *task)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef INORDER_EXECUTION
-      if (program_order_execution)
-      {
-        // If we're doing inorder execution notify a queue whenever an operation
-        // finishes so we can do the next one
-        AutoLock q_lock(queue_lock);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(inorder_queues.find(parent) != inorder_queues.end());
-#endif
-        inorder_queues[parent]->notify_eligible();
-      }
-#endif
       AutoLock av_lock(available_lock);
       available_indiv_tasks.push_back(task);
-      if (parent != NULL)
-        decrement_task_window(parent);
     }
 
    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::free_index_task(IndexTask *task, Context parent)
+    void HighLevelRuntime::free_index_task(IndexTask *task)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef INORDER_EXECUTION
-      if (program_order_execution)
-      {
-        // If we're doing inorder execution notify a queue whenever an operation
-        // finishes so we can do the next one
-        AutoLock q_lock(queue_lock);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(inorder_queues.find(parent) != inorder_queues.end());
-#endif
-        inorder_queues[parent]->notify_eligible();
-      }
-#endif
       AutoLock av_lock(available_lock);
       available_index_tasks.push_back(task);
-      if (parent != NULL)
-        decrement_task_window(parent);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4200,36 +4174,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::free_mapping(MappingOperation *op, Context parent)
+    void HighLevelRuntime::free_mapping(MappingOperation *op)
     //--------------------------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(parent != NULL);
-#endif
-#ifdef INORDER_EXECUTION
-      if (program_order_execution)
-      {
-        // If we're doing inorder execution notify a queue whenever an operation
-        // finishes so we can do the next one
-        AutoLock q_lock(queue_lock);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(inorder_queues.find(parent) != inorder_queues.end());
-#endif
-        inorder_queues[parent]->notify_eligible();
-      }
-#endif
       AutoLock av_lock(available_lock);
       available_maps.push_back(op);
-      decrement_task_window(parent);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::free_deletion(DeletionOperation *op, Context parent)
+    void HighLevelRuntime::free_deletion(DeletionOperation *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock av_lock(available_lock);
+      available_deletions.push_back(op);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::notify_operation_complete(Context parent)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(parent != NULL);
 #endif
+
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -4240,10 +4207,15 @@ namespace RegionRuntime {
         assert(inorder_queues.find(parent) != inorder_queues.end());
 #endif
         inorder_queues[parent]->notify_eligible();
+        if (!idle_task_enabled)
+        {
+          idle_task_enabled = true;
+          Processor copy = local_proc;
+          copy.enable_idle_task();
+        }
       }
 #endif
-      AutoLock av_lock(available_lock);
-      available_deletions.push_back(op);
+      // Always do this when an operation completes
       decrement_task_window(parent);
     }
 
@@ -4542,6 +4514,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::add_to_inorder_queue(Context parent, TaskContext *task)
     //--------------------------------------------------------------------------------------------
     {
+      AutoLock q_lock(queue_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(program_order_execution);
 #endif
@@ -4550,12 +4523,19 @@ namespace RegionRuntime {
         inorder_queues[parent] = new InorderQueue();
       }
       inorder_queues[parent]->enqueue_task(task); 
+      if (!idle_task_enabled)
+      {
+        idle_task_enabled = true;
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::add_to_inorder_queue(Context parent, MappingOperation *op)
     //--------------------------------------------------------------------------------------------
     {
+      AutoLock q_lock(queue_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(program_order_execution);
 #endif
@@ -4564,12 +4544,19 @@ namespace RegionRuntime {
         inorder_queues[parent] = new InorderQueue();
       }
       inorder_queues[parent]->enqueue_op(op);
+      if (!idle_task_enabled)
+      {
+        idle_task_enabled = true;
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+      }
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::add_to_inorder_queue(Context parent, DeletionOperation *op)
     //--------------------------------------------------------------------------------------------
     {
+      AutoLock q_lock(queue_lock);
 #ifdef DEBUG_HIGH_LEVEL
       assert(program_order_execution);
 #endif
@@ -4578,6 +4565,12 @@ namespace RegionRuntime {
         inorder_queues[parent] = new InorderQueue();
       }
       inorder_queues[parent]->enqueue_op(op);
+      if (!idle_task_enabled)
+      {
+        idle_task_enabled = true;
+        Processor copy = local_proc;
+        copy.enable_idle_task();
+      }
     }
 #endif // INORDER_EXECUTION
 
@@ -4661,7 +4654,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
 #ifdef INORDER_EXECUTION
-      assert(false); // should never get a steal request during INORDER_EXECUTION
+      if (program_order_execution)
+        assert(false); // should never get a steal request during INORDER_EXECUTION
 #endif
       Deserializer derez(args,arglen);
       // Unpack the stealing processor
@@ -4900,6 +4894,8 @@ namespace RegionRuntime {
     {
       log_run(LEVEL_DEBUG,"Running scheduler on processor %x and idle task enabled %d",
                           local_proc.id, idle_task_enabled);
+      // first perform the dependence analysis 
+      perform_dependence_analysis();
 
 #ifdef INORDER_EXECUTION
       // Short circuit for inorder case
@@ -4909,9 +4905,7 @@ namespace RegionRuntime {
         return;
       }
 #endif
-
-      // first perform the dependence analysis 
-      perform_dependence_analysis();
+      
       // Now perform any other operations that are not tasks to enusre
       // that as many tasks are eligible for mapping as possible
       perform_other_operations();
@@ -5127,6 +5121,11 @@ namespace RegionRuntime {
         if (!success)
           failed_drain.push_back(*it);
       }
+      if (!failed_drain.empty())
+      {
+        AutoLock q_lock(queue_lock);
+        drain_queue.insert(drain_queue.end(),failed_drain.begin(),failed_drain.end());
+      }
       // Perform all the operations and tasks
       for (std::map<Context,TaskContext*>::const_iterator it = tasks_to_map.begin();
             it != tasks_to_map.end(); it++)
@@ -5151,11 +5150,6 @@ namespace RegionRuntime {
       // Now check to see whether any of the queues have inorder tasks
       {
         AutoLock q_lock(queue_lock);
-        // Put any failed drains back on the queue
-        if (!failed_drain.empty())
-        {
-          drain_queue.insert(drain_queue.end(),failed_drain.begin(),failed_drain.end());
-        }
         bool has_ready = !drain_queue.empty();
         for (std::map<Context,InorderQueue*>::const_iterator it = inorder_queues.begin();
               it != inorder_queues.end(); it++)

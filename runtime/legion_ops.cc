@@ -427,7 +427,8 @@ namespace RegionRuntime {
 #endif
       tag = 0;
       map_dependent_waiters.clear();
-      runtime->free_mapping(this, parent);
+      runtime->notify_operation_complete(parent);
+      runtime->free_mapping(this);
     }
 
     //--------------------------------------------------------------------------
@@ -775,9 +776,8 @@ namespace RegionRuntime {
       assert(performed);
 #endif
       deactivate_base();
-      Context parent = parent_ctx;
       parent_ctx = NULL;
-      runtime->free_deletion(this, parent);
+      runtime->free_deletion(this);
     }
 
     //--------------------------------------------------------------------------
@@ -895,8 +895,10 @@ namespace RegionRuntime {
         }
         // Mark that this has been performed and unlock
         performed = true;
+        Context parent = parent_ctx; // copy this while holding the lock
         unlock();
         unlock_context();
+        runtime->notify_operation_complete(parent);
       }
       else
       {
@@ -3110,10 +3112,9 @@ namespace RegionRuntime {
         remaining_buffer = NULL;
         remaining_bytes = 0;
       }
-      Context parent = parent_ctx;
       deactivate_single();
       // Free this back up to the runtime
-      runtime->free_individual_task(this, parent);
+      runtime->free_individual_task(this);
     }
 
     //--------------------------------------------------------------------------
@@ -3837,6 +3838,8 @@ namespace RegionRuntime {
         }
         // Now we can trigger the termination event
         termination_event.trigger();
+        if (parent_ctx != NULL)
+          runtime->notify_operation_complete(parent_ctx);
       }
 
 #ifdef DEBUG_HIGH_LEVEL
@@ -3997,6 +4000,8 @@ namespace RegionRuntime {
         delete future;
       }
       future = NULL;
+      if (parent_ctx != NULL)
+        runtime->notify_operation_complete(parent_ctx);
     }
 
     //--------------------------------------------------------------------------
@@ -4519,9 +4524,8 @@ namespace RegionRuntime {
         }
         reduction_future = NULL;
       }
-      Context parent = parent_ctx;
       deactivate_multi();
-      runtime->free_index_task(this,parent);
+      runtime->free_index_task(this);
     }
 
     //--------------------------------------------------------------------------
@@ -5231,6 +5235,7 @@ namespace RegionRuntime {
         parent_ctx->return_privileges(created_index_spaces,created_field_spaces,created_regions);
         // We're done, trigger the termination event
         termination_event.trigger();
+        runtime->notify_operation_complete(parent_ctx);
         // Remove our reference since we're done
         if (has_reduction)
         {
