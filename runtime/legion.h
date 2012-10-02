@@ -2114,7 +2114,7 @@ namespace RegionRuntime {
       // Need to make a new point to put it in the futures map
       void * point_buffer = malloc(p.elmt_size * p.dim);
       memcpy(point_buffer,p.buffer,p.elmt_size * p.dim);
-      AnyPoint new_p(point_buffer, p.elmt_size * p.dim);
+      AnyPoint new_p(point_buffer, p.elmt_size, p.dim);
       futures[new_p] = impl;
       // Release the lock so we're not holding it when we potentially block
       unlock();
