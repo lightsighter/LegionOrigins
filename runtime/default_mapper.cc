@@ -297,7 +297,7 @@ namespace RegionRuntime {
                                    std::vector<IndexSplit> &slice)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Split range space in default mapper for task %s (ID %d) on processor %x",
+      log_mapper(LEVEL_SPEW,"Slice index space in default mapper for task %s (ID %d) on processor %x",
                  task->variants->name, task->task_id, local_proc.id);
 
       // This assumes the IndexSpace is 1-dimensional and split it according to the splitting factor.
@@ -323,8 +323,11 @@ namespace RegionRuntime {
 
       std::vector<LowLevel::ElementMask> chunks(num_chunks, mask);
       for (unsigned chunk = 0; chunk < num_chunks; chunk++) {
-        chunks[chunk].disable(chunks[chunk].first_enabled(),
-                              chunks[chunk].last_enabled() - chunks[chunk].first_enabled());
+        LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
+        int position = 0, length = 0;
+        while (enabled->get_next(position, length)) {
+          chunks[chunk].disable(position, length);
+        }
       }
 
       // Iterate through valid elements again and assign to chunks.
