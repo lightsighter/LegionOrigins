@@ -1749,6 +1749,7 @@ namespace RegionRuntime {
       memcpy(point_buffer,point.buffer,point.elmt_size * point.dim);
       AnyPoint p(point_buffer,point.elmt_size,point.dim);
       FutureImpl *impl = new FutureImpl();
+      impl->add_reference();
       impl->set_result(res, result_size, point_finish);
       futures[p] = impl;
       // Unlock since we're done now
@@ -1797,6 +1798,7 @@ namespace RegionRuntime {
       }
       // Otherwise it didn't exist yet, so make it
       FutureImpl *impl = new FutureImpl();
+      impl->add_reference();
       impl->set_result(point_buffer,elmt_size*dim,ready_event);
       futures[point] = impl;
       // Unlock since we're done now

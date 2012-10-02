@@ -4114,12 +4114,11 @@ namespace RegionRuntime {
     void PointTask::deactivate(void)
     //--------------------------------------------------------------------------
     {
-      if (local_point_argument != NULL)
-      {
-        free(local_point_argument);
-        local_point_argument = NULL;
-        local_point_argument_len = 0;
-      }
+      // We never own our local point arguments since
+      // they were pulled out of an ArgumentMap so just
+      // set them back to their default settings
+      local_point_argument = NULL;
+      local_point_argument_len = 0;
       deactivate_single();
       runtime->free_point_task(this);
     }
