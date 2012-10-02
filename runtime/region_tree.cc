@@ -3147,6 +3147,7 @@ namespace RegionRuntime {
           child->open_physical_tree(user, rm);
         else
           child->register_physical_region(user, rm);
+        
       }
     }
 

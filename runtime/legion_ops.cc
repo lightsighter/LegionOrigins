@@ -2485,6 +2485,18 @@ namespace RegionRuntime {
       forest_ctx->lock_context();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
+        // See if this region was pre-mapped
+        InstanceRef premapped = find_premapped_region(idx);
+        if (!premapped.is_virtual_ref())
+        {
+          lock();
+          non_virtual_mapped_region.push_back(true);
+          physical_instances.push_back(premapped);
+          physical_contexts.push_back(ctx_id);
+          unlock();
+          continue;
+        }
+        // Otherwise see if we're going to do an actual mapping
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         // First check to see if we want to map the given region  
         if (invoke_mapper_map_region_virtual(idx))
@@ -2515,9 +2527,6 @@ namespace RegionRuntime {
             assert(result);
 #endif
             forest_ctx->map_region(reg_mapper, regions[idx].region);
-#ifdef DEBUG_HIGH_LEVEL
-            assert(reg_mapper.path.empty());
-#endif
           }
           else
           {
@@ -2530,9 +2539,6 @@ namespace RegionRuntime {
             assert(result);
 #endif
             forest_ctx->map_region(reg_mapper, regions[idx].parent);
-#ifdef DEBUG_HIGH_LEVEL
-            assert(reg_mapper.path.empty());
-#endif
           }
           lock();
           physical_instances.push_back(reg_mapper.result);
@@ -2914,6 +2920,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!splits.empty());
 #endif
+      // Make sure we can pre-slice this task
+      if (!pre_slice())
+        return false;
+
       for (unsigned idx = 0; idx < splits.size(); idx++)
       {
         SliceTask *slice = this->clone_as_slice_task(splits[idx].space,
@@ -2983,6 +2993,7 @@ namespace RegionRuntime {
       }
       this->arg_map_impl = rhs->arg_map_impl;
       this->arg_map_impl->add_reference();
+      this->premapped_regions = rhs->premapped_regions;
     }
 
     //--------------------------------------------------------------------------
@@ -3641,6 +3652,14 @@ namespace RegionRuntime {
       remaining_buffer = NULL;
       remaining_bytes = 0;
       partially_unpacked = false;
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceRef IndividualTask::find_premapped_region(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+      // Never has pre-mapped regions
+      return InstanceRef();
     }
 
     //--------------------------------------------------------------------------
@@ -4318,6 +4337,23 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    InstanceRef PointTask::find_premapped_region(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+      // Check to see if the slice owner has a premapped region
+      std::map<unsigned,InstanceRef>::const_iterator it = 
+                      slice_owner->premapped_regions.find(idx);
+      if (it != slice_owner->premapped_regions.end())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!it->second.is_virtual_ref());
+#endif
+        return it->second;
+      }
+      return InstanceRef();
+    }
+
+    //--------------------------------------------------------------------------
     void PointTask::children_mapped(void)
     //--------------------------------------------------------------------------
     {
@@ -4758,7 +4794,8 @@ namespace RegionRuntime {
       lock_context();
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if (regions[idx].sanitized)
+        // Check to see if this region has been sanitized or has been premapped
+        if (regions[idx].sanitized || (premapped_regions.find(idx) != premapped_regions.end()))
           continue;
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent); 
         // Create a sanitizing region mapper and map it
@@ -4996,6 +5033,53 @@ namespace RegionRuntime {
       }
       
       slice_finished(num_points);
+    }
+
+    //--------------------------------------------------------------------------
+    bool IndexTask::pre_slice(void)
+    //--------------------------------------------------------------------------
+    {
+      // Go through and see if we have any regions that need to be pre-mapped
+      // prior to slicing up this index space
+      bool success = true;
+      lock_context();
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        if ((regions[idx].handle_type == SINGULAR) &&
+            (IS_WRITE(regions[idx])))
+        {
+          // See if we already pre-mapped this region
+          if (premapped_regions.find(idx) != premapped_regions.end())
+            continue;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!regions[idx].sanitized);
+          assert(parent_ctx != NULL);
+#endif
+          // If it is a singular write, then the index space must premap the region
+          ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(regions[idx].parent);
+          RegionMapper reg_mapper(this, unique_id, phy_ctx, idx, regions[idx], mapper, mapper_lock,
+              Processor::NO_PROC, termination_event, termination_event, tag, false/*sanitizing*/,
+              false/*inline mapping*/, source_copy_instances);
+#ifdef DEBUG_HIGH_LEVEL
+          bool result = 
+#endif
+          forest_ctx->compute_index_path(regions[idx].parent.index_space, regions[idx].region.index_space, reg_mapper.path);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(result);
+#endif
+          forest_ctx->map_region(reg_mapper, regions[idx].parent);
+          if (reg_mapper.result.is_virtual_ref())
+          {
+            // Failed the mapping
+            success = false;
+            break;
+          }
+          // Otherwise mapping was successful, save it and continue
+          premapped_regions[idx] = reg_mapper.result;
+        }
+      }
+      unlock_context();
+      return success;
     }
 
     //--------------------------------------------------------------------------
@@ -5820,6 +5904,14 @@ namespace RegionRuntime {
                                       get_enclosing_physical_context(regions[idx].parent));
             }
           }
+          // Need to pack any pre-mapped regions
+          result += sizeof(size_t); // number of premapped regions
+          for (std::map<unsigned,InstanceRef>::const_iterator it = premapped_regions.begin();
+                it != premapped_regions.end(); it++)
+          {
+            result += sizeof(it->first);
+            result += forest_ctx->compute_reference_size(it->second);
+          }
           // since nothing has been enumerated, we need to pack the argument map
           result += sizeof(bool); // has argument map
           if (arg_map_impl != NULL)
@@ -5907,6 +5999,14 @@ namespace RegionRuntime {
                             get_enclosing_physical_context(regions[idx].parent), rez);
             }
           }
+          // Pack any premapped regions
+          rez.serialize(premapped_regions.size());
+          for (std::map<unsigned,InstanceRef>::iterator it = premapped_regions.begin();
+                it != premapped_regions.end(); it++)
+          {
+            rez.serialize(it->first);
+            forest_ctx->pack_reference(it->second, rez);
+          }
           // Now we need to pack the argument map
           bool has_arg_map = (arg_map_impl != NULL);
           rez.serialize<bool>(has_arg_map);
@@ -5984,6 +6084,16 @@ namespace RegionRuntime {
         {
           forest_ctx->unpack_region_tree_state(ctx_id, derez);
         }
+        // Unpack any premapped regions
+        size_t num_premapped;
+        derez.deserialize(num_premapped);
+        for (unsigned idx = 0; idx < num_premapped; idx++)
+        {
+          unsigned idx;
+          derez.deserialize(idx);
+          premapped_regions[idx] = forest_ctx->unpack_reference(derez);
+        }
+        // Unpack the argument map
         bool has_arg_map;
         derez.deserialize<bool>(has_arg_map);
         if (has_arg_map)
@@ -6025,6 +6135,14 @@ namespace RegionRuntime {
     {
       // Should never be called
       assert(false);
+    }
+
+    //--------------------------------------------------------------------------
+    bool SliceTask::pre_slice(void)
+    //--------------------------------------------------------------------------
+    {
+      // Intentionally do nothing
+      return true; // success
     }
 
     //--------------------------------------------------------------------------

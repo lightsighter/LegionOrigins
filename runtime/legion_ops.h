@@ -395,6 +395,7 @@ namespace RegionRuntime {
       void unpack_single_task(Deserializer &derez);
     protected:
       bool map_all_regions(Processor target, Event single_term, Event multi_term);
+      virtual InstanceRef find_premapped_region(unsigned idx) = 0;
       void initialize_region_tree_contexts(void);
     protected:
       void release_source_copy_instances(void);
@@ -483,6 +484,7 @@ namespace RegionRuntime {
       // New functions for slicing that need to be done for multi-tasks
       bool is_sliced(void);
       bool slice_index_space(void);
+      virtual bool pre_slice(void) = 0;
       virtual bool post_slice(void) = 0; // What to do after slicing
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable) = 0;
@@ -506,6 +508,8 @@ namespace RegionRuntime {
       Barrier must_barrier; // for use with must parallelism
       // Argument Map for index space arguments
       ArgumentMapImpl *arg_map_impl;
+      // Pre-mapped regions for index space tasks
+      std::map<unsigned/*idx*/,InstanceRef> premapped_regions;
     };
 
     /////////////////////////////////////////////////////////////
@@ -549,6 +553,7 @@ namespace RegionRuntime {
       virtual void finish_task_unpack(void);
     public:
       // Functions from SingleTask
+      virtual InstanceRef find_premapped_region(unsigned idx);
       virtual void children_mapped(void);
       virtual void finish_task(void);
       virtual void remote_start(const void *args, size_t arglen);
@@ -628,6 +633,7 @@ namespace RegionRuntime {
       virtual void finish_task_unpack(void);
     public:
       // Functions from SingleTask
+      virtual InstanceRef find_premapped_region(unsigned idx);
       virtual void children_mapped(void);
       virtual void finish_task(void);
       virtual void remote_start(const void *args, size_t arglen);
@@ -696,6 +702,7 @@ namespace RegionRuntime {
       virtual bool map_and_launch(void);
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable);
+      virtual bool pre_slice(void);
       virtual bool post_slice(void);
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size);
     public:
@@ -778,6 +785,7 @@ namespace RegionRuntime {
       virtual bool map_and_launch(void);
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable);
+      virtual bool pre_slice(void);
       virtual bool post_slice(void);
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size);
     protected:
