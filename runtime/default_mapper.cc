@@ -299,29 +299,58 @@ namespace RegionRuntime {
     {
       log_mapper(LEVEL_SPEW,"Split range space in default mapper for task %s (ID %d) on processor %x",
                  task->variants->name, task->task_id, local_proc.id);
-// FIXME: Update for new mapper interface!
-#if 0
-      // We'll try to split the range space into some factor of the number of processors
-      // specified by the splitting factor
-      unsigned goal_num_chunks = proc_group.size() * splitting_factor;
-      unsigned depth = 0;
-      unsigned cur_num_chunks = 1;
-      // Start from the outer dimensions and work our way in
-      while ((cur_num_chunks < goal_num_chunks) && (depth < index_space.size()))
+
+      // This assumes the IndexSpace is 1-dimensional and split it according to the splitting factor.
+      LowLevel::ElementMask mask = index_space.get_valid_mask();
+
+      // Count valid elements in mask.
+      unsigned num_elts = 0;
       {
-        cur_num_chunks *= (((index_space[depth].stop - index_space[depth].start)/
-                            index_space[depth].stride) + 1);
-        depth++;
+        LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
+        int position = 0, length = 0;
+        while (enabled->get_next(position, length)) {
+          num_elts += length;
+        }
       }
-      // Now decompose the range space 
-      // This enumerates each of the dimensions down to depth into different chunks
-      // while keeping the remaining dimensions intact
+
+      // Choose split sizes based on number of elements and processors.
+      unsigned num_chunks = proc_group.size() * splitting_factor;
+      if (num_chunks > num_elts) {
+        num_chunks = num_elts;
+      }
+      unsigned num_elts_per_chunk = num_elts / num_chunks;
+      unsigned num_elts_extra = num_elts % num_chunks;
+
+      std::vector<LowLevel::ElementMask> chunks(num_chunks, mask);
+      for (unsigned chunk = 0; chunk < num_chunks; chunk++) {
+        chunks[chunk].disable(chunks[chunk].first_enabled(),
+                              chunks[chunk].last_enabled() - chunks[chunk].first_enabled());
+      }
+
+      // Iterate through valid elements again and assign to chunks.
       {
-        std::vector<Range> chunk = index_space;
-        unsigned cur_proc = 0;
-        decompose_range_space(0, depth, index_space, chunk, slice, cur_proc, proc_group);
+        LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
+        int position = 0, length = 0;
+        unsigned chunk = 0;
+        int remaining_in_chunk = num_elts_per_chunk + (chunk < num_elts_extra ? 1 : 0);
+        while (enabled->get_next(position, length)) {
+          for (; chunk < num_chunks; chunk++,
+                 remaining_in_chunk = num_elts_per_chunk + (chunk < num_elts_extra ? 1 : 0)) {
+            if (length <= remaining_in_chunk) {
+              chunks[chunk].enable(position, length);
+              break;
+            }
+            chunks[chunk].enable(position, remaining_in_chunk);
+            position += remaining_in_chunk;
+            length -= remaining_in_chunk;
+          }
+        }
       }
-#endif
+
+      for (unsigned chunk = 0; chunk < num_chunks; chunk++) {
+        slice.push_back(IndexSplit(IndexSpace::create_index_space(index_space, chunks[chunk]),
+                                   proc_group[chunk % proc_group.size()], false, false));
+      }
     }
 
     //--------------------------------------------------------------------------------------------
@@ -460,41 +489,5 @@ namespace RegionRuntime {
       return false;
     }
 
-// FIXME: We'll likely need something significantly different for this
-#if 0
-    //--------------------------------------------------------------------------------------------
-    void Mapper::decompose_range_space(unsigned cur_depth, unsigned max_depth,
-                                        const std::vector<Range> &index_space,
-                                        std::vector<Range> &chunk,
-                                        std::vector<RangeSplit> &chunks, unsigned &proc_index,
-                                        std::vector<Processor> &target_procs)
-    //--------------------------------------------------------------------------------------------
-    {
-      // Check to see if we've arrived at our max depth
-      if (cur_depth == max_depth)
-      {
-        // Now add the chunk to the set of chunks 
-        chunks.push_back(RangeSplit(chunk, target_procs[proc_index], false/*recurse*/));
-        // Update the proc_index
-        proc_index++;
-        // Reset the current processor if necessary
-        if (proc_index == target_procs.size())
-        {
-          proc_index = 0;
-        }
-      }
-      else
-      {
-        // Read our range from the index space
-        Range current = index_space[cur_depth];
-        // Enumerate the range of our dimension and for each one recurse down the tree
-        for (int idx = current.start; idx <= current.stop; idx += current.stride)
-        {
-          chunk[cur_depth] = Range(idx, idx, 1);
-          decompose_range_space(cur_depth+1,max_depth,index_space,chunk,chunks,proc_index,target_procs);
-        }
-      }
-    }
-#endif
   };
 };
