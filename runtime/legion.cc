@@ -1716,7 +1716,6 @@ namespace RegionRuntime {
       {
         if (it->first.equals(point))
         {
-          const AnyPoint &pin = it->first;
           // Match get the impl and set the result
           FutureImpl *impl = it->second;
           // There better have been a user event too
