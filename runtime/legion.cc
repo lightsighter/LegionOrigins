@@ -1616,6 +1616,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void FutureImpl::set_result(const void *res, size_t result_size, Event ready_event)
+    //--------------------------------------------------------------------------
+    {
+      set_event = ready_event;
+      set_result(res, result_size);
+    }
+
+    //--------------------------------------------------------------------------
     void FutureImpl::set_result(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
@@ -1716,7 +1724,6 @@ namespace RegionRuntime {
       {
         if (it->first.equals(point))
         {
-          const AnyPoint &pin = it->first;
           // Match get the impl and set the result
           FutureImpl *impl = it->second;
           // There better have been a user event too
@@ -1728,7 +1735,7 @@ namespace RegionRuntime {
           waiter_events.erase(impl);
           // Don't need to be holding the lock when doing this
           unlock();
-          impl->set_result(res, result_size);
+          impl->set_result(res, result_size, point_finish);
           // Then trigger the waiting event 
           ready_event.trigger();
           // Now we're done
@@ -1741,8 +1748,8 @@ namespace RegionRuntime {
       void * point_buffer = malloc(point.elmt_size * point.dim);
       memcpy(point_buffer,point.buffer,point.elmt_size * point.dim);
       AnyPoint p(point_buffer,point.elmt_size,point.dim);
-      FutureImpl *impl = new FutureImpl(point_finish);
-      impl->set_result(res, result_size);
+      FutureImpl *impl = new FutureImpl();
+      impl->set_result(res, result_size, point_finish);
       futures[p] = impl;
       // Unlock since we're done now
       unlock();
@@ -1759,6 +1766,8 @@ namespace RegionRuntime {
       derez.deserialize<unsigned>(dim);
       void * point_buffer = malloc(elmt_size * dim);
       derez.deserialize(point_buffer,elmt_size * dim);
+      Event ready_event;
+      derez.deserialize(ready_event);
       AnyPoint point(point_buffer,elmt_size,dim);
       // Go through and see if we can find the future
       lock();
@@ -1778,7 +1787,7 @@ namespace RegionRuntime {
           waiter_events.erase(impl);
           // Don't need to be holding the lock when doing this
           unlock();
-          impl->set_result(derez);
+          impl->set_result(point_buffer,elmt_size*dim,ready_event);
           // Then trigger the waiting event 
           ready_event.trigger();
           // We can also free the point since we didn't need it
@@ -1788,7 +1797,7 @@ namespace RegionRuntime {
       }
       // Otherwise it didn't exist yet, so make it
       FutureImpl *impl = new FutureImpl();
-      impl->set_result(derez);
+      impl->set_result(point_buffer,elmt_size*dim,ready_event);
       futures[point] = impl;
       // Unlock since we're done now
       unlock();

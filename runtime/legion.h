@@ -1634,6 +1634,7 @@ namespace RegionRuntime {
       FutureImpl& operator=(const FutureImpl &impl);
     protected:
       void set_result(const void *res, size_t result_size);
+      void set_result(const void *res, size_t result_size, Event ready_event);
       void set_result(Deserializer &derez);
     protected:
       /**
