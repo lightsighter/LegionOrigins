@@ -376,7 +376,7 @@ namespace RegionRuntime {
       void start_task(std::vector<PhysicalRegion> &physical_regions);
       void complete_task(const void *result, size_t result_size, std::vector<PhysicalRegion> &physical_regions);
       virtual const void* get_local_args(void *point, size_t point_size, size_t &local_size) = 0;
-      virtual void handle_future(const void *result, size_t result_size) = 0;
+      virtual void handle_future(const void *result, size_t result_size, Event ready_event) = 0;
     public:
       virtual void children_mapped(void) = 0;
       virtual void finish_task(void) = 0;
@@ -488,7 +488,7 @@ namespace RegionRuntime {
       virtual bool post_slice(void) = 0; // What to do after slicing
       virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable) = 0;
-      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size) = 0;
+      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event) = 0;
       void clone_multi_from(MultiTask *rhs, IndexSpace new_space, bool recurse);
     protected:
       size_t compute_multi_task_size(void);
@@ -560,7 +560,7 @@ namespace RegionRuntime {
       virtual void remote_children_mapped(const void *args, size_t arglen);
       virtual void remote_finish(const void *args, size_t arglen);
       virtual const void* get_local_args(void *point, size_t point_size, size_t &local_size);
-      virtual void handle_future(const void *result, size_t result_size);
+      virtual void handle_future(const void *result, size_t result_size, Event ready_event);
     public:
       Future get_future(void);
     private:
@@ -640,10 +640,11 @@ namespace RegionRuntime {
       virtual void remote_children_mapped(const void *args, size_t arglen);
       virtual void remote_finish(const void *args, size_t arglen);
       virtual const void* get_local_args(void *point, size_t point_size, size_t &local_size);
-      virtual void handle_future(const void *result, size_t result_size);
+      virtual void handle_future(const void *result, size_t result_size, Event ready_event);
     public:
       void unmap_all_regions(void);
       void update_requirements(const std::vector<RegionRequirement> &reqs);
+      void update_argument(const ArgumentMapImpl *impl);
     private:
       SliceTask *slice_owner;
       UserEvent point_termination_event;
@@ -704,7 +705,7 @@ namespace RegionRuntime {
                                              bool recurse, bool stealable);
       virtual bool pre_slice(void);
       virtual bool post_slice(void);
-      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size);
+      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event);
     public:
       void set_index_space(IndexSpace space, const ArgumentMap &map, bool must);
       void set_reduction_args(ReductionOpID redop, const TaskArgument &initial_value);
@@ -743,6 +744,18 @@ namespace RegionRuntime {
      * space into single Point Tasks.
      */
     class SliceTask : public MultiTask {
+    protected:
+      struct FutureResult {
+      public:
+        FutureResult(void)
+          : buffer(NULL), buffer_size(0), ready_event(Event::NO_EVENT) { }
+        FutureResult(void *b, size_t s, Event r)
+          : buffer(b), buffer_size(s), ready_event(r) { }
+      public:
+        void *buffer;
+        size_t buffer_size;
+        Event ready_event;
+      };
     public:
       SliceTask(HighLevelRuntime *rt, ContextID id);
       virtual ~SliceTask(void);
@@ -787,7 +800,7 @@ namespace RegionRuntime {
                                              bool recurse, bool stealable);
       virtual bool pre_slice(void);
       virtual bool post_slice(void);
-      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size);
+      virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event);
     protected:
       PointTask* clone_as_point_task(bool new_point);
     public:
@@ -822,7 +835,7 @@ namespace RegionRuntime {
       // For storing futures when remote, the slice owns the result values
       // but the AnyPoint buffers are owned by the points themselves which
       // we know are live throughout the life of the SliceTask.
-      std::map<AnyPoint,std::pair<void*,size_t> > future_results;
+      std::map<AnyPoint,FutureResult> future_results;
       // (1/denominator indicates fraction of index space in this slice)
       unsigned long denominator; // Set explicity, no need to copy
       bool enumerating; // Set to true when we're enumerating the slice

@@ -1370,6 +1370,23 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    TaskArgument ArgumentMapImpl::find_point(const AnyPoint &point) const
+    //--------------------------------------------------------------------------
+    {
+      TaskArgument result;
+      for (std::map<AnyPoint,TaskArgument>::const_iterator it = arguments.begin();
+            it != arguments.end(); it++)
+      {
+        if (point.equals(it->first))
+        {
+          result = it->second;
+          break;
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
     ArgumentMapImpl* ArgumentMapImpl::freeze(void)
     //--------------------------------------------------------------------------
     {
@@ -1689,7 +1706,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void FutureMapImpl::set_result(AnyPoint point, const void *res, size_t result_size)
+    void FutureMapImpl::set_result(AnyPoint point, const void *res, size_t result_size, Event point_finish)
     //--------------------------------------------------------------------------
     {
       // Go through and see if we can find the future
@@ -1699,6 +1716,7 @@ namespace RegionRuntime {
       {
         if (it->first.equals(point))
         {
+          const AnyPoint &pin = it->first;
           // Match get the impl and set the result
           FutureImpl *impl = it->second;
           // There better have been a user event too
@@ -1723,7 +1741,7 @@ namespace RegionRuntime {
       void * point_buffer = malloc(point.elmt_size * point.dim);
       memcpy(point_buffer,point.buffer,point.elmt_size * point.dim);
       AnyPoint p(point_buffer,point.elmt_size,point.dim);
-      FutureImpl *impl = new FutureImpl();
+      FutureImpl *impl = new FutureImpl(point_finish);
       impl->set_result(res, result_size);
       futures[p] = impl;
       // Unlock since we're done now

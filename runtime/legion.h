@@ -1537,6 +1537,7 @@ namespace RegionRuntime {
       friend class IndexTask;
       friend class SliceTask;
       friend class MultiTask;
+      friend class PointTask;
       ArgumentMapImpl(ArgumentMapStore *st);
       // Make sure this can't be put in STL containers or moved
       ArgumentMapImpl(const ArgumentMapImpl &impl);
@@ -1547,6 +1548,7 @@ namespace RegionRuntime {
       void set_point(const PT point[DIM], const TaskArgument &arg, bool replace);
       template<typename PT, unsigned DIM>
       bool remove_point(const PT point[DIM]);
+      TaskArgument find_point(const AnyPoint &point) const;
     protected:
       // Freeze the last argument map implementation and return a pointer
       ArgumentMapImpl* freeze(void);
@@ -1667,7 +1669,7 @@ namespace RegionRuntime {
       FutureMapImpl(const FutureMapImpl &impl);
       FutureMapImpl& operator=(const FutureMapImpl &impl);
     protected:
-      void set_result(AnyPoint p, const void *res, size_t result_size);
+      void set_result(AnyPoint p, const void *res, size_t result_size, Event point_finish);
       void set_result(Deserializer &derez);
     protected:
       template<typename T, typename PT, unsigned DIM>

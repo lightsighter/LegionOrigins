@@ -2325,7 +2325,7 @@ namespace RegionRuntime {
       }
       physical_region_impls.clear();
       // Handle the future result
-      handle_future(result, result_size);
+      handle_future(result, result_size, get_termination_event());
       
       if (is_leaf)
       {
@@ -3495,7 +3495,7 @@ namespace RegionRuntime {
               if (physical_instances[idx].is_virtual_ref())
               {
                 // Virtual mapping, pack the state
-                result += forest_ctx->compute_region_tree_state_size(regions[idx].region, 
+                result += forest_ctx->compute_region_tree_state_size(regions[idx], 
                                         get_enclosing_physical_context(regions[idx].parent));
               }
               else
@@ -3511,7 +3511,7 @@ namespace RegionRuntime {
           result += forest_ctx->compute_region_forest_shape_size(indexes, fields, regions);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            result += forest_ctx->compute_region_tree_state_size(regions[idx].region,
+            result += forest_ctx->compute_region_tree_state_size(regions[idx],
                                     get_enclosing_physical_context(regions[idx].parent));
           }
         }
@@ -3556,7 +3556,7 @@ namespace RegionRuntime {
             {
               if (physical_instances[idx].is_virtual_ref())
               {
-                forest_ctx->pack_region_tree_state(regions[idx].region,
+                forest_ctx->pack_region_tree_state(regions[idx],
                               get_enclosing_physical_context(regions[idx].parent), rez);
               }
               else
@@ -3571,7 +3571,7 @@ namespace RegionRuntime {
           forest_ctx->pack_region_forest_shape(rez);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            forest_ctx->pack_region_tree_state(regions[idx].region, 
+            forest_ctx->pack_region_tree_state(regions[idx], 
                             get_enclosing_physical_context(regions[idx].parent), rez);
           }
         }
@@ -4036,7 +4036,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void IndividualTask::handle_future(const void *result, size_t result_size)
+    void IndividualTask::handle_future(const void *result, size_t result_size, Event ready_event)
     //--------------------------------------------------------------------------
     {
       if (remote)
@@ -4230,9 +4230,7 @@ namespace RegionRuntime {
     Event PointTask::get_termination_event(void) const
     //--------------------------------------------------------------------------
     {
-      // Should never be called
-      assert(false);
-      return Event::NO_EVENT;
+      return point_termination_event;
     }
 
     //--------------------------------------------------------------------------
@@ -4475,11 +4473,11 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PointTask::handle_future(const void *result, size_t result_size)
+    void PointTask::handle_future(const void *result, size_t result_size, Event ready_event)
     //--------------------------------------------------------------------------
     {
       AnyPoint local_point(index_point,index_element_size,index_dimensions);
-      slice_owner->handle_future(local_point,result, result_size); 
+      slice_owner->handle_future(local_point,result, result_size, ready_event); 
     }
 
     //--------------------------------------------------------------------------
@@ -4565,6 +4563,23 @@ namespace RegionRuntime {
           }
         }
       }
+    }
+
+    //--------------------------------------------------------------------------
+    void PointTask::update_argument(const ArgumentMapImpl *impl)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(index_point != NULL);
+      assert(impl != NULL);
+#endif
+      AnyPoint point(index_point, index_element_size, index_dimensions); 
+      TaskArgument local_arg = impl->find_point(point);
+      // Note we don't need to clone the data since we know the ArgumentMapImpl
+      // owns it and the ArgumentMapImpl won't be reclaimed until after the
+      // task is done at the earliest
+      this->local_point_argument = local_arg.get_ptr();
+      this->local_point_argument_len = local_arg.get_size();
     }
 
     /////////////////////////////////////////////////////////////
@@ -5018,7 +5033,8 @@ namespace RegionRuntime {
         AnyPoint no_point(NULL,0,0);
         const void *ptr = derez.get_pointer();
         derez.advance_pointer(redop->sizeof_rhs);
-        handle_future(no_point, const_cast<void*>(ptr), redop->sizeof_rhs);
+        handle_future(no_point, const_cast<void*>(ptr), redop->sizeof_rhs, 
+                        get_termination_event()/*won't matter*/);
       }
       else
       {
@@ -5031,7 +5047,9 @@ namespace RegionRuntime {
           derez.advance_pointer(point_size);
           const void *ptr = derez.get_pointer();
           derez.advance_pointer(result_size);
-          handle_future(point, ptr, result_size);
+          Event ready_event;
+          derez.deserialize(ready_event);
+          handle_future(point, ptr, result_size, ready_event);
         }
       }
       
@@ -5123,7 +5141,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void IndexTask::handle_future(const AnyPoint &point, const void *result, size_t result_size)
+    void IndexTask::handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event)
     //--------------------------------------------------------------------------
     {
       if (has_reduction)
@@ -5145,7 +5163,7 @@ namespace RegionRuntime {
         assert(future_map != NULL);
 #endif
         // No need to hold the lock, the future map has its own lock
-        future_map->set_result(point, result, result_size);
+        future_map->set_result(point, result, result_size, ready_event);
       }
     }
 
@@ -5590,6 +5608,7 @@ namespace RegionRuntime {
               next_point->set_index_point(&value, sizeof(int), 1);
               // Update the region requirements for this point
               next_point->update_requirements(regions);
+              next_point->update_argument(arg_map_impl);
               points.push_back(next_point); 
               value++;
             }
@@ -5766,6 +5785,7 @@ namespace RegionRuntime {
             next_point->set_index_point(&value, sizeof(int), 1);
             // This must be called after the point is set
             next_point->update_requirements(regions);
+            next_point->update_argument(arg_map_impl);
             points.push_back(next_point);
             num_unmapped_points++;
             num_unfinished_points++;
@@ -5870,17 +5890,8 @@ namespace RegionRuntime {
 #endif
               if (non_virtual_mappings[idx] < points.size())
               {
-                // Not all the points were mapped, so we need to send the state
-                if (regions[idx].handle_type == SINGULAR)
-                {
-                  result += forest_ctx->compute_region_tree_state_size(regions[idx].region,
+                result += forest_ctx->compute_region_tree_state_size(regions[idx],
                                           get_enclosing_physical_context(regions[idx].parent));
-                }
-                else
-                {
-                  result += forest_ctx->compute_region_tree_state_size(regions[idx].partition,
-                                          get_enclosing_physical_context(regions[idx].parent));
-                }
               }
             }
           }
@@ -5896,16 +5907,8 @@ namespace RegionRuntime {
           result += forest_ctx->compute_region_forest_shape_size(indexes, fields, regions);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            if (regions[idx].handle_type == SINGULAR)
-            {
-              result += forest_ctx->compute_region_tree_state_size(regions[idx].region,
+            result += forest_ctx->compute_region_tree_state_size(regions[idx],
                                       get_enclosing_physical_context(regions[idx].parent));
-            }
-            else
-            {
-              result += forest_ctx->compute_region_tree_state_size(regions[idx].partition,
-                                      get_enclosing_physical_context(regions[idx].parent));
-            }
           }
           // Need to pack any pre-mapped regions
           result += sizeof(size_t); // number of premapped regions
@@ -5967,16 +5970,8 @@ namespace RegionRuntime {
             {
               if (non_virtual_mappings[idx] < points.size())
               {
-                if (regions[idx].handle_type == SINGULAR)
-                {
-                  forest_ctx->pack_region_tree_state(regions[idx].region,
+                forest_ctx->pack_region_tree_state(regions[idx],
                                 get_enclosing_physical_context(regions[idx].parent), rez);
-                }
-                else
-                {
-                  forest_ctx->pack_region_tree_state(regions[idx].partition,
-                                get_enclosing_physical_context(regions[idx].parent), rez);
-                }
               }
             }
           }
@@ -5991,16 +5986,8 @@ namespace RegionRuntime {
           forest_ctx->pack_region_forest_shape(rez);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            if (regions[idx].handle_type == SINGULAR)
-            {
-              forest_ctx->pack_region_tree_state(regions[idx].region,
+            forest_ctx->pack_region_tree_state(regions[idx],
                             get_enclosing_physical_context(regions[idx].parent), rez);
-            }
-            else
-            {
-              forest_ctx->pack_region_tree_state(regions[idx].partition,
-                            get_enclosing_physical_context(regions[idx].parent), rez);
-            }
           }
           // Pack any premapped regions
           rez.serialize(premapped_regions.size());
@@ -6193,7 +6180,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SliceTask::handle_future(const AnyPoint &point, const void *result, size_t result_size)
+    void SliceTask::handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event)
     //--------------------------------------------------------------------------
     {
       if (remote)
@@ -6222,13 +6209,13 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(future_results.find(point) == future_results.end());
 #endif
-          future_results[point] = std::pair<void*,size_t>(future_copy,result_size);
+          future_results[point] = FutureResult(future_copy,result_size,ready_event); 
           unlock();
         }
       }
       else
       {
-        index_owner->handle_future(point,result,result_size);
+        index_owner->handle_future(point,result,result_size,ready_event);
       }
     }
 
@@ -6510,9 +6497,9 @@ namespace RegionRuntime {
           assert(future_results.size() == points.size());
 #endif
           // Get the result size
-          result_size = (future_results.begin())->second.second;
-          buffer_size += sizeof(result_size);
-          buffer_size += (future_results.size() * (index_dimensions*index_element_size + result_size));
+          result_size = (future_results.begin())->second.buffer_size;
+          buffer_size += sizeof(size_t); // number of future results
+          buffer_size += (future_results.size() * (index_dimensions*index_element_size + result_size + sizeof(Event)));
         }
 
         Serializer rez(buffer_size);
@@ -6541,7 +6528,7 @@ namespace RegionRuntime {
         else
         {
           rez.serialize<size_t>(result_size); 
-          for (std::map<AnyPoint,std::pair<void*,size_t> >::const_iterator it = future_results.begin();
+          for (std::map<AnyPoint,FutureResult>::const_iterator it = future_results.begin();
                 it != future_results.end(); it++)
           {
 #ifdef DEBUG_HIGH_LEVEL
@@ -6550,9 +6537,10 @@ namespace RegionRuntime {
 #endif
             rez.serialize(it->first.buffer,(it->first.elmt_size) * (it->first.dim));
 #ifdef DEBUG_HIGH_LEVEL
-            assert(it->second.second == result_size);
+            assert(it->second.buffer_size == result_size);
 #endif
-            rez.serialize(it->second.first,result_size);
+            rez.serialize(it->second.buffer,result_size);
+            rez.serialize(it->second.ready_event);
           }
         }
         // Send it back on the utility processor
