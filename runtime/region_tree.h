@@ -76,10 +76,8 @@ namespace RegionRuntime {
       void unpack_region_forest_shape(Deserializer &derez);
     public:
       // Packing and unpacking state send
-      size_t compute_region_tree_state_size(LogicalRegion handle, ContextID ctx);
-      size_t compute_region_tree_state_size(LogicalPartition handle, ContextID ctx);
-      void pack_region_tree_state(LogicalRegion handle, ContextID ctx, Serializer &rez);
-      void pack_region_tree_state(LogicalPartition handle, ContextID ctx, Serializer &rez);
+      size_t compute_region_tree_state_size(const RegionRequirement &req, ContextID ctx);
+      void pack_region_tree_state(const RegionRequirement &req, ContextID ctx, Serializer &rez);
       void unpack_region_tree_state(ContextID ctx, Deserializer &derez);
     public:
       // Packing and unpacking reference send
@@ -169,7 +167,7 @@ namespace RegionRuntime {
       // Data structures for determining what to pack and unpack when moving trees
       std::set<IndexSpaceNode*>     send_index_nodes;
       std::set<FieldSpaceNode*>     send_field_nodes;
-      std::set<RegionNode*>       send_logical_nodes;
+      std::set<RegionNode*>         send_logical_nodes;
       std::vector<IndexPartNode*>  new_index_part_nodes;
       std::vector<PartitionNode*>   new_partition_nodes;
     private:
@@ -208,10 +206,12 @@ namespace RegionRuntime {
       void add_instance(RegionNode *inst);
       void remove_instance(RegionNode *inst);
     public:
-      size_t compute_tree_size(void) const;
+      size_t compute_tree_size(bool returning) const;
       void serialize_tree(Serializer &rez, bool returning);
       static IndexSpaceNode* deserialize_tree(Deserializer &derez, IndexPartNode *parent,
                           RegionTreeForest *context, bool returning);
+      void mark_node(bool recurse);
+      IndexSpaceNode* find_top_marked(void) const;
       void find_new_partitions(std::vector<IndexPartNode*> &new_parts) const;
     private:
       const IndexSpace handle;
@@ -223,6 +223,7 @@ namespace RegionRuntime {
       std::list<RegionNode*> logical_nodes; // corresponding region nodes
       std::set<std::pair<Color,Color> > disjoint_subsets; // pairs of disjoint subsets
       bool added;
+      bool marked;
     };
 
     /////////////////////////////////////////////////////////////
@@ -248,10 +249,12 @@ namespace RegionRuntime {
       void add_instance(PartitionNode *inst);
       void remove_instance(PartitionNode *inst);
     public:
-      size_t compute_tree_size(void) const;
+      size_t compute_tree_size(bool returning) const;
       void serialize_tree(Serializer &rez, bool returning);
       static void deserialize_tree(Deserializer &derez, IndexSpaceNode *parent, 
                         RegionTreeForest *context, bool returning);
+      void mark_node(bool recurse);
+      IndexSpaceNode* find_top_marked(void) const;
       void find_new_partitions(std::vector<IndexPartNode*> &new_parts) const;
     private:
       const IndexPartition handle;
@@ -264,6 +267,7 @@ namespace RegionRuntime {
       std::set<std::pair<Color,Color> > disjoint_subspaces; // for non-disjoint partitions
       const bool disjoint;
       bool added;
+      bool marked;
     };
 
     /////////////////////////////////////////////////////////////
@@ -448,11 +452,15 @@ namespace RegionRuntime {
       void issue_final_close_operation(const PhysicalUser &user, PhysicalCloser &closer);
       void update_valid_views(ContextID ctx, const FieldMask &field_mask);
     public:
-      size_t compute_tree_size(void) const;
+      size_t compute_tree_size(bool returning) const;
       void serialize_tree(Serializer &rez, bool returning);
       static RegionNode* deserialize_tree(Deserializer &derez, PartitionNode *parent,
                       RegionTreeForest *context, bool returning);
+      void mark_node(bool recurse);
+      RegionNode* find_top_marked(void) const;
       void find_new_partitions(std::vector<PartitionNode*> &new_parts) const;
+    public:
+      size_t compute_state_size(ContextID ctx, const FieldMask &pack_mask);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
@@ -460,6 +468,7 @@ namespace RegionRuntime {
       FieldSpaceNode *const column_source; // only valid for top of region trees
       std::map<Color,PartitionNode*> color_map;
       bool added;
+      bool marked;
     };
 
     /////////////////////////////////////////////////////////////
@@ -496,10 +505,12 @@ namespace RegionRuntime {
       virtual bool color_match(Color c);
 #endif
     public:
-      size_t compute_tree_size(void) const;
+      size_t compute_tree_size(bool returning) const;
       void serialize_tree(Serializer &rez, bool returning);
       static void deserialize_tree(Deserializer &derez, RegionNode *parent,
                         RegionTreeForest *context, bool returning);
+      void mark_node(bool recurse);
+      RegionNode* find_top_marked(void) const;
       void find_new_partitions(std::vector<PartitionNode*> &new_parts) const;
     private:
       const LogicalPartition handle;
@@ -509,6 +520,7 @@ namespace RegionRuntime {
       std::map<Color,RegionNode*> color_map;
       const bool disjoint;
       bool added;
+      bool marked;
     };
 
     /////////////////////////////////////////////////////////////
@@ -643,6 +655,7 @@ namespace RegionRuntime {
       InstanceView(InstanceManager *man, InstanceView *par, RegionNode *reg, RegionTreeForest *ctx);
     public:
       InstanceView* get_subview(Color pc, Color rc);
+      void add_child_view(Color pc, Color rc, InstanceView *child);
     public:
       InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
       InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
