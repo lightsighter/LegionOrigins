@@ -348,8 +348,9 @@ namespace RegionRuntime {
       }
 
       for (unsigned chunk = 0; chunk < num_chunks; chunk++) {
+        // TODO: For better perf, don't run everything on the local processor.
         slice.push_back(IndexSplit(IndexSpace::create_index_space(index_space, chunks[chunk]),
-                                   proc_group[chunk % proc_group.size()], false, false));
+                                   local_proc, false, false));
       }
     }
 
