@@ -110,7 +110,7 @@ long recurse_task(const void *global_args, size_t global_arglen,
     runtime->create_index_allocator(ctx, ispace).alloc(num_children);
 
     std::vector<unsigned long> expected_results;
-    ArgumentMap child_local_arg_map;
+    ArgumentMap child_local_arg_map = runtime->create_argument_map(ctx);
     for (unsigned i = 0; i < num_children; i++) {
       unsigned point[1] = {i};
       long expected_result = random();
