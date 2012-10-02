@@ -315,7 +315,7 @@ namespace RegionRuntime {
       static const Predicate FALSE_PRED;
     public:
       Predicate(void);
-      Predicate(bool value);
+      explicit Predicate(bool value);
       Predicate(const Predicate &p);
       ~Predicate(void);
     protected:

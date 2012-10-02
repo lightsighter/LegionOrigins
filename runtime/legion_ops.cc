@@ -2914,6 +2914,9 @@ namespace RegionRuntime {
         AutoLock m_lock(mapper_lock);
         DetailedTimer::ScopedPush sp(TIME_MAPPER);
         mapper->slice_index_space(this, index_space, splits);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!splits.empty());
+#endif
       }
       // TODO: add a check here that the split index spaces
       // are a total of the original index space.
