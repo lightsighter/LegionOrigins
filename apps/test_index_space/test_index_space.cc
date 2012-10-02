@@ -16,7 +16,7 @@ enum {
 };
 
 const unsigned DEFAULT_DEPTH = 4;
-const unsigned DEFAULT_SIZE = 8;
+const unsigned DEFAULT_SIZE = 16;
 
 struct GlobalArgs {
   unsigned depth;
