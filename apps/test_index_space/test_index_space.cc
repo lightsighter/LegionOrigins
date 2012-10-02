@@ -70,7 +70,7 @@ void top_level_task(const void *args, size_t arglen,
   FutureMap f =
     runtime->execute_index_space(ctx, TASKID_RECURSE, ispace, indexes, fields, child_regions,
                                  TaskArgument(&child_global_args, sizeof(GlobalArgs)),
-                                 child_local_arg_map, false);
+                                 child_local_arg_map, Predicate::TRUE_PRED, false);
   long result = f.get_result<long, unsigned, 1>(point);
   assert(result == child_local_args.expected_result);
 
@@ -121,7 +121,7 @@ long recurse_task(const void *global_args, size_t global_arglen,
     FutureMap f =
       runtime->execute_index_space(ctx, TASKID_RECURSE, ispace, indexes, fields, child_regions,
                                    TaskArgument(&child_global_args, sizeof(GlobalArgs)),
-                                   child_local_arg_map, false);
+                                   child_local_arg_map, Predicate::TRUE_PRED, false);
     f.wait_all_results();
     for (unsigned i = 0; i < num_children; i++) {
       unsigned point[1] = {i};
