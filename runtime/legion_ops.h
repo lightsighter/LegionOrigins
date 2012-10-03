@@ -334,6 +334,7 @@ namespace RegionRuntime {
       virtual void finish_task_unpack(void) = 0;
     public:
       ContextID find_enclosing_physical_context(LogicalRegion parent);
+      ContextID find_outermost_physical_context(void) const;
     public:
       void register_child_task(TaskContext *child);
       void register_child_map(MappingOperation *op, int idx = -1);

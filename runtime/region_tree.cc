@@ -268,6 +268,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    bool RegionTreeForest::is_disjoint(LogicalPartition handle)
+    //--------------------------------------------------------------------------
+    {
+      return get_node(handle)->disjoint;
+    }
+
+    //--------------------------------------------------------------------------
     void RegionTreeForest::create_index_space(IndexSpace space)
     //--------------------------------------------------------------------------
     {
@@ -940,13 +947,48 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    size_t RegionTreeForest::compute_region_tree_state_size(const RegionRequirement &req, ContextID ctx)
+    FieldMask RegionTreeForest::compute_field_mask(const RegionRequirement &req, SendingMode mode, 
+                                                    FieldSpaceNode *field_node) const
     //--------------------------------------------------------------------------
     {
-      // Get the field mask for what we're packing
-      FieldSpaceNode *field_node = get_node(req.region.field_space);
-      // Field mask for packing is based on the privilege fields
-      FieldMask packing_mask = field_node->get_field_mask(req.privilege_fields);
+      std::set<FieldID> packing_fields;
+      switch (mode)
+      {
+        case PHYSICAL:
+          {
+            packing_fields.insert(req.instance_fields.begin(), req.instance_fields.end());
+            break;
+          }
+        case PRIVILEGE:
+          {
+            packing_fields = req.privilege_fields;
+            break;
+          }
+        case DIFF:
+          {
+            packing_fields = req.privilege_fields;
+            for (std::vector<FieldID>::const_iterator it = req.instance_fields.begin();
+                  it != req.instance_fields.end(); it++)
+            {
+              packing_fields.erase(*it);
+            }
+            break;
+          }
+        default:
+          assert(false); // should never get here
+      }
+      return field_node->get_field_mask(packing_fields);
+    }
+
+    //--------------------------------------------------------------------------
+    size_t RegionTreeForest::compute_region_tree_state_size(const RegionRequirement &req, ContextID ctx, SendingMode mode)
+    //--------------------------------------------------------------------------
+    {
+      FieldSpaceNode *field_node = get_node(req.parent.field_space);
+      // Field mask for packing is based on the computed packing fields 
+      FieldMask packing_mask = compute_field_mask(req, mode, field_node);
+      if (!packing_mask)
+        return 0;
       size_t result = 0;
       if (req.handle_type == SINGULAR)
       {
@@ -1017,13 +1059,16 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::pack_region_tree_state(const RegionRequirement &req, ContextID ctx, Serializer &rez)
+    void RegionTreeForest::pack_region_tree_state(const RegionRequirement &req, ContextID ctx, 
+                                                  SendingMode mode, Serializer &rez)
     //--------------------------------------------------------------------------
     {
       // Get the field mask for what we're packing
-      FieldSpaceNode *field_node = get_node(req.region.field_space);
+      FieldSpaceNode *field_node = get_node(req.parent.field_space);
       // Field mask for packing is based on the privilege fields
-      FieldMask packing_mask = field_node->get_field_mask(req.privilege_fields);
+      FieldMask packing_mask = compute_field_mask(req, mode, field_node);
+      if (!packing_mask)
+        return;
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
@@ -1056,9 +1101,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, Deserializer &derez)
+    void RegionTreeForest::unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+      FieldSpaceNode *field_node = get_node(req.parent.field_space);
+      FieldMask unpacking_mask = compute_field_mask(req, mode, field_node);
+      if (!unpacking_mask)
+        return;
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
@@ -1422,35 +1471,45 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    size_t RegionTreeForest::compute_region_tree_state_return(LogicalRegion handle)
+    size_t RegionTreeForest::compute_region_tree_state_return(const RegionRequirement &req, 
+                                                              ContextID ctx, SendingMode mode)
+    //--------------------------------------------------------------------------
+    {
+      
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
+                                                          SendingMode mode, Serializer &rez)
     //--------------------------------------------------------------------------
     {
 
     }
 
     //--------------------------------------------------------------------------
-    size_t RegionTreeForest::compute_region_tree_state_return(LogicalPartition handle)
+    void RegionTreeForest::unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx,
+                                                            SendingMode mode, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
 
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::pack_region_tree_state_return(LogicalRegion handle, Serializer &rez)
+    size_t RegionTreeForest::compute_created_state_return(ContextID ctx)
     //--------------------------------------------------------------------------
     {
 
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::pack_region_tree_state_return(LogicalPartition handle, Serializer &rez)
+    void RegionTreeForest::pack_created_state_return(ContextID ctx, Serializer &rez)
     //--------------------------------------------------------------------------
     {
 
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::unpack_region_tree_state_return(Deserializer &derez)
+    void RegionTreeForest::unpack_created_state_return(ContextID ctx, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
 

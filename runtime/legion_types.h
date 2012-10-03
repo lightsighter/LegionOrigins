@@ -90,6 +90,8 @@ namespace RegionRuntime {
       ERROR_MISSING_TASK_COLLECTION = 55,
       ERROR_INVALID_IDENTITY_PROJECTION_USE = 56,
       ERROR_INVALID_PROJECTION_ID = 57,
+      ERROR_NON_DISJOINT_PARTITION = 58,
+      ERROR_BAD_PROJECTION_USE = 59,
     };
 
     // enum and namepsaces don't really get along well

@@ -200,6 +200,18 @@ namespace RegionRuntime {
         inst_duplicates.insert(*it);
       }
       
+      // If this is a projection requirement, partition must be disjoint
+      if (req.handle_type == PROJECTION)
+      {
+        lock_context();
+        if (forest_ctx->is_disjoint(req.partition))
+        {
+          unlock_context();
+          return ERROR_NON_DISJOINT_PARTITION;
+        }
+        unlock_context();
+      }
+      
       // Finally check that the type matches the instance fields
       // Only do this if the user requested it
       if (req.inst_type != 0)
@@ -574,6 +586,12 @@ namespace RegionRuntime {
       FieldID bad_field;
       size_t bad_size;
       unsigned bad_idx;
+      if (requirement.handle_type == PROJECTION)
+      {
+        log_region(LEVEL_ERROR,"Projection region requirements are not permitted for inline mappings (in task %s)",
+                                parent_ctx->variants->name);
+        exit(ERROR_BAD_PROJECTION_USE);
+      }
       LegionErrorType et = verify_requirement(requirement, bad_field, bad_size, bad_idx);
       // If that worked, then check the privileges with the parent context
       if (et == NO_ERROR)
@@ -654,6 +672,7 @@ namespace RegionRuntime {
                                    requirement.region.tree_id, get_unique_id());
             exit(ERROR_BAD_REGION_PRIVILEGES);
           }
+        case ERROR_NON_DISJOINT_PARTITION: // this should never happen with an inline mapping
         default:
           assert(false); // Should never happen
       }
@@ -1121,6 +1140,8 @@ namespace RegionRuntime {
           size_t bad_size;
           unsigned bad_idx;
           LegionErrorType et = verify_requirement(regions[idx], bad_field, bad_size, bad_idx);
+          if ((et == NO_ERROR) && !is_index_space && (regions[idx].handle_type == PROJECTION))
+            et = ERROR_BAD_PROJECTION_USE;
           // If that worked, then check the privileges with the parent context
           if (et == NO_ERROR)
             et = parent_ctx->check_privilege(regions[idx], bad_field);
@@ -1128,6 +1149,18 @@ namespace RegionRuntime {
           {
             case NO_ERROR:
               break;
+            case ERROR_BAD_PROJECTION_USE:
+              {
+                log_region(LEVEL_ERROR,"Projection region requirement %d used in non-index space task %s",
+                                        idx, this->variants->name);
+                exit(ERROR_BAD_PROJECTION_USE);
+              }
+            case ERROR_NON_DISJOINT_PARTITION:
+              {
+                log_region(LEVEL_ERROR,"Non disjoint partition selected for region requirement %d of task %s.  All projection partitions "
+                                        "must be disjoint", idx, this->variants->name);
+                exit(ERROR_NON_DISJOINT_PARTITION);
+              }
             case ERROR_FIELD_SPACE_FIELD_MISMATCH:
               {
                 FieldSpace sp = (regions[idx].handle_type == SINGULAR) ? regions[idx].region.field_space : regions[idx].partition.field_space;
@@ -1640,9 +1673,28 @@ namespace RegionRuntime {
           return physical_contexts[idx];
         }
       }
+      // Otherwise check the created regions
+      for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        if ((*it) == parent)
+        {
+          return find_outermost_physical_context();
+        }
+      }
       // otherwise this is really bad and indicates a runtime error
       assert(false);
       return 0;
+    }
+
+    //--------------------------------------------------------------------------
+    ContextID SingleTask::find_outermost_physical_context(void) const
+    //--------------------------------------------------------------------------
+    {
+      if (parent_ctx != NULL)
+        return parent_ctx->find_outermost_physical_context();
+      // Otherwise we're the outermost physical context
+      return ctx_id;
     }
 
     //--------------------------------------------------------------------------
@@ -3303,13 +3355,11 @@ namespace RegionRuntime {
           size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx) + sizeof(is_leaf);
           buffer_size += (regions.size()*sizeof(bool)); // mapped or not for each region
           lock_context();
-          std::vector<LogicalRegion> trees_to_pack; 
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (non_virtual_mapped_region[idx])
             {
-              trees_to_pack.push_back(regions[idx].region);
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].region);
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL);
             }
           }
           // Now pack everything up and send it back
@@ -3321,9 +3371,12 @@ namespace RegionRuntime {
           {
             rez.serialize<bool>(non_virtual_mapped_region[idx]);
           }
-          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+            if (non_virtual_mapped_region[idx])
+            {
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL, rez);
+            }
           }
           unlock_context();
           // Now send it back on the utility processor
@@ -3496,10 +3549,12 @@ namespace RegionRuntime {
               {
                 // Virtual mapping, pack the state
                 result += forest_ctx->compute_region_tree_state_size(regions[idx], 
-                                        get_enclosing_physical_context(regions[idx].parent));
+                                        get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE);
               }
               else
               {
+                result += forest_ctx->compute_region_tree_state_size(regions[idx],
+                                        get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF);
                 result += forest_ctx->compute_reference_size(physical_instances[idx]);
               }
             }
@@ -3512,7 +3567,7 @@ namespace RegionRuntime {
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             result += forest_ctx->compute_region_tree_state_size(regions[idx],
-                                    get_enclosing_physical_context(regions[idx].parent));
+                                    get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE);
           }
         }
         result += forest_ctx->post_compute_region_tree_state_size();
@@ -3559,10 +3614,12 @@ namespace RegionRuntime {
               if (physical_instances[idx].is_virtual_ref())
               {
                 forest_ctx->pack_region_tree_state(regions[idx],
-                              get_enclosing_physical_context(regions[idx].parent), rez);
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
               }
               else
               {
+                forest_ctx->pack_region_tree_state(regions[idx],
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez);
                 forest_ctx->pack_reference(physical_instances[idx], rez);
               }
             }
@@ -3575,7 +3632,7 @@ namespace RegionRuntime {
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             forest_ctx->pack_region_tree_state(regions[idx], 
-                            get_enclosing_physical_context(regions[idx].parent), rez);
+                            get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
           }
         }
       }
@@ -3635,11 +3692,12 @@ namespace RegionRuntime {
             if (!non_virtual_mapped_region[idx])
             {
               // Unpack the state in our context
-              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez); 
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez); 
               physical_instances.push_back(InstanceRef()); // virtual instance
             }
             else
             {
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez);
               physical_instances.push_back(forest_ctx->unpack_reference(derez)); 
             }
           }
@@ -3652,7 +3710,7 @@ namespace RegionRuntime {
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // Unpack the state in our context
-          forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez);
+          forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez);
         }
       }
       unlock_context();
@@ -3709,13 +3767,16 @@ namespace RegionRuntime {
           lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
           // Figure out which states we need to send back
-          std::vector<LogicalRegion> trees_to_pack;
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (!non_virtual_mapped_region[idx])
             {
-              trees_to_pack.push_back(regions[idx].region);
-              buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE);
+            }
+            else
+            {
+              // Physical was already sent back, send back the other fields
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF);
             }
           }
           // Finally pack up our source copy instances to send back
@@ -3725,9 +3786,16 @@ namespace RegionRuntime {
           rez.serialize<Processor>(orig_proc);
           rez.serialize<Context>(orig_ctx);
           forest_ctx->pack_region_tree_updates_return(rez);
-          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
+          for (unsigned idx = 0; idx < regions.size(); idx++)
           {
-            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
+            if (!non_virtual_mapped_region[idx])
+            {
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, rez);
+            }
+            else
+            {
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF, rez);
+            }
           }
           // Pack up the source copy instances
           pack_source_copy_instances_return(rez);
@@ -3794,19 +3862,13 @@ namespace RegionRuntime {
       if (remote)
       {
         size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
-        std::vector<LogicalRegion> trees_to_pack;
         // Only need to send this stuff back if we're not a leaf task
         if (!is_leaf)
         {
           buffer_size += compute_privileges_return_size();
           lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
-          for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
-                it != created_regions.end(); it++)
-          {
-            trees_to_pack.push_back(*it);
-            buffer_size += forest_ctx->compute_region_tree_state_return(trees_to_pack.back());
-          }
+          buffer_size += forest_ctx->compute_created_state_return(ctx_id);
           buffer_size += forest_ctx->compute_leaked_return_size();
         }
         buffer_size += sizeof(remote_future_len);
@@ -3819,10 +3881,7 @@ namespace RegionRuntime {
         {
           pack_privileges_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
-          for (unsigned idx = 0; idx < trees_to_pack.size(); idx++)
-          {
-            forest_ctx->pack_region_tree_state_return(trees_to_pack[idx], rez);
-          }
+          forest_ctx->pack_created_state_return(ctx_id, rez);
           forest_ctx->pack_leaked_return(rez);
           unlock_context();
         }
@@ -3937,7 +3996,8 @@ namespace RegionRuntime {
       {
         if (non_virtual_mapped_region[idx])
         {
-          forest_ctx->unpack_region_tree_state_return(derez); 
+          ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PHYSICAL, derez); 
         }
       }
       unlock_context();
@@ -3961,9 +4021,14 @@ namespace RegionRuntime {
       forest_ctx->unpack_region_tree_updates_return(derez);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
+        ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         if (!non_virtual_mapped_region[idx])
         {
-          forest_ctx->unpack_region_tree_state_return(derez);
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PRIVILEGE, derez);
+        }
+        else
+        {
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::DIFF, derez);
         }
       }
       unpack_source_copy_instances_return(derez,forest_ctx);
@@ -4005,13 +4070,11 @@ namespace RegionRuntime {
       Deserializer derez(args,arglen);
       if (!is_leaf)
       {
-        size_t new_regions = unpack_privileges_return(derez);
+        unpack_privileges_return(derez);
         lock_context();
         forest_ctx->unpack_region_tree_updates_return(derez);
-        for (unsigned idx = 0; idx < new_regions; idx++)
-        {
-          forest_ctx->unpack_region_tree_state_return(derez);
-        }
+        ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
+        forest_ctx->unpack_created_state_return(phy_ctx, derez);
         forest_ctx->unpack_leaked_return(derez);
         unlock_context();
       }
@@ -4960,7 +5023,8 @@ namespace RegionRuntime {
       {
         if (non_virtual_mappings[idx] == num_points)
         {
-          forest_ctx->unpack_region_tree_state_return(derez);
+          ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PHYSICAL, derez);
         }
       }
       unlock_context();
@@ -4981,9 +5045,14 @@ namespace RegionRuntime {
       forest_ctx->unpack_region_tree_updates_return(derez);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
+        ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         if (virtual_mappings[idx] > 0)
         {
-          forest_ctx->unpack_region_tree_state_return(derez);
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PRIVILEGE, derez);
+        }
+        else
+        {
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::DIFF, derez);
         }
       }
       size_t num_points;
@@ -5017,13 +5086,11 @@ namespace RegionRuntime {
       derez.deserialize<bool>(slice_is_leaf);
       if (!slice_is_leaf)
       {
-        size_t new_region_trees = unpack_privileges_return(derez);
+        unpack_privileges_return(derez);
         lock_context();
         forest_ctx->unpack_region_tree_updates_return(derez);
-        for (unsigned idx = 0; idx < new_region_trees; idx++)
-        {
-          forest_ctx->unpack_region_tree_state_return(derez);
-        }
+        ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
+        forest_ctx->unpack_created_state_return(phy_ctx, derez);
         forest_ctx->unpack_leaked_return(derez);
         unlock_context();
       }
@@ -5896,7 +5963,12 @@ namespace RegionRuntime {
               if (non_virtual_mappings[idx] < points.size())
               {
                 result += forest_ctx->compute_region_tree_state_size(regions[idx],
-                                          get_enclosing_physical_context(regions[idx].parent));
+                                          get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE);
+              }
+              else
+              {
+                result += forest_ctx->compute_region_tree_state_size(regions[idx],
+                                          get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF);
               }
             }
           }
@@ -5910,11 +5982,6 @@ namespace RegionRuntime {
         {
           // Need to pack the region trees and the states  
           result += forest_ctx->compute_region_forest_shape_size(indexes, fields, regions);
-          for (unsigned idx = 0; idx < regions.size(); idx++)
-          {
-            result += forest_ctx->compute_region_tree_state_size(regions[idx],
-                                      get_enclosing_physical_context(regions[idx].parent));
-          }
           // Need to pack any pre-mapped regions
           result += sizeof(size_t); // number of premapped regions
           for (std::map<unsigned,InstanceRef>::const_iterator it = premapped_regions.begin();
@@ -5922,6 +5989,20 @@ namespace RegionRuntime {
           {
             result += sizeof(it->first);
             result += forest_ctx->compute_reference_size(it->second);
+          }
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            // If it was premapped only need to send the difference
+            if (premapped_regions.find(idx) != premapped_regions.end())
+            {
+              result += forest_ctx->compute_region_tree_state_size(regions[idx],
+                                        get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF);
+            }
+            else
+            {
+              result += forest_ctx->compute_region_tree_state_size(regions[idx],
+                                        get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE);
+            }
           }
           // since nothing has been enumerated, we need to pack the argument map
           result += sizeof(bool); // has argument map
@@ -5942,6 +6023,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert_context_locked();
 #endif
+      // If we're going to reset the split factor, do so before packing
+      unsigned long temp_split_factor = this->split_factor;
+      if (!partially_unpacked)
+        this->split_factor = 1;
       pack_multi_task(rez);
       rez.serialize<bool>(distributed);
       rez.serialize<bool>(locally_mapped);
@@ -5967,9 +6052,7 @@ namespace RegionRuntime {
           if (!is_leaf)
           {
             forest_ctx->pack_region_forest_shape(rez);
-            forest_ctx->begin_pack_region_tree_state(rez, split_factor);
-            // Now we can reset the split factor
-            this->split_factor = 1;
+            forest_ctx->begin_pack_region_tree_state(rez, temp_split_factor);
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
               rez.serialize<unsigned>(non_virtual_mappings[idx]);
@@ -5980,7 +6063,12 @@ namespace RegionRuntime {
               if (non_virtual_mappings[idx] < points.size())
               {
                 forest_ctx->pack_region_tree_state(regions[idx],
-                                get_enclosing_physical_context(regions[idx].parent), rez);
+                                get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
+              }
+              else
+              {
+                forest_ctx->pack_region_tree_state(regions[idx],
+                                get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez);
               }
             }
           }
@@ -5993,14 +6081,7 @@ namespace RegionRuntime {
         else
         {
           forest_ctx->pack_region_forest_shape(rez);
-          forest_ctx->begin_pack_region_tree_state(rez, split_factor);
-          // Now we can reset the split factor
-          this->split_factor = 1;
-          for (unsigned idx = 0; idx < regions.size(); idx++)
-          {
-            forest_ctx->pack_region_tree_state(regions[idx],
-                            get_enclosing_physical_context(regions[idx].parent), rez);
-          }
+          forest_ctx->begin_pack_region_tree_state(rez, temp_split_factor);
           // Pack any premapped regions
           rez.serialize(premapped_regions.size());
           for (std::map<unsigned,InstanceRef>::iterator it = premapped_regions.begin();
@@ -6009,6 +6090,20 @@ namespace RegionRuntime {
             rez.serialize(it->first);
             forest_ctx->pack_reference(it->second, rez);
           }
+          for (unsigned idx = 0; idx < regions.size(); idx++)
+          {
+            if (premapped_regions.find(idx) != premapped_regions.end())
+            {
+              forest_ctx->pack_region_tree_state(regions[idx],
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez);
+            }
+            else
+            {
+              forest_ctx->pack_region_tree_state(regions[idx],
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
+            }
+          }
+          
           // Now we need to pack the argument map
           bool has_arg_map = (arg_map_impl != NULL);
           rez.serialize<bool>(has_arg_map);
@@ -6068,7 +6163,11 @@ namespace RegionRuntime {
             if (non_virtual_mappings[idx] < num_points)
             {
               // Unpack the physical state in our context
-              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez);
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez);
+            }
+            else
+            {
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez);
             }
           }
         }
@@ -6083,11 +6182,6 @@ namespace RegionRuntime {
       else
       {
         forest_ctx->unpack_region_forest_shape(derez);
-        forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
-        for (unsigned idx = 0; idx < regions.size(); idx++)
-        {
-          forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez);
-        }
         // Unpack any premapped regions
         size_t num_premapped;
         derez.deserialize(num_premapped);
@@ -6097,6 +6191,19 @@ namespace RegionRuntime {
           derez.deserialize(idx);
           premapped_regions[idx] = forest_ctx->unpack_reference(derez);
         }
+        forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if (premapped_regions.find(idx) != premapped_regions.end())
+          {
+            forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez);
+          }
+          else
+          {
+            forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez);
+          }
+        }
+        
         // Unpack the argument map
         bool has_arg_map;
         derez.deserialize<bool>(has_arg_map);
@@ -6340,14 +6447,14 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(non_virtual_mappings[idx] <= points.size());
 #endif
-          if (non_virtual_mappings[idx] == points.size())
+          // Send back the physically mapped parts if they are all mapped
+          // and it wasn't premapped
+          if ((non_virtual_mappings[idx] == points.size()) &&
+              (premapped_regions.find(idx) == premapped_regions.end()))
           {
             // Everybody mapped a region in this tree, it is fully mapped
             // so send it back
-            if (regions[idx].handle_type == SINGULAR)
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].region);
-            else
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].partition);
+            buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL);
           }
         }
         // Now pack everything up
@@ -6365,10 +6472,7 @@ namespace RegionRuntime {
         {
           if (non_virtual_mappings[idx] == points.size())
           {
-            if (regions[idx].handle_type == SINGULAR)
-              forest_ctx->pack_region_tree_state_return(regions[idx].region, rez);
-            else
-              forest_ctx->pack_region_tree_state_return(regions[idx].partition, rez);
+            forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL, rez);
           }
         }
         unlock_context();
@@ -6419,10 +6523,12 @@ namespace RegionRuntime {
             // If we didn't send it back before, we need to send it back now
             if (non_virtual_mappings[idx] < points.size())
             {
-              if (regions[idx].handle_type == SINGULAR)
-                buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].region);
-              else
-                buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx].partition);
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE);
+            }
+            else
+            {
+              // Send back the ones that we have privileges on, but didn't make a physical instance
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF);
             }
           }
           buffer_size += sizeof(size_t);
@@ -6448,10 +6554,11 @@ namespace RegionRuntime {
           {
             if (non_virtual_mappings[idx] < points.size())
             {
-              if (regions[idx].handle_type == SINGULAR)
-                forest_ctx->pack_region_tree_state_return(regions[idx].region, rez);
-              else
-                forest_ctx->pack_region_tree_state_return(regions[idx].partition, rez);
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, rez);
+            }
+            else
+            {
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF, rez);
             }
           }
           rez.serialize<size_t>(points.size());
@@ -6494,12 +6601,7 @@ namespace RegionRuntime {
           buffer_size += compute_privileges_return_size();
           lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
-          
-          for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
-                it != created_regions.end(); it++)
-          {
-            buffer_size += forest_ctx->compute_region_tree_state_return(*it);
-          }
+          buffer_size += forest_ctx->compute_created_state_return(ctx_id); 
           buffer_size += forest_ctx->compute_leaked_return_size();
         }
         buffer_size += sizeof(size_t); // number of points
@@ -6527,11 +6629,7 @@ namespace RegionRuntime {
         {
           pack_privileges_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
-          for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
-                it != created_regions.end(); it++)
-          {
-            forest_ctx->pack_region_tree_state_return(*it,rez);
-          }
+          forest_ctx->pack_created_state_return(ctx_id, rez);
           forest_ctx->pack_leaked_return(rez);
           unlock_context();
         }

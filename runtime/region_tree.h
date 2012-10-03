@@ -13,6 +13,12 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
     class RegionTreeForest {
     public:
+      enum SendingMode {
+        PHYSICAL,
+        PRIVILEGE,
+        DIFF,
+      };
+    public:
       RegionTreeForest(HighLevelRuntime *rt);
       ~RegionTreeForest(void);
     public:
@@ -25,6 +31,7 @@ namespace RegionRuntime {
     public:
       bool compute_index_path(IndexSpace parent, IndexSpace child, std::vector<Color> &path);
       bool compute_partition_path(IndexSpace parent, IndexPartition child, std::vector<Color> &path);
+      bool is_disjoint(LogicalPartition partition);
     public:
       // Index Space operations
       void create_index_space(IndexSpace space);
@@ -74,14 +81,16 @@ namespace RegionRuntime {
                                             const std::vector<RegionRequirement> &regions);
       void pack_region_forest_shape(Serializer &rez);
       void unpack_region_forest_shape(Deserializer &derez);
+    private:
+      FieldMask compute_field_mask(const RegionRequirement &req, SendingMode mode, FieldSpaceNode *field_node) const;
     public:
       // Packing and unpacking state send
-      size_t compute_region_tree_state_size(const RegionRequirement &req, ContextID ctx);
+      size_t compute_region_tree_state_size(const RegionRequirement &req, ContextID ctx, SendingMode mode);
       size_t post_compute_region_tree_state_size(void);
       void begin_pack_region_tree_state(Serializer &rez, unsigned long num_ways = 1);
-      void pack_region_tree_state(const RegionRequirement &req, ContextID ctx, Serializer &rez);
+      void pack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Serializer &rez);
       void begin_unpack_region_tree_state(Deserializer &derez, unsigned long split_factor = 1);
-      void unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, Deserializer &derez);
+      void unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Deserializer &derez);
     public:
       // Packing and unpacking reference send
       size_t compute_reference_size(InstanceRef ref);
@@ -99,11 +108,13 @@ namespace RegionRuntime {
       void unpack_region_tree_updates_return(Deserializer &derez);
     public:
       // Packing and unpacking state return
-      size_t compute_region_tree_state_return(LogicalRegion handle);
-      size_t compute_region_tree_state_return(LogicalPartition handle);
-      void pack_region_tree_state_return(LogicalRegion handle, Serializer &rez);
-      void pack_region_tree_state_return(LogicalPartition handle, Serializer &rez);
-      void unpack_region_tree_state_return(Deserializer &derez);
+      size_t compute_region_tree_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode);
+      void pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode, Serializer &rez);
+      void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode,  Deserializer &derez);
+    public:
+      size_t compute_created_state_return(ContextID ctx);
+      void pack_created_state_return(ContextID ctx, Serializer &rez);
+      void unpack_created_state_return(ContextID ctx, Deserializer &derez);
     public:
       // Packing and unpacking leaked references
       size_t compute_leaked_return_size(void);
