@@ -152,11 +152,12 @@ namespace RegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    RegionTreeForest::RegionTreeForest(void)
+    RegionTreeForest::RegionTreeForest(HighLevelRuntime *rt)
+      : runtime(rt),
 #ifdef LOW_LEVEL_LOCKS
-      : context_lock(Lock::create_lock())
+        context_lock(Lock::create_lock())
 #else
-      : context_lock(ImmovableLock(true/*initialize*/))
+        context_lock(ImmovableLock(true/*initialize*/))
 #endif
     //--------------------------------------------------------------------------
     {
@@ -755,7 +756,7 @@ namespace RegionRuntime {
       // Now go through and make a new InstanceManager and InstanceView for the
       // top level region and put them at the top of the tree
       InstanceManager *clone_manager = ref.view->manager->clone_manager(user.field_mask, get_node(handle.field_space));
-      InstanceView *clone_view = clone_manager->create_view(NULL/*no parent*/, top_node);
+      InstanceView *clone_view = create_view(clone_manager, NULL/*no parent*/, top_node);
       // Update the state of the top level node 
       RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
       state.context_top = true;
@@ -950,48 +951,163 @@ namespace RegionRuntime {
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
-        result += top_node->compute_state_size(ctx, packing_mask);
+        result += top_node->compute_state_size(ctx, packing_mask, 
+                    unique_managers, unique_views, ordered_views, true/*recurse*/);
       }
       else
       {
-
+        PartitionNode *top_node = get_node(req.partition);
+        // Pack the parent state without recursing
+        result += top_node->parent->compute_state_size(ctx, packing_mask, 
+                        unique_managers, unique_views, ordered_views,
+                        false/*recurse*/, top_node->row_source->color);
+        result += top_node->compute_state_size(ctx, packing_mask,
+                        unique_managers, unique_views, ordered_views, true/*recurse*/);
       }
       return result;
+    }
+
+    //--------------------------------------------------------------------------
+    size_t RegionTreeForest::post_compute_region_tree_state_size(void)
+    //--------------------------------------------------------------------------
+    {
+      // Go through all the managers and views and compute the size needed to move them
+      size_t result = 0;
+      result += (2*sizeof(size_t)); // number of managers and number of views
+      for (std::set<InstanceManager*>::const_iterator it = unique_managers.begin();
+            it != unique_managers.end(); it++)
+      {
+        result += (*it)->compute_send_size();
+      }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(unique_views.size() == ordered_views.size());
+#endif
+      for (std::map<InstanceView*,FieldMask>::const_iterator it = unique_views.begin();
+            it != unique_views.end(); it++)
+      {
+        result += it->first->compute_send_size(it->second);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::begin_pack_region_tree_state(Serializer &rez, unsigned long num_ways /*= 1*/)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(unique_managers.size());
+      for (std::set<InstanceManager*>::const_iterator it = unique_managers.begin();
+            it != unique_managers.end(); it++)
+      {
+        (*it)->pack_manager_send(rez, num_ways);
+      }
+      rez.serialize(unique_views.size());
+      // Now do these in order!  Very important to do them in order!
+      for (std::vector<InstanceView*>::const_iterator it = ordered_views.begin();
+            it != ordered_views.end(); it++)
+      {
+        std::map<InstanceView*,FieldMask>::const_iterator finder = unique_views.find(*it);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(finder != unique_views.end());
+#endif
+        (*it)->pack_view_send(finder->second, rez);
+      }
+      unique_managers.clear();
+      unique_views.clear();
+      ordered_views.clear();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_region_tree_state(const RegionRequirement &req, ContextID ctx, Serializer &rez)
     //--------------------------------------------------------------------------
     {
-
+      // Get the field mask for what we're packing
+      FieldSpaceNode *field_node = get_node(req.region.field_space);
+      // Field mask for packing is based on the privilege fields
+      FieldMask packing_mask = field_node->get_field_mask(req.privilege_fields);
+      if (req.handle_type == SINGULAR)
+      {
+        RegionNode *top_node = get_node(req.region);
+        top_node->pack_physical_state(ctx, packing_mask, rez, true/*recurse*/);
+      }
+      else
+      {
+        PartitionNode *top_node = get_node(req.partition);
+        top_node->parent->pack_physical_state(ctx, packing_mask, rez, false/*recurse*/);
+        top_node->pack_physical_state(ctx, packing_mask, rez, true/*recurse*/);
+      }
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::unpack_region_tree_state(ContextID ctx, Deserializer &derez)
+    void RegionTreeForest::begin_unpack_region_tree_state(Deserializer &derez, unsigned long split_factor /*= -1*/)
     //--------------------------------------------------------------------------
     {
+      size_t num_managers;
+      derez.deserialize(num_managers);
+      for (unsigned idx = 0; idx < num_managers; idx++)
+      {
+        InstanceManager::unpack_manager_send(this, derez, split_factor); 
+      }
+      size_t num_views;
+      derez.deserialize(num_views);
+      for (unsigned idx = 0; idx < num_views; idx++)
+      {
+        InstanceView::unpack_view_send(this, derez);
+      }
+    }
 
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      if (req.handle_type == SINGULAR)
+      {
+        RegionNode *top_node = get_node(req.region);
+        top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
+      }
+      else
+      {
+        PartitionNode *top_node = get_node(req.partition);
+        top_node->parent->unpack_physical_state(ctx, derez, false/*recurse*/);
+        top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
+      }
     }
 
     //--------------------------------------------------------------------------
     size_t RegionTreeForest::compute_reference_size(InstanceRef ref)
     //--------------------------------------------------------------------------
     {
-
+      // For right now we're not even going to bother hooking these up to real references
+      size_t result = 0;
+      result += sizeof(ref.ready_event);
+      result += sizeof(ref.required_lock);
+      result += sizeof(ref.location);
+      result += sizeof(ref.instance);
+      return result;
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::pack_reference(InstanceRef ref, Serializer &rez)
+    void RegionTreeForest::pack_reference(const InstanceRef &ref, Serializer &rez)
     //--------------------------------------------------------------------------
     {
-
+      rez.serialize(ref.ready_event);
+      rez.serialize(ref.required_lock);
+      rez.serialize(ref.location);
+      rez.serialize(ref.instance);
     }
 
     //--------------------------------------------------------------------------
     InstanceRef RegionTreeForest::unpack_reference(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
-
+      Event ready_event;
+      derez.deserialize(ready_event);
+      Lock req_lock;
+      derez.deserialize(req_lock);
+      Memory location;
+      derez.deserialize(location);
+      PhysicalInstance inst;
+      derez.deserialize(inst);
+      return InstanceRef(ready_event, location, inst, NULL, true/*copy*/, req_lock);
     }
 
     //--------------------------------------------------------------------------
@@ -1656,17 +1772,58 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::register_manager(InstanceManager *manager)
+    InstanceView* RegionTreeForest::create_view(InstanceManager *manager, InstanceView *parent, 
+                                                RegionNode *reg, UniqueViewID vid /*= 0*/)
     //--------------------------------------------------------------------------
     {
-      managers.push_back(manager);
+      if (vid == 0)
+        vid = runtime->get_unique_view_id();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(views.find(vid) == views.end());
+#endif
+      InstanceView *result = new InstanceView(manager, parent, reg, this, vid);
+      views[vid] = result;
+      return result;
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::register_view(InstanceView *view)
+    InstanceManager* RegionTreeForest::create_manager(Memory location, PhysicalInstance inst,
+                      const std::map<FieldID,IndexSpace::CopySrcDstField> &infos,
+                      const FieldMask &field_mask, bool remote, bool clone,
+                      UniqueManagerID mid /*= 0*/)
     //--------------------------------------------------------------------------
     {
-      views.push_back(view);
+      if (mid == 0)
+        mid = runtime->get_unique_manager_id();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(managers.find(mid) == managers.end());
+#endif
+      InstanceManager *result = new InstanceManager(location, inst, infos, field_mask,
+                                                    this, mid, remote, clone);
+      managers[mid] = result;
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceView* RegionTreeForest::find_view(UniqueViewID vid) const
+    //--------------------------------------------------------------------------
+    {
+      std::map<UniqueViewID,InstanceView*>::const_iterator finder = views.find(vid);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(finder != views.end()); 
+#endif
+      return finder->second;
+    }
+
+    //--------------------------------------------------------------------------
+    InstanceManager* RegionTreeForest::find_manager(UniqueManagerID mid) const
+    //--------------------------------------------------------------------------
+    {
+      std::map<UniqueManagerID,InstanceManager*>::const_iterator finder = managers.find(mid);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(finder != managers.end());
+#endif
+      return finder->second;
     }
 
     /////////////////////////////////////////////////////////////
@@ -2273,8 +2430,8 @@ namespace RegionRuntime {
         {
           std::map<FieldID,IndexSpace::CopySrcDstField> field_infos;
           field_infos[new_fields.back()] = IndexSpace::CopySrcDstField(inst, 0, finder->second.field_size);
-          result = new InstanceManager(location, inst, field_infos, get_field_mask(new_fields), 
-                                        context, false/*remote*/, false/*clone*/); 
+          result = context->create_manager(location, inst, field_infos, get_field_mask(new_fields),
+                                            false/*remote*/, false/*clone*/);
         }
       }
       else
@@ -2303,12 +2460,10 @@ namespace RegionRuntime {
             field_infos[new_fields[idx]] = IndexSpace::CopySrcDstField(inst, accum_offset, field_sizes[idx]);
             accum_offset += field_sizes[idx];
           }
-          result = new InstanceManager(location, inst, field_infos, get_field_mask(new_fields), 
-                                        context, false/*remote*/, false/*clone*/);
+          result = context->create_manager(location, inst, field_infos, get_field_mask(new_fields),
+                                            false/*remote*/, false/*clone*/);
         }
       }
-      if (result != NULL)
-        context->register_manager(result);
       return result;
     }
 
@@ -2903,6 +3058,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    RegionTreeNode::FieldState::FieldState(void)
+      : open_state(NOT_OPEN), redop(0)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
     RegionTreeNode::FieldState::FieldState(const GenericUser &user)
     //--------------------------------------------------------------------------
     {
@@ -2966,6 +3128,77 @@ namespace RegionRuntime {
         {
           open_children[it->first] |= it->second;
         }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    size_t RegionTreeNode::FieldState::compute_state_size(const FieldMask &pack_mask) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!(valid_fields * pack_mask));
+#endif
+      size_t result = 0;
+      result += sizeof(open_state);
+      result += sizeof(redop);
+      result += sizeof(size_t); // number of partitions to pack
+      for (std::map<Color,FieldMask>::const_iterator it = open_children.begin();
+            it != open_children.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        result += (sizeof(it->first) + sizeof(it->second));
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeNode::FieldState::pack_physical_state(const FieldMask &pack_mask, Serializer &rez) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!(valid_fields * pack_mask));
+#endif
+      rez.serialize(open_state);
+      rez.serialize(redop);
+      // find the number of partitions to pack
+      size_t num_children = 0;
+      for (std::map<Color,FieldMask>::const_iterator it = open_children.begin();
+            it != open_children.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        num_children++;
+      }
+      rez.serialize(num_children);
+      for (std::map<Color,FieldMask>::const_iterator it = open_children.begin();
+            it != open_children.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        rez.serialize(it->first);
+        FieldMask open_mask = it->second & pack_mask;
+        rez.serialize(open_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeNode::FieldState::unpack_physical_state(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      derez.deserialize(open_state);
+      derez.deserialize(redop);
+      size_t num_children;
+      derez.deserialize(num_children);
+      for (unsigned idx = 0; idx < num_children; idx++)
+      {
+        Color c;
+        derez.deserialize(c);
+        FieldMask open_mask;
+        derez.deserialize(open_mask);
+        open_children[c] = open_mask;
+        // Rebuild the valid fields mask as we're doing this
+        valid_fields |= open_mask;
       }
     }
 
@@ -3685,7 +3918,7 @@ namespace RegionRuntime {
       if (manager != NULL)
       {
         // Made the instance, now make a view for it from this region
-        result = manager->create_view(NULL/*no parent*/, this);
+        result = context->create_view(manager, NULL/*no parent*/, this);
 #ifdef DEBUG_HIGH_LEVEL
         assert(result != NULL); // should never happen
 #endif
@@ -3824,13 +4057,165 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    size_t RegionNode::compute_state_size(ContextID ctx, const FieldMask &pack_mask) 
+    size_t RegionNode::compute_state_size(ContextID ctx, const FieldMask &pack_mask,
+                                          std::set<InstanceManager*> &unique_managers,
+                                          std::map<InstanceView*,FieldMask> &unique_views,
+                                          std::vector<InstanceView*> &ordered_views,
+                                          bool recurse, int sub /*= -1*/) 
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(physical_states.find(ctx) != physical_states.end());
 #endif
       PhysicalState &state = physical_states[ctx];
+      size_t result = 0;
+      result += sizeof(state.dirty_mask);
+      result += sizeof(size_t); // number of valid views
+      // Find the InstanceViews that need to be sent
+      for (std::map<InstanceView*,FieldMask>::const_iterator it = state.valid_views.begin();
+            it != state.valid_views.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        result += sizeof(it->first->unique_id);
+        result += sizeof(it->second);
+        if (sub > -1)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!recurse);
+#endif
+          it->first->find_required_views(unique_views, ordered_views, pack_mask, Color(sub));
+        }
+        else
+        {
+          it->first->find_required_views(unique_views, ordered_views, pack_mask);
+        }
+      }
+      result += sizeof(size_t); // number of open partitions
+      // Now go through and find any FieldStates that need to be sent
+      for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+            it != state.field_states.end(); it++)
+      {
+        if (it->valid_fields * pack_mask)
+          continue;
+        result += it->compute_state_size(pack_mask);
+        if (recurse)
+        {
+          for (std::map<Color,FieldMask>::const_iterator pit = it->open_children.begin();
+                pit != it->open_children.end(); pit++)
+          {
+            FieldMask overlap = pit->second & pack_mask;
+            if (!overlap)
+              continue;
+            result += color_map[pit->first]->compute_state_size(ctx, overlap, 
+                          unique_managers, unique_views, ordered_views, true/*recurse*/);
+          }
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::pack_physical_state(ContextID ctx, const FieldMask &pack_mask,
+                                          Serializer &rez, bool recurse) 
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_states.find(ctx) != physical_states.end());
+#endif
+      PhysicalState &state = physical_states[ctx];
+      FieldMask dirty_overlap = state.dirty_mask & pack_mask;
+      rez.serialize(dirty_overlap);
+      // count the number of valid views
+      size_t num_valid_views = 0;
+      for (std::map<InstanceView*,FieldMask>::const_iterator it = state.valid_views.begin();
+            it != state.valid_views.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        num_valid_views++;
+      }
+      rez.serialize(num_valid_views);
+      if (num_valid_views > 0)
+      {
+        for (std::map<InstanceView*,FieldMask>::const_iterator it = state.valid_views.begin();
+              it != state.valid_views.end(); it++)
+        {
+          FieldMask overlap = it->second & pack_mask;
+          if (!overlap)
+            continue;
+          rez.serialize(it->first->unique_id);
+          rez.serialize(overlap);
+        }
+      }
+      size_t num_open_parts = 0;
+      for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+            it != state.field_states.end(); it++)
+      {
+        if (it->valid_fields * pack_mask)
+          continue;
+        num_open_parts++;
+      }
+      rez.serialize(num_open_parts);
+      if (num_open_parts > 0)
+      {
+        // Now go through the field states
+        for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+              it != state.field_states.end(); it++)
+        {
+          if (it->valid_fields * pack_mask)
+            continue;
+          it->pack_physical_state(pack_mask, rez);
+          if (recurse)
+          {
+            for (std::map<Color,FieldMask>::const_iterator pit = it->open_children.begin();
+                  pit != it->open_children.end(); it++)
+            {
+              FieldMask overlap = pit->second & pack_mask;
+              if (!overlap)
+                continue;
+              color_map[pit->first]->pack_physical_state(ctx, overlap, rez, true/*recurse*/);
+            }
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse)
+    //--------------------------------------------------------------------------
+    {
+      if (physical_states.find(ctx) == physical_states.end())
+        physical_states[ctx] = PhysicalState();
+      PhysicalState &state = physical_states[ctx];
+      derez.deserialize(state.dirty_mask);
+      size_t num_valid_views;
+      derez.deserialize(num_valid_views);
+      for (unsigned idx = 0; idx < num_valid_views; idx++)
+      {
+        UniqueViewID vid;
+        derez.deserialize(vid);
+        FieldMask valid_mask;
+        derez.deserialize(valid_mask);
+        state.valid_views[context->find_view(vid)] = valid_mask;
+      }
+      size_t num_open_parts;
+      derez.deserialize(num_open_parts);
+      std::vector<FieldState> new_field_states(num_open_parts);
+      for (unsigned idx = 0; idx < num_open_parts; idx++)
+      {
+        new_field_states[idx].unpack_physical_state(derez);
+        if (recurse)
+        {
+          for (std::map<Color,FieldMask>::const_iterator it = new_field_states[idx].open_children.begin();
+                it != new_field_states[idx].open_children.end(); it++)
+          {
+            color_map[it->first]->unpack_physical_state(ctx, derez, true/*recurse*/);
+          }
+        }
+      }
+      // Now merge the field states into the existing state
+      merge_new_field_states(state.field_states, new_field_states);
     }
 
     /////////////////////////////////////////////////////////////
@@ -4196,6 +4581,110 @@ namespace RegionRuntime {
       }
     }
 
+    //--------------------------------------------------------------------------
+    size_t PartitionNode::compute_state_size(ContextID ctx, const FieldMask &pack_mask,
+                                              std::set<InstanceManager*> &unique_managers, 
+                                              std::map<InstanceView*,FieldMask> &unique_views,
+                                              std::vector<InstanceView*> &ordered_views,
+                                              bool recurse)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_states.find(ctx) != physical_states.end());
+#endif
+      PhysicalState &state = physical_states[ctx];
+      size_t result = 0;
+      result += sizeof(size_t); // number of field states
+      // Can ignore the dirty and mask and valid instances here since they don't mean anything
+      for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+            it != state.field_states.end(); it++)
+      {
+        if (it->valid_fields * pack_mask)
+          continue;
+        result += it->compute_state_size(pack_mask);
+        // Traverse any open partitions below
+        if (recurse)
+        {
+          for (std::map<Color,FieldMask>::const_iterator pit = it->open_children.begin();
+                pit != it->open_children.end(); pit++)
+          {
+            FieldMask overlap = pit->second & pack_mask;
+            if (!overlap)
+              continue;
+            result += color_map[pit->first]->compute_state_size(ctx, overlap, 
+                        unique_managers, unique_views, ordered_views, true/*recurse*/);
+          }
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::pack_physical_state(ContextID ctx, const FieldMask &pack_mask,
+                                            Serializer &rez, bool recurse)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_states.find(ctx) != physical_states.end());
+#endif
+      PhysicalState &state = physical_states[ctx];
+      size_t num_field_states = 0;
+      for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+            it != state.field_states.end(); it++)
+      {
+        if (it->valid_fields * pack_mask)
+          continue;
+        num_field_states++;
+      }
+      rez.serialize(num_field_states);
+      if (num_field_states > 0)
+      {
+        for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+              it != state.field_states.end(); it++)
+        {
+          if (it->valid_fields * pack_mask)
+            continue;
+          it->pack_physical_state(pack_mask, rez);
+          if (recurse)
+          {
+            for (std::map<Color,FieldMask>::const_iterator pit = it->open_children.begin();
+                  pit != it->open_children.end(); pit++)
+            {
+              FieldMask overlap = pit->second & pack_mask;
+              if (!overlap)
+                continue;
+              color_map[pit->first]->pack_physical_state(ctx, overlap, rez, true/*recurse*/);
+            } 
+          }
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse)
+    //--------------------------------------------------------------------------
+    {
+      if (physical_states.find(ctx) == physical_states.end())
+        physical_states[ctx] = PhysicalState();
+      PhysicalState &state = physical_states[ctx];
+      size_t num_field_states;
+      derez.deserialize(num_field_states);
+      std::vector<FieldState> new_field_states(num_field_states);
+      for (unsigned idx = 0; idx < num_field_states; idx++)
+      {
+        new_field_states[idx].unpack_physical_state(derez);
+        if (recurse)
+        {
+          for (std::map<Color,FieldMask>::const_iterator it = new_field_states[idx].open_children.begin();
+                it != new_field_states[idx].open_children.end(); it++)
+          {
+            color_map[it->first]->unpack_physical_state(ctx, derez, true/*recurse*/);
+          }
+        }
+      }
+      merge_new_field_states(state.field_states, new_field_states);
+    }
+
     /////////////////////////////////////////////////////////////
     // Instance Manager 
     /////////////////////////////////////////////////////////////
@@ -4203,8 +4692,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     InstanceManager::InstanceManager(Memory m, PhysicalInstance inst, 
             const std::map<FieldID,IndexSpace::CopySrcDstField> &infos, const FieldMask &mask, 
-            RegionTreeForest *ctx, bool rem, bool cl)
-      : context(ctx), references(0), remote(rem), clone(cl), 
+            RegionTreeForest *ctx, UniqueManagerID mid, bool rem, bool cl)
+      : context(ctx), references(0), unique_id(mid), remote(rem), clone(cl), 
         remote_frac(Fraction<unsigned long>(0,1)), local_frac(Fraction<unsigned long>(1,1)), 
         location(m), instance(inst), allocated_fields(mask), field_infos(infos)
     //--------------------------------------------------------------------------
@@ -4263,15 +4752,6 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceView* InstanceManager::create_view(InstanceView *parent, RegionNode *region)
-    //--------------------------------------------------------------------------
-    {
-      InstanceView *result = new InstanceView(this, parent, region, context);
-      context->register_view(result);
-      return result;
-    }
-
-    //--------------------------------------------------------------------------
     void InstanceManager::find_info(FieldID fid, std::vector<IndexSpace::CopySrcDstField> &sources)
     //--------------------------------------------------------------------------
     {
@@ -4294,11 +4774,81 @@ namespace RegionRuntime {
           new_infos.insert(*it);
         }
       }
-      InstanceManager *clone = new InstanceManager(location, instance, new_infos,
-                                                    mask, context, false/*remote*/, true/*clone*/);
-      // Register this with the context
-      context->register_manager(clone);
+      InstanceManager *clone = context->create_manager(location, instance, new_infos,
+                                                    mask, false/*remote*/, true/*clone*/);
       return clone;
+    }
+
+    //--------------------------------------------------------------------------
+    size_t InstanceManager::compute_send_size(void) const
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0; 
+      result += sizeof(unique_id);
+      result += sizeof(local_frac);
+      result += sizeof(location);
+      result += sizeof(instance);
+      result += sizeof(lock);
+      result += sizeof(allocated_fields);
+      result += sizeof(size_t);
+      result += (field_infos.size() * (sizeof(FieldID) + sizeof(IndexSpace::CopySrcDstField)));
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceManager::pack_manager_send(Serializer &rez, unsigned long num_ways)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(unique_id);
+      InstFrac to_take = local_frac.get_part(num_ways);
+      local_frac.subtract(to_take);
+      rez.serialize(to_take);
+      rez.serialize(location);
+      rez.serialize(instance);
+      rez.serialize(lock);
+      rez.serialize(allocated_fields);
+      rez.serialize(field_infos.size());
+      for (std::map<FieldID,IndexSpace::CopySrcDstField>::const_iterator it =
+            field_infos.begin(); it != field_infos.end(); it++)
+      {
+        rez.serialize(it->first);
+        rez.serialize(it->second);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/void InstanceManager::unpack_manager_send(RegionTreeForest *context,
+                      Deserializer &derez, unsigned long split_factor)
+    //--------------------------------------------------------------------------
+    {
+      UniqueManagerID mid;
+      derez.deserialize(mid);
+      InstFrac remote_frac;
+      derez.deserialize(remote_frac);
+      Memory location;
+      derez.deserialize(location);
+      PhysicalInstance inst;
+      derez.deserialize(inst);
+      Lock lock;
+      derez.deserialize(lock);
+      FieldMask alloc_fields;
+      derez.deserialize(alloc_fields);
+      std::map<FieldID,IndexSpace::CopySrcDstField> field_infos;
+      size_t num_infos;
+      derez.deserialize(num_infos);
+      for (unsigned idx = 0; idx < num_infos; idx++)
+      {
+        FieldID fid;
+        derez.deserialize(fid);
+        IndexSpace::CopySrcDstField info;
+        derez.deserialize(info);
+        field_infos[fid] = info;
+      }
+      InstanceManager *result = context->create_manager(location, inst, 
+                  field_infos, alloc_fields, true/*remote*/, false/*clone*/, mid);
+      // Set the remote fraction and scale it by the split factor
+      result->remote_frac = remote_frac;
+      remote_frac.divide(split_factor);
     }
 
     //--------------------------------------------------------------------------
@@ -4323,9 +4873,9 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     InstanceView::InstanceView(InstanceManager *man, InstanceView *par, 
-                               RegionNode *reg, RegionTreeForest *ctx)
+                               RegionNode *reg, RegionTreeForest *ctx, UniqueViewID vid)
       : manager(man), parent(par), logical_region(reg), 
-        context(ctx), references(0)
+        context(ctx), unique_id(vid), references(0), filtered(false)
     //--------------------------------------------------------------------------
     {
     }
@@ -4340,12 +4890,22 @@ namespace RegionRuntime {
         // If it doesn't exist yet, make it, otherwise re-use it
         PartitionNode *pnode = logical_region->get_child(pc);
         RegionNode *rnode = pnode->get_child(rc);
-        InstanceView *subview = manager->create_view(this, rnode); 
+        InstanceView *subview = context->create_view(manager, this, rnode); 
         children[key] = subview;
-        context->register_view(subview);
         return subview;
       }
       return children[key];
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::add_child_view(Color pc, Color rc, InstanceView *child)
+    //--------------------------------------------------------------------------
+    {
+      std::pair<Color,Color> key(pc,rc);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(children.find(key) == children.end());
+#endif
+      children[key] = child;
     }
 
     //--------------------------------------------------------------------------
@@ -4937,6 +5497,259 @@ namespace RegionRuntime {
       {
         elements.erase(*it);
       }
+    }
+
+    //--------------------------------------------------------------------------
+    size_t InstanceView::compute_send_size(const FieldMask &pack_mask)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      result += sizeof(manager->unique_id);
+      result += sizeof(parent->unique_id);
+      result += sizeof(logical_region->handle);
+      result += sizeof(unique_id);
+      result += sizeof(size_t); // number of valid events
+      packing_sizes[0] = 0;
+      for (std::map<Event,FieldMask>::const_iterator it = valid_events.begin();
+            it != valid_events.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        result += sizeof(it->first);
+        result += sizeof(it->second);
+        packing_sizes[0]++;
+      }
+      result += sizeof(size_t); // number of users
+      packing_sizes[1] = 0;
+      for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
+            it != epoch_users.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        result += sizeof(it->first);
+        result += sizeof(it->second);
+        result += sizeof(PhysicalUser);
+        packing_sizes[1]++;
+      }
+      result += sizeof(size_t); // number of copy users
+      packing_sizes[2] = 0;
+      for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+            it != epoch_copy_users.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        result += sizeof(it->first);
+        result += sizeof(it->second);
+        result += sizeof(ReductionOpID);
+        packing_sizes[2]++;
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::pack_view_send(const FieldMask &pack_mask, Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(manager->unique_id);
+      if (parent != NULL)
+        rez.serialize(parent->unique_id);
+      else
+        rez.serialize<UniqueViewID>(0);
+      rez.serialize(logical_region->handle);
+      rez.serialize(unique_id);
+      rez.serialize(packing_sizes[0]);
+      for (std::map<Event,FieldMask>::const_iterator it = valid_events.begin();
+            it != valid_events.end(); it++)
+      {
+        FieldMask overlap = it->second & pack_mask;
+        if (!overlap)
+          continue;
+        rez.serialize(it->first);
+        rez.serialize(overlap);
+      }
+      rez.serialize(packing_sizes[1]);
+      for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
+            it != epoch_users.end(); it++)
+      {
+        FieldMask overlap = it->second & pack_mask;
+        if (!overlap)
+          continue;
+        rez.serialize(it->first);
+        rez.serialize(overlap);
+        // Find the user
+        std::map<UniqueID,TaskUser>::const_iterator finder = users.find(it->first);
+        if (finder == users.end())
+        {
+          finder = added_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != added_users.end());
+#endif
+        }
+        rez.serialize(finder->second);
+      }
+      rez.serialize(packing_sizes[2]);
+      for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+            it != epoch_copy_users.end(); it++)
+      {
+        FieldMask overlap = it->second & pack_mask;
+        if (!overlap)
+          continue;
+        rez.serialize(it->first);
+        rez.serialize(overlap);
+        std::map<Event,ReductionOpID>::const_iterator finder = copy_users.find(it->first);
+        if (finder == copy_users.end())
+        {
+          finder = added_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != added_copy_users.end());
+#endif
+        }
+        rez.serialize(finder->second);
+      }
+      // Reset filtered back to false
+      filtered = false;
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ void InstanceView::unpack_view_send(RegionTreeForest *context, Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      UniqueManagerID mid;
+      derez.deserialize(mid);
+      InstanceManager *manager = context->find_manager(mid);
+      UniqueViewID pid;
+      derez.deserialize(pid);
+      InstanceView *parent = ((pid == 0) ? NULL : context->find_view(pid));
+      LogicalRegion handle;
+      derez.deserialize(handle);
+      RegionNode *reg_node = context->get_node(handle);
+      UniqueViewID vid;
+      derez.deserialize(vid);
+
+      InstanceView *result = context->create_view(manager, parent, reg_node, vid);
+      // Now unpack everything
+      size_t num_valid_events;
+      derez.deserialize(num_valid_events);
+      for (unsigned idx = 0; idx < num_valid_events; idx++)
+      {
+        Event valid_event;
+        derez.deserialize(valid_event);
+        FieldMask valid_mask;
+        derez.deserialize(valid_mask);
+        result->valid_events[valid_event] = valid_mask;
+      }
+      size_t num_users;
+      derez.deserialize(num_users);
+      for (unsigned idx = 0; idx < num_users; idx++)
+      {
+        UniqueID uid;
+        derez.deserialize(uid);
+        FieldMask user_mask;
+        derez.deserialize(user_mask);
+        TaskUser user;
+        derez.deserialize(user);
+        result->epoch_users[uid] = user_mask;
+        result->users[uid] = user;
+      }
+      size_t num_copy_users;
+      derez.deserialize(num_copy_users);
+      for (unsigned idx = 0; idx < num_copy_users; idx++)
+      {
+        Event copy_event;
+        derez.deserialize(copy_event);
+        FieldMask copy_mask;
+        derez.deserialize(copy_mask);
+        ReductionOpID redop;
+        derez.deserialize(redop);
+        result->epoch_copy_users[copy_event] = copy_mask;
+        result->copy_users[copy_event] = redop;
+      }
+      // Now we need to add this view to the parent if it has one
+      if (parent != NULL)
+      {
+        parent->add_child_view(reg_node->row_source->parent->color,
+                               reg_node->row_source->color,result);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_required_views(std::map<InstanceView*,FieldMask> &unique_views,
+            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask, Color filter)
+    //--------------------------------------------------------------------------
+    {
+      if (unique_views.find(this) != unique_views.end())
+      {
+        if (!filtered)
+          return;
+      }
+      else
+      {
+        unique_views[this] = pack_mask;
+        ordered_views.push_back(this);
+        filtered = true;
+      }
+      // Only go down the filtered children 
+      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
+            children.begin(); it != children.end(); it++)
+      {
+        if (it->first.first == filter)
+        {
+          it->second->find_required_below(unique_views, ordered_views, pack_mask);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_required_views(std::map<InstanceView*,FieldMask> &unique_views,
+            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask)
+    //--------------------------------------------------------------------------
+    {
+      // Otherwise go up the tree to find all the points we need
+      if (parent != NULL)
+        parent->find_required_above(unique_views, ordered_views, pack_mask);
+      // Then add ourselves and our children
+      find_required_below(unique_views, ordered_views, pack_mask);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_required_above(std::map<InstanceView*,FieldMask> &unique_views,
+            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask)
+    //--------------------------------------------------------------------------
+    {
+      // Quick check to see if we're already added
+      if (unique_views.find(this) != unique_views.end())
+        return;
+      // Otherwise handle our parent first, then us
+      if (parent != NULL)
+        parent->find_required_above(unique_views, ordered_views, pack_mask);
+      unique_views[this] = pack_mask;
+      ordered_views.push_back(this);
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_required_below(std::map<InstanceView*,FieldMask> &unique_views,
+            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask)
+    //--------------------------------------------------------------------------
+    {
+      if (unique_views.find(this) != unique_views.end())
+      {
+        if (!filtered)
+          return;
+      }
+      else
+      {
+        unique_views[this] = pack_mask;
+        ordered_views.push_back(this);
+      }
+      // Then add all the child instances
+      // We always do at least one round of the children to make sure we don't
+      // miss any because the current view was only added with a filter applied
+      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
+            children.begin(); it != children.end(); it++)
+      {
+        it->second->find_required_below(unique_views, ordered_views, pack_mask);
+      }
+      filtered = false;
     }
 
     /////////////////////////////////////////////////////////////

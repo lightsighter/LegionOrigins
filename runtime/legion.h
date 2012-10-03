@@ -981,6 +981,7 @@ namespace RegionRuntime {
       friend class IndividualTask;
       friend class MappingOperation;
       friend class DeletionOperation;
+      friend class RegionTreeForest;
       IndividualTask*    get_available_individual_task(Context parent);
       IndexTask*         get_available_index_task(Context parent); // can never be resource owner
       SliceTask*         get_available_slice_task(TaskContext *parent);
@@ -1019,6 +1020,8 @@ namespace RegionRuntime {
       RegionTreeID     get_unique_tree_id(void);
       FieldSpaceID     get_unique_field_space_id(void);
       FieldID          get_unique_field_id(void);
+      UniqueViewID     get_unique_view_id(void);
+      UniqueManagerID  get_unique_manager_id(void);
     protected: 
       void add_to_dependence_queue(GeneralizedOperation *op);
       void add_to_ready_queue(IndividualTask *task, bool remote);
@@ -1166,6 +1169,8 @@ namespace RegionRuntime {
       RegionTreeID next_region_tree_id;
       FieldSpaceID next_field_space_id;
       FieldID next_field_id;
+      UniqueViewID next_view_id;
+      UniqueManagerID next_manager_id;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
       const unsigned int max_outstanding_steals;

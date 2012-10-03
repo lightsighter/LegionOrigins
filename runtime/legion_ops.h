@@ -804,7 +804,7 @@ namespace RegionRuntime {
     protected:
       PointTask* clone_as_point_task(bool new_point);
     public:
-      void set_denominator(unsigned long value);
+      void set_denominator(unsigned long denom, unsigned long split);
       void point_task_mapped(PointTask *point);
       void point_task_finished(PointTask *point);
     private:
@@ -837,7 +837,13 @@ namespace RegionRuntime {
       // we know are live throughout the life of the SliceTask.
       std::map<AnyPoint,FutureResult> future_results;
       // (1/denominator indicates fraction of index space in this slice)
-      unsigned long denominator; // Set explicity, no need to copy
+      unsigned long denominator; // Set explicitly, no need to copy
+      // The split factor is the multiple difference between the current denominator
+      // and the denominator when the region tree is finally unpacked.  It allows
+      // the InstanceManagers to rescale themselves to know exactly what fraction
+      // they actually represent after being unpacked since the index space
+      // of tasks may have been split up many times since they were packed.
+      unsigned long split_factor; // Set explicitly, no need to copy
       bool enumerating; // Set to true when we're enumerating the slice
       LowLevel::ElementMask::Enumerator *enumerator;
       int remaining_enumerated;

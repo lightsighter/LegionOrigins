@@ -272,6 +272,8 @@ namespace RegionRuntime {
     typedef unsigned int TypeHandle;
     typedef unsigned int ProjectionID;
     typedef unsigned int RegionTreeID;
+    typedef unsigned int UniqueViewID;
+    typedef unsigned int UniqueManagerID;
     typedef Processor::TaskFuncID TaskID;
     typedef SingleTask* Context;
     typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
@@ -280,6 +282,7 @@ namespace RegionRuntime {
     typedef std::map<TypeHandle,Structure> TypeTable;
     typedef std::map<ProjectionID,ProjectionFnptr> ProjectionTable;
     typedef BitMask<FIELD_TYPE, MAX_FIELDS> FieldMask;
+    typedef Fraction<unsigned long> InstFrac;
 
 #define FRIEND_ALL_RUNTIME_CLASSES                \
     friend class HighLevelRuntime;                \

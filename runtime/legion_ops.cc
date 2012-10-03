@@ -54,7 +54,7 @@ namespace RegionRuntime {
         else
         {
           context_owner = true;
-          forest_ctx = new RegionTreeForest();
+          forest_ctx = new RegionTreeForest(runtime);
         }
 #ifdef DEBUG_HIGH_LEVEL
         assert(forest_ctx != NULL);
@@ -3515,6 +3515,7 @@ namespace RegionRuntime {
                                     get_enclosing_physical_context(regions[idx].parent));
           }
         }
+        result += forest_ctx->post_compute_region_tree_state_size();
       }
       return result;
     }
@@ -3552,6 +3553,7 @@ namespace RegionRuntime {
           else
           {
             forest_ctx->pack_region_forest_shape(rez); 
+            forest_ctx->begin_pack_region_tree_state(rez);
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
               if (physical_instances[idx].is_virtual_ref())
@@ -3569,6 +3571,7 @@ namespace RegionRuntime {
         else
         {
           forest_ctx->pack_region_forest_shape(rez);
+          forest_ctx->begin_pack_region_tree_state(rez);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             forest_ctx->pack_region_tree_state(regions[idx], 
@@ -3623,6 +3626,7 @@ namespace RegionRuntime {
         else
         {
           forest_ctx->unpack_region_forest_shape(derez);
+          forest_ctx->begin_unpack_region_tree_state(derez);
 #ifdef DEBUG_HIGH_LEVEL
           assert(non_virtual_mapped_region.size() == regions.size());
 #endif
@@ -3631,7 +3635,7 @@ namespace RegionRuntime {
             if (!non_virtual_mapped_region[idx])
             {
               // Unpack the state in our context
-              forest_ctx->unpack_region_tree_state(ctx_id, derez); 
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez); 
               physical_instances.push_back(InstanceRef()); // virtual instance
             }
             else
@@ -3644,10 +3648,11 @@ namespace RegionRuntime {
       else
       {
         forest_ctx->unpack_region_forest_shape(derez);
+        forest_ctx->begin_unpack_region_tree_state(derez);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // Unpack the state in our context
-          forest_ctx->unpack_region_tree_state(ctx_id, derez);
+          forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez);
         }
       }
       unlock_context();
@@ -5113,7 +5118,7 @@ namespace RegionRuntime {
       for (std::list<SliceTask*>::const_iterator it = slices.begin();
             it != slices.end(); it++)
       {
-        (*it)->set_denominator(slices.size());
+        (*it)->set_denominator(slices.size(), slices.size());
       }
       // No need to reclaim this since it is referenced by the calling context
       return false;
@@ -5472,6 +5477,7 @@ namespace RegionRuntime {
         remaining_buffer = NULL;
         remaining_bytes = 0;
         denominator = 1;
+        split_factor = 1;
         enumerating = false;
         enumerator = NULL;
         remaining_enumerated = 0;
@@ -5924,6 +5930,7 @@ namespace RegionRuntime {
             result += arg_map_impl->compute_arg_map_size();
           }
         }
+        result += forest_ctx->post_compute_region_tree_state_size();
       }
       return result;
     }
@@ -5960,6 +5967,9 @@ namespace RegionRuntime {
           if (!is_leaf)
           {
             forest_ctx->pack_region_forest_shape(rez);
+            forest_ctx->begin_pack_region_tree_state(rez, split_factor);
+            // Now we can reset the split factor
+            this->split_factor = 1;
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
               rez.serialize<unsigned>(non_virtual_mappings[idx]);
@@ -5983,6 +5993,9 @@ namespace RegionRuntime {
         else
         {
           forest_ctx->pack_region_forest_shape(rez);
+          forest_ctx->begin_pack_region_tree_state(rez, split_factor);
+          // Now we can reset the split factor
+          this->split_factor = 1;
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             forest_ctx->pack_region_tree_state(regions[idx],
@@ -6044,6 +6057,7 @@ namespace RegionRuntime {
         if (!is_leaf)
         {
           forest_ctx->unpack_region_forest_shape(derez);
+          forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
           non_virtual_mappings.resize(regions.size());  
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
@@ -6054,7 +6068,7 @@ namespace RegionRuntime {
             if (non_virtual_mappings[idx] < num_points)
             {
               // Unpack the physical state in our context
-              forest_ctx->unpack_region_tree_state(ctx_id, derez);
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez);
             }
           }
         }
@@ -6069,9 +6083,10 @@ namespace RegionRuntime {
       else
       {
         forest_ctx->unpack_region_forest_shape(derez);
+        forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          forest_ctx->unpack_region_tree_state(ctx_id, derez);
+          forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, derez);
         }
         // Unpack any premapped regions
         size_t num_premapped;
@@ -6144,7 +6159,7 @@ namespace RegionRuntime {
       for (std::list<SliceTask*>::const_iterator it = slices.begin();
             it != slices.end(); it++)
       {
-        (*it)->set_denominator(denominator*slices.size());
+        (*it)->set_denominator(denominator*slices.size(), split_factor*slices.size());
       }
 
       // Deactivate this context when done since we've split it into sub-slices
@@ -6219,10 +6234,11 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SliceTask::set_denominator(unsigned long value)
+    void SliceTask::set_denominator(unsigned long denom, unsigned long split)
     //--------------------------------------------------------------------------
     {
-      this->denominator = value;
+      this->denominator = denom;
+      this->split_factor = denom;
     }
 
     //--------------------------------------------------------------------------
@@ -6315,6 +6331,7 @@ namespace RegionRuntime {
         // Otherwise we have to pack stuff up and send it back
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
         buffer_size += sizeof(denominator);
+        buffer_size += sizeof(split_factor);
         buffer_size += sizeof(size_t);
         buffer_size += (regions.size() * sizeof(unsigned));
         lock_context();
@@ -6338,6 +6355,7 @@ namespace RegionRuntime {
         rez.serialize<Processor>(orig_proc);
         rez.serialize<IndexTask*>(index_owner);
         rez.serialize<unsigned long>(denominator);
+        rez.serialize<unsigned long>(split_factor);
         rez.serialize<size_t>(points.size());
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
