@@ -555,6 +555,9 @@ namespace RegionRuntime {
 	unsigned offset, size;
       };
 
+      Event copy(RegionInstance src_inst, RegionInstance dst_inst, size_t elem_size,
+		 Event wait_on = Event::NO_EVENT) const;
+
       Event copy(const std::vector<CopySrcDstField>& srcs,
 		 const std::vector<CopySrcDstField>& dsts,
 		 Event wait_on = Event::NO_EVENT) const;

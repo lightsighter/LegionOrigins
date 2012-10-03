@@ -2024,6 +2024,62 @@ namespace RegionRuntime {
 	Lock get_lock(void);
 
         const ElementMask& get_element_mask(void);
+
+        Event copy(RegionInstance src_inst, RegionInstance dst_inst, size_t elem_size,
+		   Event wait_on = Event::NO_EVENT);
+
+        class CopyOperation : public Triggerable {
+	public:
+	  CopyOperation(const std::vector<CopySrcDstField>& _srcs,
+			const std::vector<CopySrcDstField>& _dsts,
+			const ElementMask &_src_mask, 
+			const ElementMask &_dst_mask,
+			EventImpl *_done_event)
+	    : srcs(_srcs), dsts(_dsts), src_mask(_src_mask), dst_mask(_dst_mask), 
+	      done_event(_done_event) {}
+
+	  virtual void trigger(unsigned count = 1, TriggerHandle handle = 0)
+	  {
+	    perform_copy_operation();
+	    delete this;
+	  }
+
+	  Event get_done_event(void) const 
+	  { 
+	    return (done_event ? done_event->get_event() : Event::NO_EVENT);
+	  }
+
+	  // registers the copy event with the before_event - returns true if successful, false if not
+	  //  (in which case the copy is performed immediately)
+	  bool register_copy(Event wait_on)
+	  {
+	    if (wait_on.exists()) {
+	      // Try registering this as a triggerable with the event	
+	      EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
+
+	      if (event_impl->register_dependent(this, wait_on.gen, 0)) {
+		// make sure we have a completion event
+		if (!done_event)
+		  done_event = Runtime::get_runtime()->get_free_event();
+		return true;
+	      }
+	    }
+
+	    // either there was no wait event or it has already fired
+	    perform_copy_operation();
+	    return false;
+	  }
+
+	protected:
+	  void perform_copy_operation(void);
+
+	  std::vector<CopySrcDstField> srcs;
+	  std::vector<CopySrcDstField> dsts;
+	  const ElementMask &src_mask;
+	  const ElementMask &dst_mask;
+	  EventImpl *done_event;
+	};
+
     public:
         // Traverse up the tree to the parent region that owns the master allocator
         // Peform the operation and then update the element mask on the way back down
@@ -2864,6 +2920,14 @@ namespace RegionRuntime {
       return r->get_element_mask();
     }
 
+    Event IndexSpace::copy(RegionInstance src_inst, RegionInstance dst_inst, size_t elem_size,
+			   Event wait_on /*= Event::NO_EVENT*/) const
+    {
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+      return r->copy(src_inst, dst_inst, elem_size, wait_on);
+    }
+
     // FIXME(Elliott): Dummy, trying to link
     Event IndexSpace::copy(const std::vector<CopySrcDstField>& srcs,
                            const std::vector<CopySrcDstField>& dsts,
@@ -3108,6 +3172,82 @@ namespace RegionRuntime {
 	return lock->get_lock();
     }
 
+    namespace RangeExecutors {
+      class GatherScatter {
+      public:
+	GatherScatter(const std::vector<IndexSpace::CopySrcDstField>& _srcs,
+		      const std::vector<IndexSpace::CopySrcDstField>& _dsts)
+	  : srcs(_srcs), dsts(_dsts)
+	{
+	  // determine element size
+	  elem_size = 0;
+	  for(std::vector<IndexSpace::CopySrcDstField>::const_iterator i = srcs.begin(); i != srcs.end(); i++)
+	    elem_size += i->size;
+
+	  buffer = new char[elem_size];
+	}
+
+	~GatherScatter(void)
+	{
+	  delete[] buffer;
+	}
+
+        void do_span(int offset, int count)
+        {
+	  // gather data from source
+	  int write_offset = 0;
+	  for(std::vector<IndexSpace::CopySrcDstField>::const_iterator i = srcs.begin(); i != srcs.end(); i++) {
+	    i->inst.get_accessor().read_partial(ptr_t<void>(offset), i->offset, 
+						buffer + write_offset, i->size);
+	    write_offset += i->size;
+	  }
+
+	  // now scatter to destination
+	  int read_offset = 0;
+	  for(std::vector<IndexSpace::CopySrcDstField>::const_iterator i = dsts.begin(); i != dsts.end(); i++) {
+	    i->inst.get_accessor().write_partial(ptr_t<void>(offset), i->offset, 
+						buffer + read_offset, i->size);
+	    read_offset += i->size;
+	  }
+	}
+
+      protected:
+	std::vector<IndexSpace::CopySrcDstField> srcs;
+	std::vector<IndexSpace::CopySrcDstField> dsts;
+	size_t elem_size;
+	char *buffer;
+      };
+    };
+
+    void IndexSpace::Impl::CopyOperation::perform_copy_operation(void)
+    {
+      DetailedTimer::ScopedPush sp(TIME_COPY); 
+
+      // This is a normal copy
+      RangeExecutors::GatherScatter rexec(srcs, dsts);
+      ElementMask::forall_ranges(rexec, dst_mask, src_mask);
+    }
+
+    Event IndexSpace::Impl::copy(RegionInstance src_inst, RegionInstance dst_inst, size_t elem_size,
+				 Event wait_on /*= Event::NO_EVENT*/)
+    {
+      std::vector<CopySrcDstField> srcs, dsts;
+
+      srcs.push_back(CopySrcDstField(src_inst, 0, elem_size));
+      dsts.push_back(CopySrcDstField(src_inst, 0, elem_size));
+
+      CopyOperation *co = new CopyOperation(srcs, dsts, 
+					    get_element_mask(), get_element_mask(),
+					    0);
+      if(co->register_copy(wait_on)) {
+	// copy will happen some time in the future
+	return co->get_done_event();
+      } else {
+	// copy already occurred - we can free the CopyOperation object
+	delete co;
+	return Event::NO_EVENT;
+      }
+    }
     
     ////////////////////////////////////////////////////////
     // Machine 
