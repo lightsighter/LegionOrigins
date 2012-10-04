@@ -116,8 +116,10 @@ namespace RegionRuntime {
       IndexSpace::Impl*  get_free_metadata(IndexSpace::Impl *par, const ElementMask &mask);
       IndexSpaceAllocator::Impl* get_free_allocator(IndexSpace::Impl *owner);
       RegionInstance::Impl*  get_free_instance(IndexSpace is, Memory m, size_t num_elmts, 
-                                              size_t elmt_size, char *ptr, const ReductionOpUntyped *redop,
-                                              RegionInstance::Impl *parent);
+					       const std::vector<size_t>& field_sizes,
+					       size_t elmt_size, size_t block_size,
+					       char *ptr, const ReductionOpUntyped *redop,
+					       RegionInstance::Impl *parent);
 
       const ReductionOpUntyped* get_reduction_op(ReductionOpID redop);
 
@@ -2014,9 +2016,10 @@ namespace RegionRuntime {
 	IndexSpace get_metadata(void);
 
 	IndexSpaceAllocator create_allocator(Memory m);
-        RegionInstance create_instance(Memory m, size_t elmt_size, ReductionOpID redop = 0);
-        RegionInstance create_instance(Memory m, ReductionOpID redop, off_t list_size,
-                                               RegionInstance parent);
+
+        RegionInstance create_instance(Memory m, 
+				       const std::vector<size_t>& field_sizes,
+				       size_t block_size, ReductionOpID redop = 0);
 
 	void destroy_allocator(IndexSpaceAllocator a);
 	void destroy_instance(RegionInstance i);
@@ -2027,6 +2030,15 @@ namespace RegionRuntime {
 
         Event copy(RegionInstance src_inst, RegionInstance dst_inst, size_t elem_size,
 		   Event wait_on = Event::NO_EVENT);
+
+        Event copy(const std::vector<CopySrcDstField>& srcs,
+		   const std::vector<CopySrcDstField>& dsts,
+		   Event wait_on);
+
+        Event copy(const std::vector<CopySrcDstField>& srcs,
+		   const std::vector<CopySrcDstField>& dsts,
+		   const ElementMask& mask,
+		   Event wait_on);
 
         class CopyOperation : public Triggerable {
 	public:
@@ -2212,10 +2224,13 @@ namespace RegionRuntime {
 
     class RegionInstance::Impl : public Triggerable { 
     public:
-        Impl(int idx, IndexSpace r, Memory m, size_t num, size_t elem_size, 
+        Impl(int idx, IndexSpace r, Memory m, size_t num, 
+	     const std::vector<size_t>& _field_sizes,
+	     size_t elem_size, size_t _block_size,
 	     bool activate = false, char *base = NULL, const ReductionOpUntyped *op = NULL,
 	     RegionInstance::Impl *parent = NULL)
-	        : elmt_size(elem_size), num_elmts(num), reduction((op!=NULL)), list((parent!=NULL)), redop(op), parent_impl(parent), cur_entry(0), index(idx), next_handle(1)
+	  : elmt_size(elem_size), num_elmts(num), field_sizes(_field_sizes), block_size(_block_size),
+	    reduction((op!=NULL)), list((parent!=NULL)), redop(op), parent_impl(parent), cur_entry(0), index(idx), next_handle(1)
 	{
                 mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
 		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
@@ -2242,7 +2257,8 @@ namespace RegionRuntime {
     public:
 	const void* read(unsigned ptr);
 	void write(unsigned ptr, const void* newval);	
-        bool activate(IndexSpace r, Memory m, size_t num_elmts, size_t elem_size, 
+        bool activate(IndexSpace r, Memory m, size_t num_elmts, 
+		      const std::vector<size_t>& _field_sizes, size_t elem_size, size_t _block_size,
                       char *base, const ReductionOpUntyped *op, RegionInstance::Impl *parent);
 	void deactivate(void);
 	Event copy_to(RegionInstance target, Event wait_on);
@@ -2258,7 +2274,9 @@ namespace RegionRuntime {
         bool is_reduction(void) const { return reduction; }
         bool is_list_reduction(void) const { return list; }
         void* get_base_ptr(void) const { return base_ptr; }
+        void* get_address(int index, size_t field_start, size_t within_field);
         size_t get_elmt_size(void) const { return elmt_size; }
+        const std::vector<size_t>& get_field_sizes(void) const { return field_sizes; }
         size_t get_num_elmts(void) const { return num_elmts; }
         size_t* get_cur_entry(void) { return &cur_entry; }
     private:
@@ -2279,6 +2297,8 @@ namespace RegionRuntime {
 	char *base_ptr;	
 	size_t elmt_size;
 	size_t num_elmts;
+        std::vector<size_t> field_sizes;
+        size_t block_size;
 	Memory memory;
 	pthread_mutex_t *mutex;
         bool reduction; // reduction fold
@@ -2343,8 +2363,10 @@ namespace RegionRuntime {
       memcpy((base_ptr + ptr),newval,elmt_size);
     }
 
-    bool RegionInstance::Impl::activate(IndexSpace r, Memory m, size_t num, size_t elem_size, 
-                                      char *base, const ReductionOpUntyped *op, RegionInstance::Impl *parent)
+    bool RegionInstance::Impl::activate(IndexSpace r, Memory m, size_t num, 
+					const std::vector<size_t>& _field_sizes,
+					size_t elem_size, size_t _block_size,
+					char *base, const ReductionOpUntyped *op, RegionInstance::Impl *parent)
     {
 	bool result = false;
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
@@ -2355,7 +2377,9 @@ namespace RegionRuntime {
 		region = r;
 		memory = m;
 		num_elmts = num;
+		field_sizes = _field_sizes;
 		elmt_size = elem_size;
+		block_size = _block_size;
 		//MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
 		base_ptr = base; //(char*)mem->allocate_space(num_elmts*elmt_size);
                 redop = op;
@@ -2379,7 +2403,9 @@ namespace RegionRuntime {
 	MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(memory);
 	mem->free_space(base_ptr,num_elmts*elmt_size);
 	num_elmts = 0;
+	field_sizes.clear();
 	elmt_size = 0;
+	block_size = 0;
 	base_ptr = NULL;	
         redop = NULL;
         reduction = false;
@@ -2677,6 +2703,22 @@ namespace RegionRuntime {
       }
     }
 
+    void* RegionInstance::Impl::get_address(int index, size_t field_start, size_t within_field)
+    {
+      if(block_size == 1) {
+	// simple AOS case:
+	return (base_ptr + (index * elmt_size) + field_start + within_field);
+      } else {
+	//int num_blocks = index / block_size;
+	//int within_block = index % block_size;
+
+	return 0; // SJT: FIX!
+	// return (base_ptr + 
+	// 	(num_blocks * block_size * elmt_size) +
+	// 	(field_start * block_size) +
+      }
+    }
+
     void RegionAccessor<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
     {
       const char *src = (const char*)(((RegionInstance::Impl *)internal_data)->get_base_ptr());
@@ -2859,18 +2901,18 @@ namespace RegionRuntime {
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	return r->create_instance(m, elmt_size);
+	std::vector<size_t> field_sizes(1);
+	field_sizes[0] = elmt_size;
+	return r->create_instance(m, field_sizes, 1);
     }
 
-    // FIXME(Elliott): Dummy to make link
     RegionInstance IndexSpace::create_instance(Memory memory,
                                                const std::vector<size_t> &field_sizes,
                                                size_t block_size) const
     {
-        assert(0 && "Dummy implementation");
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
-	return r->create_instance(memory, 1);
+	return r->create_instance(memory, field_sizes, block_size);
     }
 
 #if 0
@@ -2928,23 +2970,23 @@ namespace RegionRuntime {
       return r->copy(src_inst, dst_inst, elem_size, wait_on);
     }
 
-    // FIXME(Elliott): Dummy, trying to link
     Event IndexSpace::copy(const std::vector<CopySrcDstField>& srcs,
                            const std::vector<CopySrcDstField>& dsts,
                            Event wait_on) const
     {
-        assert(0 && "Dummy implementation");
-        return Event();
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+      return r->copy(srcs, dsts, wait_on);
     }
 
-    // FIXME(Elliott): Dummy, trying to link
     Event IndexSpace::copy(const std::vector<CopySrcDstField>& srcs,
                            const std::vector<CopySrcDstField>& dsts,
                            const ElementMask& mask,
                            Event wait_on) const
     {
-        assert(0 && "Dummy implementation");
-        return Event();
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      IndexSpace::Impl *r = Runtime::get_runtime()->get_metadata_impl(*this);
+      return r->copy(srcs, dsts, mask, wait_on);
     }
 
     bool IndexSpace::Impl::activate(size_t num)
@@ -3070,7 +3112,9 @@ namespace RegionRuntime {
 	return allocator->get_allocator();
     }
 
-    RegionInstance IndexSpace::Impl::create_instance(Memory m, size_t elmt_size, ReductionOpID redop /*=0*/)
+    RegionInstance IndexSpace::Impl::create_instance(Memory m,
+						     const std::vector<size_t>& field_sizes,
+						     size_t block_size, ReductionOpID redop /*=0*/)
     {
         if (!m.exists())
         {
@@ -3079,43 +3123,42 @@ namespace RegionRuntime {
         // First try to create the location in the memory, if there is no space
         // don't bother trying to make the data
         MemoryImpl *mem = Runtime::get_runtime()->get_memory_impl(m);
-        if (redop == 0)
-        {
-          // No reduction op
-          char *ptr = (char*)mem->allocate_space(num_elmts*elmt_size);
-          if (ptr == NULL)
-          {
-            return RegionInstance::NO_INST;
-          }
-          PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-          IndexSpace r = { index };
-          RegionInstance::Impl* impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, elmt_size, ptr, NULL/*redop*/, NULL/*parent instance*/);
-          RegionInstance inst = impl->get_instance();
-          instances.insert(inst);
-          PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
-          return inst;
-        }
-        else
-        {
-          const ReductionOpUntyped *op = Runtime::get_runtime()->get_reduction_op(redop);
-          char *ptr = (char*)mem->allocate_space(num_elmts*(op->sizeof_rhs));
-          if (ptr == NULL)
-          {
-            return RegionInstance::NO_INST;
-          }
-          // Initialize the reduction instance 
-          op->init(ptr, num_elmts);
-          // Set everything up
-          PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
-          IndexSpace r = { index };
-          RegionInstance::Impl *impl = Runtime::get_runtime()->get_free_instance(r,m,num_elmts, op->sizeof_rhs, ptr, op, NULL/*parent instance*/);
-          RegionInstance inst = impl->get_instance();
-          instances.insert(inst);
-          PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
-          return inst;
-        }
+
+	assert(redop == 0); // SJT: figure out how to handle reduction ops in a bit
+
+	// No reduction op
+	size_t elmt_size = 0;
+	for(std::vector<size_t>::const_iterator it = field_sizes.begin();
+	    it != field_sizes.end();
+	    it++)
+	  elmt_size += *it;
+
+	// also have to round num_elmts up to block size
+	size_t rounded_num_elmts = num_elmts;
+	if(block_size > 1) {
+	  size_t leftover = num_elmts % block_size;
+	  if(leftover)
+	    rounded_num_elmts += block_size - leftover;
+	}
+
+	char *ptr = (char*)mem->allocate_space(rounded_num_elmts * elmt_size);
+	if (ptr == NULL) {
+	  return RegionInstance::NO_INST;
+	}
+	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+	IndexSpace r = { index };
+	RegionInstance::Impl* impl = Runtime::get_runtime()->get_free_instance(r, m,
+									       num_elmts, 
+									       field_sizes,
+									       elmt_size, 
+									       block_size, ptr, NULL/*redop*/, NULL/*parent instance*/);
+	RegionInstance inst = impl->get_instance();
+	instances.insert(inst);
+	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+	return inst;
     }
 
+#if 0
     RegionInstance IndexSpace::Impl::create_instance(Memory m, ReductionOpID redopid, off_t list_size,
                                                               RegionInstance parent_inst) 
     {
@@ -3147,6 +3190,7 @@ namespace RegionRuntime {
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
         return inst;
     }
+#endif
 
     void IndexSpace::Impl::destroy_allocator(IndexSpaceAllocator a)
     {
@@ -3172,6 +3216,34 @@ namespace RegionRuntime {
 	return lock->get_lock();
     }
 
+    static size_t find_field(const std::vector<size_t>& field_sizes,
+			     size_t offset, size_t size,
+			     size_t& field_start, size_t& within_field)
+    {
+      size_t start = 0;
+      for(std::vector<size_t>::const_iterator it = field_sizes.begin();
+	  it != field_sizes.end(); 
+	  it++) {
+	if(offset < *it) {
+	  // we're in this field
+	  field_start = start;
+	  within_field = offset;
+	  if((offset + size) <= *it) {
+	    return size;
+	  } else {
+	    return (*it - offset);
+	  }
+	} else {
+	  // try the next field
+	  start += *it;
+	  offset -= *it;
+	}
+      }
+      // fall through means there is no field
+      return 0;
+    }
+	  
+      
     namespace RangeExecutors {
       class GatherScatter {
       public:
@@ -3192,22 +3264,56 @@ namespace RegionRuntime {
 	  delete[] buffer;
 	}
 
-        void do_span(int offset, int count)
+        void do_span(int start, int count)
         {
-	  // gather data from source
-	  int write_offset = 0;
-	  for(std::vector<IndexSpace::CopySrcDstField>::const_iterator i = srcs.begin(); i != srcs.end(); i++) {
-	    i->inst.get_accessor().read_partial(ptr_t<void>(offset), i->offset, 
-						buffer + write_offset, i->size);
-	    write_offset += i->size;
-	  }
+	  for(int index = start; index < (start + count); index++) {
+	    // gather data from source
+	    int write_offset = 0;
+	    for(std::vector<IndexSpace::CopySrcDstField>::const_iterator i = srcs.begin(); i != srcs.end(); i++) {
+	      RegionInstance::Impl *inst = Runtime::get_runtime()->get_instance_impl(i->inst);
+	      size_t offset = i->offset;
+	      size_t size = i->size;
+	      while(size > 0) {
+		size_t field_start, within_field;
+		size_t bytes = find_field(inst->get_field_sizes(), offset, size,
+					field_start, within_field);
+		// printf("RD(%d,%d,%d)(%zd,%zd,%zd,%zd,%zd)(%p,%p)\n",
+		//        i->inst.id, i->offset, i->size, offset, size, field_start, within_field, bytes,
+		//        inst->get_base_ptr(),
+		//        inst->get_address(index, field_start, within_field));
+		assert(bytes > 0);
+		memcpy(buffer + write_offset, 
+		       inst->get_address(index, field_start, within_field),
+		       bytes);
+		offset += bytes;
+		size -= bytes;
+		write_offset += bytes;
+	      }
+	    }
 
-	  // now scatter to destination
-	  int read_offset = 0;
-	  for(std::vector<IndexSpace::CopySrcDstField>::const_iterator i = dsts.begin(); i != dsts.end(); i++) {
-	    i->inst.get_accessor().write_partial(ptr_t<void>(offset), i->offset, 
-						buffer + read_offset, i->size);
-	    read_offset += i->size;
+	    // now scatter to destination
+	    int read_offset = 0;
+	    for(std::vector<IndexSpace::CopySrcDstField>::const_iterator i = dsts.begin(); i != dsts.end(); i++) {
+	      RegionInstance::Impl *inst = Runtime::get_runtime()->get_instance_impl(i->inst);
+	      size_t offset = i->offset;
+	      size_t size = i->size;
+	      while(size > 0) {
+		size_t field_start, within_field;
+		size_t bytes = find_field(inst->get_field_sizes(), offset, size,
+					  field_start, within_field);
+		// printf("WR(%d,%d,%d)(%zd,%zd,%zd,%zd,%zd)(%p,%p)\n",
+		//        i->inst.id, i->offset, i->size, offset, size, field_start, within_field, bytes,
+		//        inst->get_base_ptr(),
+		//        inst->get_address(index, field_start, within_field));
+		assert(bytes > 0);
+		memcpy(inst->get_address(index, field_start, within_field),
+		       buffer + read_offset, 
+		       bytes);
+		offset += bytes;
+		size -= bytes;
+		read_offset += bytes;
+	      }
+	    }
 	  }
 	}
 
@@ -3234,8 +3340,15 @@ namespace RegionRuntime {
       std::vector<CopySrcDstField> srcs, dsts;
 
       srcs.push_back(CopySrcDstField(src_inst, 0, elem_size));
-      dsts.push_back(CopySrcDstField(src_inst, 0, elem_size));
+      dsts.push_back(CopySrcDstField(dst_inst, 0, elem_size));
 
+      return copy(srcs, dsts, wait_on);
+    }
+    
+    Event IndexSpace::Impl::copy(const std::vector<CopySrcDstField>& srcs,
+				 const std::vector<CopySrcDstField>& dsts,
+				 Event wait_on)
+    {
       CopyOperation *co = new CopyOperation(srcs, dsts, 
 					    get_element_mask(), get_element_mask(),
 					    0);
@@ -3248,7 +3361,25 @@ namespace RegionRuntime {
 	return Event::NO_EVENT;
       }
     }
-    
+
+    Event IndexSpace::Impl::copy(const std::vector<CopySrcDstField>& srcs,
+				 const std::vector<CopySrcDstField>& dsts,
+				 const ElementMask& mask,
+				 Event wait_on)
+    {
+      CopyOperation *co = new CopyOperation(srcs, dsts, 
+					    get_element_mask(), mask,
+					    0);
+      if(co->register_copy(wait_on)) {
+	// copy will happen some time in the future
+	return co->get_done_event();
+      } else {
+	// copy already occurred - we can free the CopyOperation object
+	delete co;
+	return Event::NO_EVENT;
+      }
+    }
+
     ////////////////////////////////////////////////////////
     // Machine 
     ////////////////////////////////////////////////////////
@@ -3593,7 +3724,13 @@ namespace RegionRuntime {
 	{
 		Memory m;
 		m.id = 0;
-		instances.push_back(new RegionInstance::Impl(i,IndexSpace::NO_SPACE,m,0,0));
+		instances.push_back(new RegionInstance::Impl(i,
+							     IndexSpace::NO_SPACE,
+							     m,
+							     0,
+							     std::vector<size_t>(),
+							     0,
+							     0));
                 if (i != 0)
                   free_instances.push_back(instances.back());
 	}
@@ -3787,7 +3924,7 @@ namespace RegionRuntime {
         // Create a whole bunch of other metas too while we're here
         for (unsigned idx=1; idx < BASE_METAS; idx++)
         {
-          metadatas.push_back(new IndexSpace::Impl(index+idx,0,0,false));
+          metadatas.push_back(new IndexSpace::Impl(index+idx,0,false));
           free_metas.push_back(metadatas.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
@@ -3817,7 +3954,7 @@ namespace RegionRuntime {
         // Create a whole bunch of other metas too while we're here
         for (unsigned idx=1; idx < BASE_METAS; idx++)
         {
-          metadatas.push_back(new IndexSpace::Impl(index+idx,0,0,false));
+          metadatas.push_back(new IndexSpace::Impl(index+idx,0,false));
           free_metas.push_back(metadatas.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&metadata_lock));
@@ -3857,8 +3994,10 @@ namespace RegionRuntime {
     }
 
     RegionInstance::Impl* Runtime::get_free_instance(IndexSpace r, Memory m, size_t num_elmts, 
-                                                    size_t elmt_size, char *ptr, const ReductionOpUntyped *redop,
-                                                    RegionInstance::Impl *parent)
+						     const std::vector<size_t>& field_sizes,
+						     size_t elmt_size, size_t block_size,
+						     char *ptr, const ReductionOpUntyped *redop,
+						     RegionInstance::Impl *parent)
     {
         PTHREAD_SAFE_CALL(pthread_mutex_lock(&free_inst_lock));
         if (!free_instances.empty())
@@ -3866,7 +4005,8 @@ namespace RegionRuntime {
           RegionInstance::Impl *result = free_instances.front();
           free_instances.pop_front();
           PTHREAD_SAFE_CALL(pthread_mutex_unlock(&free_inst_lock));
-          bool activated = result->activate(r, m, num_elmts, elmt_size, ptr, redop, parent);
+          bool activated = result->activate(r, m, num_elmts, field_sizes, elmt_size, block_size,
+					    ptr, redop, parent);
 #ifdef DEBUG_LOW_LEVEL
           assert(activated);
 #endif
@@ -3875,12 +4015,19 @@ namespace RegionRuntime {
 	// Nothing free so make a new one
 	PTHREAD_SAFE_CALL(pthread_rwlock_wrlock(&instance_lock));
 	unsigned int index = instances.size();
-	instances.push_back(new RegionInstance::Impl(index,r,m,num_elmts,elmt_size,true,ptr,redop,parent));
+	instances.push_back(new RegionInstance::Impl(index, r, m, num_elmts, field_sizes,
+						     elmt_size, block_size, true, ptr, redop, parent));
 	RegionInstance::Impl *result = instances[index];
         // Create a whole bunch of other instances while we're here
         for (unsigned idx=1; idx < BASE_INSTANCES; idx++)
         {
-          instances.push_back(new RegionInstance::Impl(index+idx,IndexSpace::NO_SPACE,m,0,0,false));
+          instances.push_back(new RegionInstance::Impl(index+idx,
+						       IndexSpace::NO_SPACE,
+						       m,
+						       0,
+						       std::vector<size_t>(),
+						       0,
+						       false));
           free_instances.push_back(instances.back());
         }
 	PTHREAD_SAFE_CALL(pthread_rwlock_unlock(&instance_lock));
