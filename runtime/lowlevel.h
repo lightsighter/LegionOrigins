@@ -171,7 +171,7 @@ namespace RegionRuntime {
     class ElementMask {
     public:
       ElementMask(void);
-      ElementMask(int num_elements, int first_element = 0);
+      explicit ElementMask(int num_elements, int first_element = 0);
       ElementMask(const ElementMask &copy_from, int num_elements = -1, int first_element = 0);
 
       void init(int _first_element, int _num_elements, Memory _memory, off_t _offset);
