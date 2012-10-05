@@ -1111,13 +1111,19 @@ namespace RegionRuntime {
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
+        // No need to initialize state since we just made these trees
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
+        RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
+        state.context_top = true;
       }
       else
       {
         PartitionNode *top_node = get_node(req.partition);
+        // No need to initialize state since we just made these trees
         top_node->parent->unpack_physical_state(ctx, derez, false/*recurse*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
+        RegionTreeNode::PhysicalState &state = top_node->parent->physical_states[ctx];
+        state.context_top = true;
       }
     }
 
@@ -1472,15 +1478,15 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     size_t RegionTreeForest::compute_region_tree_state_return(const RegionRequirement &req, 
-                                                              ContextID ctx, SendingMode mode)
+                                                              ContextID ctx, bool all, SendingMode mode)
     //--------------------------------------------------------------------------
     {
-      
+        
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
-                                                          SendingMode mode, Serializer &rez)
+                                                          bool all, SendingMode mode, Serializer &rez)
     //--------------------------------------------------------------------------
     {
 
@@ -1488,7 +1494,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx,
-                                                            SendingMode mode, Deserializer &derez)
+                                                            bool all, SendingMode mode, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
 
@@ -2803,7 +2809,7 @@ namespace RegionRuntime {
         Color next_child = az.path.back();
         std::vector<FieldState> new_states;
         new_states.push_back(FieldState(user, user.field_mask, next_child));
-        merge_new_field_states(state.field_states, new_states);
+        merge_new_field_states(state, new_states, false/*add states*/);
         // Then continue the traversal
         RegionTreeNode *child_node = get_tree_child(next_child);
         child_node->open_logical_tree(user, az);
@@ -2895,16 +2901,16 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeNode::merge_new_field_states(std::list<FieldState> &old_states,
-                                            std::vector<FieldState> &new_states)
+    void RegionTreeNode::merge_new_field_states(GenericState &gstate,
+                          std::vector<FieldState> &new_states, bool add_states)
     //--------------------------------------------------------------------------
     {
       for (unsigned idx = 0; idx < new_states.size(); idx++)
       {
         const FieldState &next = new_states[idx];
         bool added = false;
-        for (std::list<FieldState>::iterator it = old_states.begin();
-              it != old_states.end(); it++)
+        for (std::list<FieldState>::iterator it = gstate.field_states.begin();
+              it != gstate.field_states.end(); it++)
         {
           if (it->overlap(next))
           {
@@ -2914,15 +2920,20 @@ namespace RegionRuntime {
           }
         }
         if (!added)
-          old_states.push_back(next);
+          gstate.field_states.push_back(next);
+      }
+      if (add_states)
+      {
+        gstate.add_states.insert(gstate.add_states.end(),
+                        new_states.begin(),new_states.end());
       }
 #ifdef DEBUG_HIGH_LEVEL
       {
         // Each field should appear in at most one of these states
         // at any point in time
         FieldMask previous;
-        for (std::list<FieldState>::const_iterator it = old_states.begin();
-              it != old_states.end(); it++)
+        for (std::list<FieldState>::const_iterator it = gstate.field_states.begin();
+              it != gstate.field_states.end(); it++)
         {
           assert(!(previous & it->valid_fields));
           previous |= it->valid_fields;
@@ -3109,7 +3120,7 @@ namespace RegionRuntime {
       if (!!open_mask)
         new_states.push_back(FieldState(user, open_mask, next_child));
       // Merge the new field states into the old field states
-      merge_new_field_states(state.field_states, new_states);
+      merge_new_field_states(state, new_states, true/*add states*/);
         
       closer.post_siphon();
 
@@ -3321,6 +3332,7 @@ namespace RegionRuntime {
       {
         LogicalState &state = logical_states[ctx];
         state.field_states.clear();
+        state.add_states.clear();
         state.curr_epoch_users.clear();
         state.prev_epoch_users.clear();
       }
@@ -3373,8 +3385,11 @@ namespace RegionRuntime {
       if (physical_states.find(ctx) == physical_states.end())
         physical_states[ctx] = PhysicalState();
       PhysicalState &state = physical_states[ctx];
+      state.field_states.clear();
+      state.add_states.clear();
       state.valid_views.clear();
       state.dirty_mask = FieldMask();
+      state.added_views.clear();
       state.context_top = false;
       // Now do all our children
       for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
@@ -3400,12 +3415,27 @@ namespace RegionRuntime {
         rm.path.pop_back();
         if (rm.sanitizing)
         {
+          // Figure out if we need to siphon the children here.
+          // Read-only and reduce need to siphon since they can
+          // have many simultaneous mapping operations happening which
+          // will need to be merged later.
+          if (IS_READ_ONLY(user.usage) || IS_REDUCE(user.usage))
+          {
+            PhysicalCloser closer(user, rm, this, IS_READ_ONLY(user.usage));
+            siphon_open_children(closer, state, user, user.field_mask);
+            // Make sure that the close operation succeeded
+            if (!closer.success)
+            {
+              rm.success = false;
+              return;
+            }
+          }
+
           // If we're sanitizing, get views for all of the regions with
           // valid data and make them valid here
           // Get a list of valid views for this region and add them to
           // the valid instances
-          update_valid_views(rm.ctx, user.field_mask);
-          // No need to close anything up since we're sanitizing
+          find_all_valid_views(rm.ctx, user.field_mask);
           rm.success = true;
         }
         else
@@ -3476,7 +3506,7 @@ namespace RegionRuntime {
         rm.path.pop_back();
         if (rm.sanitizing)
         {
-          update_valid_views(rm.ctx, user.field_mask);
+          find_all_valid_views(rm.ctx, user.field_mask);
           rm.success = true;
         }
         else
@@ -3500,7 +3530,7 @@ namespace RegionRuntime {
         // Update the field states
         std::vector<FieldState> new_states;
         new_states.push_back(FieldState(user, user.field_mask, next_part));
-        merge_new_field_states(state.field_states, new_states);
+        merge_new_field_states(state, new_states, true/*add states*/);
         // Continue the traversal
         PartitionNode *child_node = get_child(next_part);
         child_node->open_physical_tree(user, rm);
@@ -3621,6 +3651,15 @@ namespace RegionRuntime {
         // and remove the unnecessary reference that we had on it
         state.valid_views[new_view] |= valid_mask;
         new_view->remove_reference();
+      }
+      // Also handle this for the added views
+      if (state.added_views.find(new_view) == state.added_views.end())
+      {
+        state.added_views[new_view] = valid_mask;
+      }
+      else
+      {
+        state.added_views[new_view] |= valid_mask;
       }
     }
 
@@ -4000,7 +4039,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::update_valid_views(ContextID ctx, const FieldMask &field_mask)
+    void RegionNode::find_all_valid_views(ContextID ctx, const FieldMask &field_mask)
     //--------------------------------------------------------------------------
     {
       std::list<std::pair<InstanceView*,FieldMask> > new_valid_views;
@@ -4274,7 +4313,7 @@ namespace RegionRuntime {
         }
       }
       // Now merge the field states into the existing state
-      merge_new_field_states(state.field_states, new_field_states);
+      merge_new_field_states(state, new_field_states, false/*add states*/);
     }
 
     /////////////////////////////////////////////////////////////
@@ -4337,6 +4376,7 @@ namespace RegionRuntime {
       {
         LogicalState &state = logical_states[ctx];
         state.field_states.clear();
+        state.add_states.clear();
         state.curr_epoch_users.clear();
         state.prev_epoch_users.clear();
       }
@@ -4394,8 +4434,11 @@ namespace RegionRuntime {
       PhysicalState &state = physical_states[ctx];
 #ifdef DEBUG_HIGH_LEVEL
       assert(state.valid_views.empty());
+      assert(state.added_views.empty());
       assert(!state.context_top);
 #endif
+      state.field_states.clear();
+      state.add_states.clear();
       state.dirty_mask = FieldMask();
       // Handle all our children
       for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
@@ -4421,7 +4464,40 @@ namespace RegionRuntime {
         assert(rm.sanitizing); // This should only be the end if we're sanitizing
 #endif
         rm.path.pop_back();
-        parent->update_valid_views(rm.ctx, user.field_mask);
+        // If we're doing a write where each sub-task is going to get an
+        // independent region in the partition, then we're done.  Otherwise
+        // for read-only and reduce, we need to siphon all the open children.
+        if (IS_READ_ONLY(user.usage) || IS_REDUCE(user.usage))
+        {
+          // If the partition is disjoint sanitize each of the children seperately
+          // otherwise, we only need to do this one time
+          if (disjoint)
+          {
+            for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+                  it != color_map.end(); it++)
+            {
+              PhysicalCloser closer(user, rm, parent, IS_READ_ONLY(user.usage));
+              siphon_open_children(closer, state, user, user.field_mask, it->first);
+              if (!closer.success)
+              {
+                rm.success = false;
+                return;
+              }
+            }
+          }
+          else
+          {
+            PhysicalCloser closer(user, rm, parent, IS_READ_ONLY(user.usage));
+            siphon_open_children(closer, state, user, user.field_mask);
+            if (!closer.success)
+            {
+              rm.success = false;
+              return;
+            }
+          }
+        }
+
+        parent->find_all_valid_views(rm.ctx, user.field_mask);
         // No need to close anything up here since we were just sanitizing
         rm.success = true;
       }
@@ -4465,7 +4541,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(rm.sanitizing); // should only end on a partition if sanitizing
 #endif
-        parent->update_valid_views(rm.ctx, user.field_mask);
+        parent->find_all_valid_views(rm.ctx, user.field_mask);
         rm.success = true;
       }
       else
@@ -4475,7 +4551,7 @@ namespace RegionRuntime {
         // Update the field states
         std::vector<FieldState> new_states;
         new_states.push_back(FieldState(user, user.field_mask, next_region));
-        merge_new_field_states(state.field_states, new_states);
+        merge_new_field_states(state, new_states, true/*add states*/);
         // Continue the traversal
         RegionNode *child_node = get_child(next_region);
         child_node->open_physical_tree(user, rm); 
@@ -4741,7 +4817,7 @@ namespace RegionRuntime {
           }
         }
       }
-      merge_new_field_states(state.field_states, new_field_states);
+      merge_new_field_states(state, new_field_states, true/*add states*/);
     }
 
     /////////////////////////////////////////////////////////////

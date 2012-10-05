@@ -92,6 +92,7 @@ namespace RegionRuntime {
       ERROR_INVALID_PROJECTION_ID = 57,
       ERROR_NON_DISJOINT_PARTITION = 58,
       ERROR_BAD_PROJECTION_USE = 59,
+      ERROR_INDEPENDENT_SLICES_VIOLATION = 60,
     };
 
     // enum and namepsaces don't really get along well

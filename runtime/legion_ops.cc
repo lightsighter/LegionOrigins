@@ -1,6 +1,7 @@
 
 #include "legion_ops.h"
 #include "region_tree.h"
+#include <algorithm>
 
 #define PRINT_REG(reg) (reg).index_space.id,(reg).field_space.id, (reg).tree_id
 
@@ -200,8 +201,10 @@ namespace RegionRuntime {
         inst_duplicates.insert(*it);
       }
       
-      // If this is a projection requirement, partition must be disjoint
-      if (req.handle_type == PROJECTION)
+      // If this is a projection requirement and the child region selected will 
+      // need to be in exclusive mode then the partition must be disjoint
+      if ((req.handle_type == PROJECTION) && 
+          (IS_WRITE(req)))
       {
         lock_context();
         if (forest_ctx->is_disjoint(req.partition))
@@ -1157,8 +1160,8 @@ namespace RegionRuntime {
               }
             case ERROR_NON_DISJOINT_PARTITION:
               {
-                log_region(LEVEL_ERROR,"Non disjoint partition selected for region requirement %d of task %s.  All projection partitions "
-                                        "must be disjoint", idx, this->variants->name);
+                log_region(LEVEL_ERROR,"Non disjoint partition selected for writing region requirement %d of task %s.  All projection partitions "
+                                        "which are not read-only and not reduce must be disjoint", idx, this->variants->name);
                 exit(ERROR_NON_DISJOINT_PARTITION);
               }
             case ERROR_FIELD_SPACE_FIELD_MISMATCH:
@@ -3359,7 +3362,8 @@ namespace RegionRuntime {
           {
             if (non_virtual_mapped_region[idx])
             {
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL);
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+                                              IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL);
             }
           }
           // Now pack everything up and send it back
@@ -3375,7 +3379,8 @@ namespace RegionRuntime {
           {
             if (non_virtual_mapped_region[idx])
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL, rez);
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+                                              IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL, rez);
             }
           }
           unlock_context();
@@ -3771,12 +3776,14 @@ namespace RegionRuntime {
           {
             if (!non_virtual_mapped_region[idx])
             {
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE);
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+                                                IS_WRITE(regions[idx]), RegionTreeForest::PRIVILEGE);
             }
             else
             {
               // Physical was already sent back, send back the other fields
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF);
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+                                                IS_WRITE(regions[idx]), RegionTreeForest::DIFF);
             }
           }
           // Finally pack up our source copy instances to send back
@@ -3790,11 +3797,13 @@ namespace RegionRuntime {
           {
             if (!non_virtual_mapped_region[idx])
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, rez);
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+                                                IS_WRITE(regions[idx]), RegionTreeForest::PRIVILEGE, rez);
             }
             else
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF, rez);
+              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+                                                IS_WRITE(regions[idx]), RegionTreeForest::DIFF, rez);
             }
           }
           // Pack up the source copy instances
@@ -3997,7 +4006,8 @@ namespace RegionRuntime {
         if (non_virtual_mapped_region[idx])
         {
           ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
-          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PHYSICAL, derez); 
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, IS_WRITE(regions[idx]), 
+                                                                  RegionTreeForest::PHYSICAL, derez); 
         }
       }
       unlock_context();
@@ -4024,11 +4034,13 @@ namespace RegionRuntime {
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         if (!non_virtual_mapped_region[idx])
         {
-          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PRIVILEGE, derez);
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, IS_WRITE(regions[idx]), 
+                                                                  RegionTreeForest::PRIVILEGE, derez);
         }
         else
         {
-          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::DIFF, derez);
+          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, IS_WRITE(regions[idx]), 
+                                                                        RegionTreeForest::DIFF, derez);
         }
       }
       unpack_source_copy_instances_return(derez,forest_ctx);
@@ -4707,6 +4719,10 @@ namespace RegionRuntime {
         }
         reduction_future = NULL;
       }
+      source_copy_instances.clear();
+#ifdef DEBUG_HIGH_LEVEL
+      slice_overlap.clear();
+#endif
       deactivate_multi();
       runtime->free_index_task(this);
     }
@@ -5024,7 +5040,7 @@ namespace RegionRuntime {
         if (non_virtual_mappings[idx] == num_points)
         {
           ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
-          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PHYSICAL, derez);
+          unpack_tree_state_return(idx, phy_ctx, RegionTreeForest::PHYSICAL, derez);
         }
       }
       unlock_context();
@@ -5048,11 +5064,11 @@ namespace RegionRuntime {
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         if (virtual_mappings[idx] > 0)
         {
-          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::PRIVILEGE, derez);
+          unpack_tree_state_return(idx, phy_ctx, RegionTreeForest::PRIVILEGE, derez);
         }
         else
         {
-          forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, RegionTreeForest::DIFF, derez);
+          unpack_tree_state_return(idx, phy_ctx, RegionTreeForest::DIFF, derez);
         }
       }
       size_t num_points;
@@ -5503,6 +5519,105 @@ namespace RegionRuntime {
       // No need to deactivate our slices since they will deactivate themsevles
       // We also don't need to deactivate ourself since our enclosing parent
       // task will take care of that
+    }
+
+#ifdef DEBUG_HIGH_LEVEL
+    //--------------------------------------------------------------------------
+    void IndexTask::check_overlapping_slices(unsigned idx, const std::set<LogicalRegion> &touched_regions)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+      if (slice_overlap.find(idx) == slice_overlap.end())
+      {
+        slice_overlap[idx] = touched_regions;
+      }
+      else
+      {
+        std::set<LogicalRegion> &already_touched = slice_overlap[idx];
+        std::vector<LogicalRegion> overlap;
+        std::vector<LogicalRegion>::iterator end_it;
+        end_it = std::set_intersection(already_touched.begin(), already_touched.end(),
+                                       touched_regions.begin(), touched_regions.end(),
+                                       overlap.begin());
+        if (end_it != overlap.begin())
+        {
+          log_task(LEVEL_ERROR,"Violation of the independent slices rule for projection region requirement %d "
+                                " of task %s.  The following regions where used in multiple slices:",
+                                idx, this->variants->name);
+          for (std::vector<LogicalRegion>::iterator it = overlap.begin();
+                it != end_it; it++)
+          {
+            log_task(LEVEL_ERROR,"Logical Region (%x,%x,%x)",
+                      it->tree_id, it->index_space.id, it->field_space.id); 
+          }
+          exit(ERROR_INDEPENDENT_SLICES_VIOLATION);
+        }
+        already_touched.insert(touched_regions.begin(), touched_regions.end());
+      }
+      unlock();
+    }
+#endif
+    
+    //--------------------------------------------------------------------------
+    void IndexTask::unpack_tree_state_return(unsigned idx, ContextID ctx, 
+              RegionTreeForest::SendingMode mode, Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      // If mode is a DIFF, make sure that the difference isn't empty
+      if (mode == RegionTreeForest::DIFF)
+      {
+        std::set<FieldID> packing_fields;
+        for (std::vector<FieldID>::const_iterator it = regions[idx].instance_fields.begin();
+              it != regions[idx].instance_fields.end(); it++)
+        {
+          packing_fields.erase(*it);
+        }
+        if (packing_fields.empty())
+          return;
+      }
+      if (regions[idx].handle_type == SINGULAR)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!IS_WRITE(regions[idx])); // If this was the case it should have been premapped
+#endif
+        forest_ctx->unpack_region_tree_state_return(regions[idx], ctx, false/*all*/, mode, derez);
+      }
+      else
+      {
+        if (IS_WRITE(regions[idx]))
+        {
+          size_t num_regions;
+          derez.deserialize(num_regions);
+          std::set<LogicalRegion> touched_regions;
+          // Pretend this is a single region coming back
+          regions[idx].handle_type = SINGULAR;
+          for (unsigned cnt = 0; cnt <= num_regions; cnt++)
+          {
+            LogicalRegion touched;
+            derez.deserialize(touched);
+            touched_regions.insert(touched);
+            regions[idx].region = touched;
+            forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, true/*all*/,
+                                                        mode, derez);
+          }
+          // Set the handle type back
+          regions[idx].handle_type = PROJECTION;
+          // If this is not a DIFF, then check to make sure we didn't overlap
+          // slices at any point.  If it is a DIFF then we already did this check
+          // when having the PHYSICAL parts come back
+#ifdef DEBUG_HIGH_LEVEL
+          if (mode != RegionTreeForest::DIFF)
+          {
+            check_overlapping_slices(idx, touched_regions);  
+          }
+#endif
+        }
+        else
+        {
+          forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, false/*all*/,
+                                                      mode, derez);
+        }
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -6454,7 +6569,7 @@ namespace RegionRuntime {
           {
             // Everybody mapped a region in this tree, it is fully mapped
             // so send it back
-            buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL);
+            buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::PHYSICAL);
           }
         }
         // Now pack everything up
@@ -6472,7 +6587,7 @@ namespace RegionRuntime {
         {
           if (non_virtual_mappings[idx] == points.size())
           {
-            forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PHYSICAL, rez);
+            pack_tree_state_return(idx, ctx_id, RegionTreeForest::PHYSICAL, rez);
           }
         }
         unlock_context();
@@ -6484,6 +6599,23 @@ namespace RegionRuntime {
       {
         // If we're not remote we can just tell our index space context directly
         index_owner->slice_start(denominator, points.size(), non_virtual_mappings);
+#ifdef DEBUG_HIGH_LEVEL
+        // Also check for overlapping slices
+        for (unsigned idx = 0; idx < regions.size(); idx++)
+        {
+          if ((regions[idx].handle_type == PROJECTION) &&
+              (IS_WRITE(regions[idx])))
+          {
+            std::set<LogicalRegion> touched_regions;
+            for (std::vector<PointTask*>::const_iterator it = points.begin();
+                  it != points.end(); it++)
+            {
+              touched_regions.insert((*it)->regions[idx].region);
+            }
+            index_owner->check_overlapping_slices(idx, touched_regions);
+          }
+        }
+#endif
       }
     }
 
@@ -6523,12 +6655,12 @@ namespace RegionRuntime {
             // If we didn't send it back before, we need to send it back now
             if (non_virtual_mappings[idx] < points.size())
             {
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE);
+              buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::PRIVILEGE);
             }
             else
             {
               // Send back the ones that we have privileges on, but didn't make a physical instance
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF);
+              buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::DIFF);
             }
           }
           buffer_size += sizeof(size_t);
@@ -6554,11 +6686,11 @@ namespace RegionRuntime {
           {
             if (non_virtual_mappings[idx] < points.size())
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, rez);
+              pack_tree_state_return(idx, ctx_id, RegionTreeForest::PRIVILEGE, rez);
             }
             else
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, RegionTreeForest::DIFF, rez);
+              pack_tree_state_return(idx, ctx_id, RegionTreeForest::DIFF, rez);
             }
           }
           rez.serialize<size_t>(points.size());
@@ -6679,6 +6811,112 @@ namespace RegionRuntime {
       // Finally deactivate ourselves.  Note we do this regardless of whether we're remote
       // or not since all Slice Tasks are responsible for deactivating themselves
       this->deactivate();
+    }
+
+    //--------------------------------------------------------------------------
+    size_t SliceTask::compute_state_return_size(unsigned idx, ContextID ctx, RegionTreeForest::SendingMode mode)
+    //--------------------------------------------------------------------------
+    {
+      // If mode is a DIFF, make sure that the difference isn't empty
+      if (mode == RegionTreeForest::DIFF)
+      {
+        std::set<FieldID> packing_fields;
+        for (std::vector<FieldID>::const_iterator it = regions[idx].instance_fields.begin();
+              it != regions[idx].instance_fields.end(); it++)
+        {
+          packing_fields.erase(*it);
+        }
+        if (packing_fields.empty())
+          return 0;
+      }
+      size_t result = 0;
+      if (regions[idx].handle_type == SINGULAR)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!IS_WRITE(regions[idx])); // if this was the case it should have been premapped
+#endif
+        result += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+                                                    false/*all*/, mode);
+      }
+      else
+      {
+        if (IS_WRITE(regions[idx]))
+        {
+          // Send back each of the points individually
+          std::set<LogicalRegion> sending_set;
+          result += sizeof(size_t); // number of regions touched
+          for (std::vector<PointTask*>::const_iterator it = points.begin();
+                it != points.end(); it++)
+          {
+            if (sending_set.find((*it)->regions[idx].region) == sending_set.end())
+            {
+              sending_set.insert((*it)->regions[idx].region);
+              result += forest_ctx->compute_region_tree_state_return((*it)->regions[idx], ctx_id,
+                                                      true/*all*/, mode);
+            }
+          }
+          result += (sending_set.size() * sizeof(LogicalRegion));
+        }
+        else
+        {
+          // We this was a read-only or reduce requirement so we
+          // only need to send back the diff
+          result += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id,
+                                                      false/*all*/, mode);
+        }
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void SliceTask::pack_tree_state_return(unsigned idx, ContextID ctx, 
+                RegionTreeForest::SendingMode mode, Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      // If mode is a DIFF, make sure that the difference isn't empty
+      if (mode == RegionTreeForest::DIFF)
+      {
+        std::set<FieldID> packing_fields;
+        for (std::vector<FieldID>::const_iterator it = regions[idx].instance_fields.begin();
+              it != regions[idx].instance_fields.end(); it++)
+        {
+          packing_fields.erase(*it);
+        }
+        if (packing_fields.empty())
+          return;
+      }
+      if (regions[idx].handle_type == SINGULAR)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!IS_WRITE(regions[idx])); // if this was the case it should have been premapped
+#endif
+        forest_ctx->pack_region_tree_state_return(regions[idx], ctx, false/*all*/, mode, rez);
+      }
+      else
+      {
+        if (IS_WRITE(regions[idx]))
+        {
+          std::map<LogicalRegion,PointTask*> sending_set;
+          for (std::vector<PointTask*>::const_iterator it = points.begin();
+                it != points.end(); it++)
+          {
+            sending_set[(*it)->regions[idx].region] = *it;
+          }
+          rez.serialize(sending_set.size());
+          for (std::map<LogicalRegion,PointTask*>::const_iterator it = sending_set.begin();
+                it != sending_set.end(); it++)
+          {
+            rez.serialize(it->first);
+            forest_ctx->pack_region_tree_state_return(it->second->regions[idx], ctx_id,
+                                                        true/*all*/, mode, rez);
+          }
+        }
+        else
+        {
+          forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+                                                        false/*all*/, mode, rez);
+        }
+      }
     }
 
   }; // namespace HighLevel

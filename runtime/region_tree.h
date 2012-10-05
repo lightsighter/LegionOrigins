@@ -108,9 +108,9 @@ namespace RegionRuntime {
       void unpack_region_tree_updates_return(Deserializer &derez);
     public:
       // Packing and unpacking state return
-      size_t compute_region_tree_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode);
-      void pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode, Serializer &rez);
-      void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode,  Deserializer &derez);
+      size_t compute_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode);
+      void pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode, Serializer &rez);
+      void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode, Deserializer &derez);
     public:
       size_t compute_created_state_return(ContextID ctx);
       void pack_created_state_return(ContextID ctx, Serializer &rez);
@@ -380,6 +380,8 @@ namespace RegionRuntime {
       struct GenericState {
       public:
         std::list<FieldState> field_states;
+        // The following data structure tracks diffs for sending back
+        std::vector<FieldState> add_states;
       };
       struct LogicalState : public GenericState {
       public:
@@ -390,6 +392,8 @@ namespace RegionRuntime {
       public:
         std::map<InstanceView*,FieldMask> valid_views;
         FieldMask dirty_mask;
+        // Used for tracking diffs in the physical tree for sending back
+        std::map<InstanceView*,FieldMask> added_views;
         bool context_top;
       };
     public:
@@ -411,7 +415,7 @@ namespace RegionRuntime {
       // Logical region helper functions
       FieldMask perform_dependence_checks(const LogicalUser &user, 
                     const std::list<LogicalUser> &users, const FieldMask &user_mask);
-      void merge_new_field_states(std::list<FieldState> &old_states, std::vector<FieldState> &new_states);
+      void merge_new_field_states(GenericState &gstate, std::vector<FieldState> &new_states, bool add_states);
       virtual bool are_children_disjoint(Color c1, Color c2) = 0;
       virtual bool are_closing_partition(void) const = 0;
       virtual RegionTreeNode* get_tree_child(Color c) = 0;
@@ -475,7 +479,7 @@ namespace RegionRuntime {
                              const FieldMask &valid_mask, const FieldMask &field_mask, bool needs_space);
       InstanceView* create_instance(Memory location, RegionMapper &rm);
       void issue_final_close_operation(const PhysicalUser &user, PhysicalCloser &closer);
-      void update_valid_views(ContextID ctx, const FieldMask &field_mask);
+      void find_all_valid_views(ContextID ctx, const FieldMask &field_mask);
     public:
       size_t compute_tree_size(bool returning) const;
       void serialize_tree(Serializer &rez, bool returning);

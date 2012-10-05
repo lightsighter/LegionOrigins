@@ -717,6 +717,12 @@ namespace RegionRuntime {
       void slice_start(unsigned long denominator, size_t points, const std::vector<unsigned> &non_virtual_mapped);
       void slice_mapped(const std::vector<unsigned> &virtual_mapped);
       void slice_finished(size_t points);
+    public:
+#ifdef DEBUG_HIGH_LEVEL
+      void check_overlapping_slices(unsigned idx, const std::set<LogicalRegion> &used_regions);
+#endif
+      // This function pairs with pack_tree_state_return in SliceTask
+      void unpack_tree_state_return(unsigned idx, ContextID ctx, RegionTreeForest::SendingMode mode, Deserializer &derez);
     private:
       bool locally_set;
       bool locally_mapped; 
@@ -734,6 +740,10 @@ namespace RegionRuntime {
       FutureImpl *reduction_future;
       // Vector for tracking source copy instances when performing sanitization
       std::vector<InstanceRef> source_copy_instances;
+      // Map for checking for overlapping slices on writes
+#ifdef DEBUG_HIGH_LEVEL
+      std::map<unsigned/*idx*/,std::set<LogicalRegion> > slice_overlap;
+#endif
     };
 
     /////////////////////////////////////////////////////////////
@@ -813,6 +823,9 @@ namespace RegionRuntime {
       void post_slice_start(void);
       void post_slice_mapped(void);
       void post_slice_finished(void);
+    private:
+      size_t compute_state_return_size(unsigned idx, ContextID ctx, RegionTreeForest::SendingMode mode);
+      void pack_tree_state_return(unsigned idx, ContextID ctx, RegionTreeForest::SendingMode mode, Serializer &rez);
     protected:
       friend class PointTask;
       friend class IndexTask;
