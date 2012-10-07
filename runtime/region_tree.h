@@ -100,7 +100,7 @@ namespace RegionRuntime {
       // Packing and unpacking reference return
       size_t compute_reference_size_return(InstanceRef ref);
       void pack_reference_return(InstanceRef ref, Serializer &rez);
-      void unpack_and_remove_reference(Deserializer &derez); // will unpack and remove reference
+      void unpack_and_remove_reference(Deserializer &derez, UniqueID uid); // will unpack and remove reference
     public:
       // Packing and unpacking structure updates return
       size_t compute_region_tree_updates_return(void);
@@ -109,8 +109,13 @@ namespace RegionRuntime {
     public:
       // Packing and unpacking state return
       size_t compute_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode);
+      size_t post_compute_region_tree_state_return(void);
+      void begin_pack_region_tree_state_return(Serializer &rez);
       void pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode, Serializer &rez);
+      void end_pack_region_tree_state_return(Serializer &rez);
+      void begin_unpack_region_tree_state_return(Deserializer &derez);
       void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode, Deserializer &derez);
+      void end_unpack_region_tree_state_return(Deserializer &derez);
     public:
       size_t compute_created_state_return(ContextID ctx);
       void pack_created_state_return(ContextID ctx, Serializer &rez);
@@ -147,12 +152,13 @@ namespace RegionRuntime {
       RegionNode*     get_node(LogicalRegion handle);
       PartitionNode * get_node(LogicalPartition handle);
     public:
-      InstanceView* create_view(InstanceManager *manager, InstanceView *par, RegionNode *reg, UniqueViewID vid = 0);
+      InstanceView* create_view(InstanceManager *manager, InstanceView *par, RegionNode *reg, bool made_local);
       InstanceManager* create_manager(Memory location, PhysicalInstance inst, 
-                        const std::map<FieldID,IndexSpace::CopySrcDstField> &infos, const FieldMask &field_mask,
-                        bool remote, bool clone, UniqueManagerID mid = 0);
-      InstanceView* find_view(UniqueViewID vid) const;
+                        const std::map<FieldID,IndexSpace::CopySrcDstField> &infos, FieldSpace fsp,
+                        const FieldMask &field_mask, bool remote, bool clone, UniqueManagerID mid = 0);
+      InstanceView* find_view(InstanceKey key) const;
       InstanceManager* find_manager(UniqueManagerID mid) const;
+      bool has_view(InstanceKey key) const;
     private:
       HighLevelRuntime *const runtime;
 #ifdef LOW_LEVEL_LOCKS
@@ -190,10 +196,17 @@ namespace RegionRuntime {
       std::set<InstanceManager*>        unique_managers;
       std::map<InstanceView*,FieldMask> unique_views; // points to the top instance view
       std::vector<InstanceView*>        ordered_views;
+      std::vector<bool>                 overwrite_views; // for knowing when to overwrite views when returning 
+      std::vector<RegionNode*>          diff_regions;
+      std::vector<PartitionNode*>       diff_partitions;
+      std::vector<InstanceManager*>     returning_managers;
+      std::vector<InstanceView*>        returning_views;
+      std::map<EscapedUser,unsigned>    escaped_users;
+      std::set<EscapedCopy>             escaped_copies;
     private:
       // References to delete when cleaning up
       std::map<UniqueManagerID,InstanceManager*> managers;
-      std::map<UniqueViewID,InstanceView*> views;
+      std::map<InstanceKey,InstanceView*> views;
     private:
       std::list<IndexSpaceNode*> top_index_trees;
       std::list<RegionNode*>   top_logical_trees;
@@ -367,6 +380,7 @@ namespace RegionRuntime {
         bool still_valid(void) const;
         bool overlap(const FieldState &rhs) const;
         void merge(const FieldState &rhs);
+        void clear(const FieldMask &init_mask);
       public:
         size_t compute_state_size(const FieldMask &pack_mask) const;
         void pack_physical_state(const FieldMask &pack_mask, Serializer &rez) const;
@@ -381,7 +395,7 @@ namespace RegionRuntime {
       public:
         std::list<FieldState> field_states;
         // The following data structure tracks diffs for sending back
-        std::vector<FieldState> add_states;
+        std::list<FieldState> added_states;
       };
       struct LogicalState : public GenericState {
       public:
@@ -390,11 +404,15 @@ namespace RegionRuntime {
       };
       struct PhysicalState : public GenericState {
       public:
+        PhysicalState(void) : context_top(false) { }
+      public:
         std::map<InstanceView*,FieldMask> valid_views;
         FieldMask dirty_mask;
         // Used for tracking diffs in the physical tree for sending back
         std::map<InstanceView*,FieldMask> added_views;
         bool context_top;
+      public:
+        void clear_state(const FieldMask &init_mask);
       };
     public:
       RegionTreeNode(RegionTreeForest *ctx);
@@ -453,7 +471,7 @@ namespace RegionRuntime {
       void initialize_logical_context(ContextID ctx);
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     public:
-      void initialize_physical_context(ContextID ctx);
+      void initialize_physical_context(ContextID ctx, const FieldMask &init_mask);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
       virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);
@@ -493,10 +511,20 @@ namespace RegionRuntime {
                                 std::set<InstanceManager*> &unique_managers, 
                                 std::map<InstanceView*,FieldMask> &unique_views,
                                 std::vector<InstanceView*> &ordered_views,
-                                bool recurse, int sub = -1);
+                                bool mark_invalid_views, bool recurse, int sub = -1);
       void pack_physical_state(ContextID ctx, const FieldMask &pack_mask,
-                                Serializer &rez, bool recurse);
+                                Serializer &rez, bool invalidate_views, bool recurse);
       void unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse);
+    public:
+      size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
+                                std::set<InstanceManager*> &unique_managers,
+                                std::map<InstanceView*,FieldMask> &unique_views,
+                                std::vector<InstanceView*> &ordered_views,
+                                std::vector<RegionNode*> &diff_regions,
+                                std::vector<PartitionNode*> &diff_partitions,
+                                bool invalidate_views, bool recurse);
+      void pack_diff_state(ContextID ctx, const FieldMask &pack_mask, Serializer &rez);
+      void unpack_diff_state(ContextID ctx, Deserializer &derez);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
@@ -528,7 +556,7 @@ namespace RegionRuntime {
       void initialize_logical_context(ContextID ctx);
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     public:
-      void initialize_physical_context(ContextID ctx);
+      void initialize_physical_context(ContextID ctx, const FieldMask &initialize_mask);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
       virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);
@@ -553,10 +581,20 @@ namespace RegionRuntime {
                                 std::set<InstanceManager*> &unique_managers, 
                                 std::map<InstanceView*,FieldMask> &unique_views,
                                 std::vector<InstanceView*> &ordered_views,
-                                bool recurse);
+                                bool mark_invalid_views, bool recurse);
       void pack_physical_state(ContextID ctx, const FieldMask &mask,
-                                Serializer &rez, bool recurse);
+                                Serializer &rez, bool invalidate_views, bool recurse);
       void unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse);
+    public:
+      size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
+                                std::set<InstanceManager*> &unique_managers,
+                                std::map<InstanceView*,FieldMask> &unique_views,
+                                std::vector<InstanceView*> &ordered_views,
+                                std::vector<RegionNode*> &diff_regions,
+                                std::vector<PartitionNode*> &diff_partitions,
+                                bool invalidate_views, bool recurse);
+      void pack_diff_state(ContextID ctx, const FieldMask &pack_mask, Serializer &rez);
+      void unpack_diff_state(ContextID ctx, Deserializer &derez);
     private:
       const LogicalPartition handle;
       RegionNode *const parent;
@@ -634,7 +672,7 @@ namespace RegionRuntime {
     class InstanceManager {
     public:
       InstanceManager(Memory m, PhysicalInstance inst, const std::map<FieldID,IndexSpace::CopySrcDstField> &infos,
-                      const FieldMask &mask, RegionTreeForest *ctx, UniqueManagerID mid, bool rem, bool clone);
+              FieldSpace fsp, const FieldMask &mask, RegionTreeForest *ctx, UniqueManagerID mid, bool rem, bool clone);
     public:
       inline Memory get_location(void) const { return location; }
       inline PhysicalInstance get_instance(void) const
@@ -650,6 +688,7 @@ namespace RegionRuntime {
     public:
       void add_reference(void);
       void remove_reference(void);
+      void add_view(InstanceView *view);
       Event issue_copy(InstanceManager *source_manager, Event precondition, 
                         const FieldMask &mask, FieldSpaceNode *field_space, IndexSpace index_space);
       void find_info(FieldID fid, std::vector<IndexSpace::CopySrcDstField> &sources);
@@ -658,22 +697,56 @@ namespace RegionRuntime {
       size_t compute_send_size(void) const;
       void pack_manager_send(Serializer &rez, unsigned long num_ways);
       static void unpack_manager_send(RegionTreeForest *context, Deserializer &derez, unsigned long split_factor);
+    public:
+      void find_user_returns(std::vector<InstanceView*> &returning_views) const;
+      size_t compute_return_size(void) const;
+      void pack_manager_return(Serializer &rez);
+      static void unpack_manager_return(RegionTreeForest *context, Deserializer &derez); 
+    public:
+      void pack_remote_fraction(Serializer &rez);
+      void unpack_remote_fraction(Deserializer &derez);
     private:
       void garbage_collect(void);
+      // For checking if an instance manager no longer has any valid
+      // references and can therefore be returned back
+      bool is_valid_free(void) const;
     private:
+      friend class RegionTreeForest;
       friend class InstanceView;
       RegionTreeForest *const context;
       unsigned references;
       const UniqueManagerID unique_id;
-      const bool remote;
+      bool remote;
       const bool clone;
       InstFrac remote_frac; // The fraction we are remote from somewhere else
       InstFrac local_frac; // Fraction of this instance info that is still here
       const Memory location;
       PhysicalInstance instance;
       Lock lock;
+      const FieldSpace fspace;
       FieldMask allocated_fields;
       std::map<FieldID,IndexSpace::CopySrcDstField> field_infos;
+      // One nice property of this view of views is that they are in
+      // a partial order that will allow them to be serialized and deserialized correctly
+      std::vector<InstanceView*> all_views;
+    };
+
+    /**
+     * A class for uniquely identifying a specific InstanceView on
+     * a single node in the system.  Primarily this allows us to
+     * merge InstanceViews that may represent the same state but
+     * were created on different nodes.
+     */
+    class InstanceKey {
+    public:
+      InstanceKey(void);
+      InstanceKey(UniqueManagerID mid, LogicalRegion handle);
+    public:
+      bool operator==(const InstanceKey &rhs) const;
+      bool operator<(const InstanceKey &rhs) const;
+    public:
+      UniqueManagerID mid;
+      LogicalRegion handle;
     };
 
     /////////////////////////////////////////////////////////////
@@ -701,8 +774,19 @@ namespace RegionRuntime {
         unsigned references;
         bool use_multi;
       };
+      struct CopyUser {
+      public:
+        CopyUser(void)
+          :  redop(0), references(0) { }
+        CopyUser(ReductionOpID op, unsigned ref)
+          : redop(op), references(ref) { }
+      public:
+        ReductionOpID redop;
+        unsigned references;
+      };
     public:
-      InstanceView(InstanceManager *man, InstanceView *par, RegionNode *reg, RegionTreeForest *ctx, UniqueViewID vid);
+      InstanceView(InstanceManager *man, InstanceView *par,  
+                    RegionNode *reg, RegionTreeForest *ctx, bool made_local);
     public:
       InstanceView* get_subview(Color pc, Color rc);
       void add_child_view(Color pc, Color rc, InstanceView *child);
@@ -710,13 +794,15 @@ namespace RegionRuntime {
       InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
       InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
       // These two are methods mark when a view is valid in the region tree
-      void add_reference(void);
-      void remove_reference(void);
-      void remove_user(UniqueID uid);
+      void remove_user(UniqueID uid, unsigned refs);
       void remove_copy(Event copy);
+      void mark_view(bool valid, bool force);
+      void mark_to_be_invalidated(void);
+      bool is_valid_view(void) const;
     public:
       inline Memory get_location(void) const { return manager->get_location(); }
       inline const FieldMask& get_physical_mask(void) const { return manager->get_allocated_fields(); }
+      inline InstanceKey get_key(void) const { return InstanceKey(manager->unique_id, logical_region->handle); }
       Event perform_final_close(const FieldMask &mask);
       void copy_from(RegionMapper &rm, InstanceView *src_view, const FieldMask &copy_mask);
       void find_copy_preconditions(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
@@ -736,9 +822,11 @@ namespace RegionRuntime {
       size_t compute_send_size(const FieldMask &pack_mask);
       void pack_view_send(const FieldMask &pack_mask, Serializer &rez);
       static void unpack_view_send(RegionTreeForest *context, Deserializer &derez);
-      void find_required_views(std::map<InstanceView*,FieldMask> &unique_views, 
+      void find_required_views(std::set<InstanceManager*> &unique_managers, 
+              std::map<InstanceView*,FieldMask> &unique_views, 
               std::vector<InstanceView*> &ordered_views, const FieldMask &mask, Color filter);
-      void find_required_views(std::map<InstanceView*,FieldMask> &unique_views,
+      void find_required_views(std::set<InstanceManager*> &unique_managers,
+              std::map<InstanceView*,FieldMask> &unique_views,
               std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
     private:
       void find_required_above(std::map<InstanceView*,FieldMask> &unique_views,
@@ -746,23 +834,42 @@ namespace RegionRuntime {
       void find_required_below(std::map<InstanceView*,FieldMask> &unique_views,
               std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
     public:
+      bool has_added_users(void) const;
+      size_t compute_return_state_size(const FieldMask &pack_mask, std::map<EscapedUser,unsigned> &escaped_users,
+                                        std::set<EscapedCopy> &escaped_copies);
+      size_t compute_return_users_size(std::map<EscapedUser,unsigned> &escaped_users,
+                                       std::set<EscapedCopy> &escaped_copies,
+                                       bool already_returning);
+      void pack_return_state(const FieldMask &mask, bool overwrite, Serializer &rez);
+      void pack_return_users(Serializer &rez);
+      static void unpack_return_state(RegionTreeForest *context, Deserializer &derez);
+      static void unpack_return_users(RegionTreeForest *context, Deserializer &derez);
+    public:
       InstanceManager *const manager;
       InstanceView *const parent;
       RegionNode *const logical_region;
       RegionTreeForest *const context;
-      const UniqueViewID unique_id;
     private:
-      unsigned references;
+      friend class InstanceManager;
+      bool valid_view;
+      bool local_view; // true until it is sent back in some form
       std::map<std::pair<Color,Color>,InstanceView*> children;
+      // The next four members only deal with garbage collection
+      // and should be passed back whenever an InstanceView is
+      // passed back and is not remote
       std::map<UniqueID,TaskUser> users;
       std::map<UniqueID,TaskUser> added_users;
       std::map<Event,ReductionOpID> copy_users; // if redop > 0 then writing reduction, otherwise just a read
       std::map<Event,ReductionOpID> added_copy_users;
+      // The next three members deal with dependence analysis
+      // and the state of the view, they should always entirely
+      // be passed back
       std::map<UniqueID,FieldMask> epoch_users;
       std::map<Event,FieldMask> epoch_copy_users;
       std::map<Event,FieldMask> valid_events;
-      size_t packing_sizes[3]; // storage for packing instances
-      bool filtered;
+      size_t packing_sizes[5]; // storage for packing instances
+      bool filtered; // for knowing if we only packed a subset of open children
+      bool to_be_invalidated; // about to be invalidated
     };
 
     /////////////////////////////////////////////////////////////
@@ -791,6 +898,40 @@ namespace RegionRuntime {
       PhysicalInstance instance;
       bool copy;
       InstanceView *view;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Escaped User 
+    /////////////////////////////////////////////////////////////
+    struct EscapedUser {
+    public:
+      EscapedUser(void)
+        : user(0) { }
+      EscapedUser(InstanceKey k, UniqueID uid)
+        : view_key(k), user(uid) { }
+    public:
+      bool operator==(const EscapedUser &rhs) const;
+      bool operator<(const EscapedUser &rhs) const;
+    public:
+      InstanceKey view_key;
+      UniqueID user;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Escaped Copy 
+    /////////////////////////////////////////////////////////////
+    struct EscapedCopy {
+    public:
+      EscapedCopy(void)
+        : copy_event(Event::NO_EVENT) { }
+      EscapedCopy(InstanceKey k, Event copy)
+        : view_key(k), copy_event(copy) { }
+    public:
+      bool operator==(const EscapedCopy &rhs) const;
+      bool operator<(const EscapedCopy &rhs) const;
+    public:
+      InstanceKey view_key;
+      Event copy_event;
     };
     
     /////////////////////////////////////////////////////////////

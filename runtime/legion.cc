@@ -2669,7 +2669,6 @@ namespace RegionRuntime {
         next_region_tree_id     = idx;
         next_field_space_id     = idx;
         next_field_id           = idx;
-        next_view_id            = idx;
         next_manager_id         = idx;
       }
 
@@ -4372,16 +4371,6 @@ namespace RegionRuntime {
       AutoLock ulock(unique_lock);
       FieldID result = next_field_id;
       next_field_id += unique_stride;
-      return result;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    UniqueViewID HighLevelRuntime::get_unique_view_id(void)
-    //--------------------------------------------------------------------------------------------
-    {
-      AutoLock ulock(unique_lock);
-      UniqueViewID result = next_view_id;
-      next_view_id += unique_stride;
       return result;
     }
 

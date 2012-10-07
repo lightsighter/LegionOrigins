@@ -1020,7 +1020,6 @@ namespace RegionRuntime {
       RegionTreeID     get_unique_tree_id(void);
       FieldSpaceID     get_unique_field_space_id(void);
       FieldID          get_unique_field_id(void);
-      UniqueViewID     get_unique_view_id(void);
       UniqueManagerID  get_unique_manager_id(void);
     protected: 
       void add_to_dependence_queue(GeneralizedOperation *op);
@@ -1169,7 +1168,6 @@ namespace RegionRuntime {
       RegionTreeID next_region_tree_id;
       FieldSpaceID next_field_space_id;
       FieldID next_field_id;
-      UniqueViewID next_view_id;
       UniqueManagerID next_manager_id;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing

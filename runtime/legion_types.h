@@ -228,13 +228,14 @@ namespace RegionRuntime {
     class RegionNode;
     class PartitionNode;
     class InstanceManager;
+    class InstanceKey;
     class InstanceView;
     class InstanceRef;
     class RegionAnalyzer;
     class RegionMapper;
 
-    class EscapedUser;
-    class EscapedCopier;
+    struct EscapedUser;
+    struct EscapedCopy;
     struct RegionUsage;
     struct GenericUser;
     struct LogicalUser;
@@ -275,7 +276,6 @@ namespace RegionRuntime {
     typedef unsigned int TypeHandle;
     typedef unsigned int ProjectionID;
     typedef unsigned int RegionTreeID;
-    typedef unsigned int UniqueViewID;
     typedef unsigned int UniqueManagerID;
     typedef Processor::TaskFuncID TaskID;
     typedef SingleTask* Context;

@@ -389,7 +389,7 @@ namespace RegionRuntime {
     public:
       size_t compute_source_copy_instances_return(void);
       void pack_source_copy_instances_return(Serializer &derez);
-      static void unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest);
+      static void unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest, UniqueID uid);
     protected:
       size_t compute_single_task_size(void);
       void pack_single_task(Serializer &rez);

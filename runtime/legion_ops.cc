@@ -2465,7 +2465,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    /*static*/ void SingleTask::unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest)
+    /*static*/ void SingleTask::unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest, UniqueID uid)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -2475,7 +2475,7 @@ namespace RegionRuntime {
       derez.deserialize<size_t>(num_refs);
       for (unsigned idx = 0; idx < num_refs; idx++)
       {
-        forest->unpack_and_remove_reference(derez);
+        forest->unpack_and_remove_reference(derez, uid);
       }
     }
 
@@ -3366,6 +3366,7 @@ namespace RegionRuntime {
                                               IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL);
             }
           }
+          buffer_size += forest_ctx->post_compute_region_tree_state_return();
           // Now pack everything up and send it back
           Serializer rez(buffer_size);
           rez.serialize<Processor>(orig_proc);
@@ -3375,6 +3376,7 @@ namespace RegionRuntime {
           {
             rez.serialize<bool>(non_virtual_mapped_region[idx]);
           }
+          forest_ctx->begin_pack_region_tree_state_return(rez);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (non_virtual_mapped_region[idx])
@@ -3383,6 +3385,7 @@ namespace RegionRuntime {
                                               IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL, rez);
             }
           }
+          forest_ctx->end_pack_region_tree_state_return(rez);
           unlock_context();
           // Now send it back on the utility processor
           Processor utility = orig_proc.get_utility_processor();
@@ -3688,7 +3691,7 @@ namespace RegionRuntime {
         else
         {
           forest_ctx->unpack_region_forest_shape(derez);
-          forest_ctx->begin_unpack_region_tree_state(derez);
+          forest_ctx->begin_unpack_region_tree_state(derez, ctx_id);
 #ifdef DEBUG_HIGH_LEVEL
           assert(non_virtual_mapped_region.size() == regions.size());
 #endif
@@ -3711,7 +3714,7 @@ namespace RegionRuntime {
       else
       {
         forest_ctx->unpack_region_forest_shape(derez);
-        forest_ctx->begin_unpack_region_tree_state(derez);
+        forest_ctx->begin_unpack_region_tree_state(derez, ctx_id);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // Unpack the state in our context
@@ -3786,6 +3789,7 @@ namespace RegionRuntime {
                                                 IS_WRITE(regions[idx]), RegionTreeForest::DIFF);
             }
           }
+          buffer_size += forest_ctx->post_compute_region_tree_state_return();
           // Finally pack up our source copy instances to send back
           buffer_size += compute_source_copy_instances_return();
           // Now pack it all up
@@ -3793,6 +3797,7 @@ namespace RegionRuntime {
           rez.serialize<Processor>(orig_proc);
           rez.serialize<Context>(orig_ctx);
           forest_ctx->pack_region_tree_updates_return(rez);
+          forest_ctx->begin_pack_region_tree_state_return(rez);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (!non_virtual_mapped_region[idx])
@@ -3806,6 +3811,7 @@ namespace RegionRuntime {
                                                 IS_WRITE(regions[idx]), RegionTreeForest::DIFF, rez);
             }
           }
+          forest_ctx->end_pack_region_tree_state_return(rez);
           // Pack up the source copy instances
           pack_source_copy_instances_return(rez);
           unlock_context();
@@ -4001,6 +4007,7 @@ namespace RegionRuntime {
       }
       unlock();
       lock_context();
+      forest_ctx->begin_unpack_region_tree_state_return(derez);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         if (non_virtual_mapped_region[idx])
@@ -4010,6 +4017,7 @@ namespace RegionRuntime {
                                                                   RegionTreeForest::PHYSICAL, derez); 
         }
       }
+      forest_ctx->end_unpack_region_tree_state_return(derez);
       unlock_context();
       if (unmapped == 0)
       {
@@ -4029,6 +4037,7 @@ namespace RegionRuntime {
       Deserializer derez(args,arglen);
       lock_context();
       forest_ctx->unpack_region_tree_updates_return(derez);
+      forest_ctx->begin_unpack_region_tree_state_return(derez);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
@@ -4043,7 +4052,8 @@ namespace RegionRuntime {
                                                                         RegionTreeForest::DIFF, derez);
         }
       }
-      unpack_source_copy_instances_return(derez,forest_ctx);
+      forest_ctx->end_unpack_region_tree_state_return(derez);
+      unpack_source_copy_instances_return(derez,forest_ctx,unique_id);
       // We can also release all the source copy waiters
       release_source_copy_instances();
       unlock_context();
@@ -5035,6 +5045,7 @@ namespace RegionRuntime {
       }
       lock_context();
       // Unpack any trees that were sent back because they were fully mapped
+      forest_ctx->begin_unpack_region_tree_state_return(derez);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         if (non_virtual_mappings[idx] == num_points)
@@ -5043,6 +5054,7 @@ namespace RegionRuntime {
           unpack_tree_state_return(idx, phy_ctx, RegionTreeForest::PHYSICAL, derez);
         }
       }
+      forest_ctx->end_unpack_region_tree_state_return(derez);
       unlock_context();
       slice_start(denominator, num_points, non_virtual_mappings); 
     }
@@ -5059,6 +5071,7 @@ namespace RegionRuntime {
       }
       lock_context();
       forest_ctx->unpack_region_tree_updates_return(derez);
+      forest_ctx->begin_unpack_region_tree_state_return(derez);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
@@ -5071,11 +5084,12 @@ namespace RegionRuntime {
           unpack_tree_state_return(idx, phy_ctx, RegionTreeForest::DIFF, derez);
         }
       }
+      forest_ctx->end_unpack_region_tree_state_return(derez);
       size_t num_points;
       derez.deserialize<size_t>(num_points);
       for (unsigned idx = 0; idx < num_points; idx++)
       {
-        SingleTask::unpack_source_copy_instances_return(derez,forest_ctx);
+        SingleTask::unpack_source_copy_instances_return(derez,forest_ctx,unique_id);
       }
       // Once a slice comes back then we know that all the sanitization preconditions
       // were met and so we can release all the source copy instances
@@ -5580,7 +5594,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!IS_WRITE(regions[idx])); // If this was the case it should have been premapped
 #endif
-        forest_ctx->unpack_region_tree_state_return(regions[idx], ctx, false/*all*/, mode, derez);
+        forest_ctx->unpack_region_tree_state_return(regions[idx], ctx, false/*overwrite*/, mode, derez);
       }
       else
       {
@@ -5597,7 +5611,7 @@ namespace RegionRuntime {
             derez.deserialize(touched);
             touched_regions.insert(touched);
             regions[idx].region = touched;
-            forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, true/*all*/,
+            forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, true/*overwrite*/,
                                                         mode, derez);
           }
           // Set the handle type back
@@ -5614,7 +5628,7 @@ namespace RegionRuntime {
         }
         else
         {
-          forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, false/*all*/,
+          forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, false/*overwrite*/,
                                                       mode, derez);
         }
       }
@@ -6572,6 +6586,7 @@ namespace RegionRuntime {
             buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::PHYSICAL);
           }
         }
+        buffer_size += forest_ctx->post_compute_region_tree_state_return();
         // Now pack everything up
         Serializer rez(buffer_size);
         rez.serialize<Processor>(orig_proc);
@@ -6583,6 +6598,7 @@ namespace RegionRuntime {
         {
           rez.serialize<unsigned>(non_virtual_mappings[idx]);
         }
+        forest_ctx->begin_pack_region_tree_state_return(rez);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           if (non_virtual_mappings[idx] == points.size())
@@ -6590,6 +6606,7 @@ namespace RegionRuntime {
             pack_tree_state_return(idx, ctx_id, RegionTreeForest::PHYSICAL, rez);
           }
         }
+        forest_ctx->end_pack_region_tree_state_return(rez);
         unlock_context();
         // Now send it back to the utility processor
         Processor utility = orig_proc.get_utility_processor();
@@ -6663,6 +6680,7 @@ namespace RegionRuntime {
               buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::DIFF);
             }
           }
+          buffer_size += forest_ctx->post_compute_region_tree_state_return();
           buffer_size += sizeof(size_t);
           // Also send back any source copy instances to be released
           for (std::vector<PointTask*>::const_iterator it = points.begin();
@@ -6682,6 +6700,7 @@ namespace RegionRuntime {
             }
           }
           forest_ctx->pack_region_tree_updates_return(rez);
+          forest_ctx->begin_pack_region_tree_state_return(rez);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (non_virtual_mappings[idx] < points.size())
@@ -6693,6 +6712,7 @@ namespace RegionRuntime {
               pack_tree_state_return(idx, ctx_id, RegionTreeForest::DIFF, rez);
             }
           }
+          forest_ctx->end_pack_region_tree_state_return(rez);
           rez.serialize<size_t>(points.size());
           for (std::vector<PointTask*>::const_iterator it = points.begin();
                 it != points.end(); it++)
@@ -6836,7 +6856,7 @@ namespace RegionRuntime {
         assert(!IS_WRITE(regions[idx])); // if this was the case it should have been premapped
 #endif
         result += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
-                                                    false/*all*/, mode);
+                                                    false/*overwrite*/, mode);
       }
       else
       {
@@ -6852,7 +6872,7 @@ namespace RegionRuntime {
             {
               sending_set.insert((*it)->regions[idx].region);
               result += forest_ctx->compute_region_tree_state_return((*it)->regions[idx], ctx_id,
-                                                      true/*all*/, mode);
+                                                      true/*overwrite*/, mode);
             }
           }
           result += (sending_set.size() * sizeof(LogicalRegion));
@@ -6862,7 +6882,7 @@ namespace RegionRuntime {
           // We this was a read-only or reduce requirement so we
           // only need to send back the diff
           result += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id,
-                                                      false/*all*/, mode);
+                                                      false/*overwrite*/, mode);
         }
       }
       return result;
@@ -6890,7 +6910,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!IS_WRITE(regions[idx])); // if this was the case it should have been premapped
 #endif
-        forest_ctx->pack_region_tree_state_return(regions[idx], ctx, false/*all*/, mode, rez);
+        forest_ctx->pack_region_tree_state_return(regions[idx], ctx, false/*overwrite*/, mode, rez);
       }
       else
       {
@@ -6908,13 +6928,13 @@ namespace RegionRuntime {
           {
             rez.serialize(it->first);
             forest_ctx->pack_region_tree_state_return(it->second->regions[idx], ctx_id,
-                                                        true/*all*/, mode, rez);
+                                                        true/*overwrite*/, mode, rez);
           }
         }
         else
         {
           forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
-                                                        false/*all*/, mode, rez);
+                                                        false/*overwrite*/, mode, rez);
         }
       }
     }
