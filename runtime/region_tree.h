@@ -203,6 +203,8 @@ namespace RegionRuntime {
       std::vector<InstanceView*>        returning_views;
       std::map<EscapedUser,unsigned>    escaped_users;
       std::set<EscapedCopy>             escaped_copies;
+      std::vector<RegionNode*>          created_field_space_trees;
+      std::vector<FieldSpaceNode*>      created_field_nodes;
     private:
       // References to delete when cleaning up
       std::map<UniqueManagerID,InstanceManager*> managers;
@@ -343,8 +345,14 @@ namespace RegionRuntime {
       void serialize_field_return(Serializer &rez);
       void deserialize_field_return(Deserializer &derez);
     public:
-      FieldMask get_field_mask(const std::vector<FieldID> &fields);
-      FieldMask get_field_mask(const std::set<FieldID> &fields);
+      size_t compute_created_field_return(void) const;
+      void serialize_created_field_return(Serializer &rez);
+      unsigned deserialize_created_field_return(Deserializer &derez);
+    public:
+      FieldMask get_field_mask(const std::vector<FieldID> &fields) const;
+      FieldMask get_field_mask(const std::set<FieldID> &fields) const;
+      FieldMask get_field_mask(void) const;
+      FieldMask get_created_field_mask(void) const;
     private:
       const FieldSpace handle;
       RegionTreeForest *const context;
@@ -384,7 +392,7 @@ namespace RegionRuntime {
       public:
         size_t compute_state_size(const FieldMask &pack_mask) const;
         void pack_physical_state(const FieldMask &pack_mask, Serializer &rez) const;
-        void unpack_physical_state(Deserializer &derez);
+        void unpack_physical_state(Deserializer &derez, unsigned shift = 0);
       public:
         FieldMask valid_fields;
         OpenState open_state;
@@ -514,7 +522,7 @@ namespace RegionRuntime {
                                 bool mark_invalid_views, bool recurse, int sub = -1);
       void pack_physical_state(ContextID ctx, const FieldMask &pack_mask,
                                 Serializer &rez, bool invalidate_views, bool recurse);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse, unsigned shift = 0);
     public:
       size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers,
@@ -584,7 +592,7 @@ namespace RegionRuntime {
                                 bool mark_invalid_views, bool recurse);
       void pack_physical_state(ContextID ctx, const FieldMask &mask,
                                 Serializer &rez, bool invalidate_views, bool recurse);
-      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse);
+      void unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse, unsigned shift = 0);
     public:
       size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers,
@@ -794,8 +802,8 @@ namespace RegionRuntime {
       InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
       InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
       // These two are methods mark when a view is valid in the region tree
-      void remove_user(UniqueID uid, unsigned refs);
-      void remove_copy(Event copy);
+      void remove_user(UniqueID uid, unsigned refs, bool strict = true);
+      void remove_copy(Event copy, bool strict = true);
       void mark_view(bool valid, bool force);
       void mark_to_be_invalidated(void);
       bool is_valid_view(void) const;
@@ -845,11 +853,16 @@ namespace RegionRuntime {
       static void unpack_return_state(RegionTreeForest *context, Deserializer &derez);
       static void unpack_return_users(RegionTreeForest *context, Deserializer &derez);
     public:
+      size_t compute_simple_return(void) const;
+      void pack_simple_return(Serializer &rez);
+      static void unpack_simple_return(RegionTreeForest *context, Deserializer &derez);
+    public:
       InstanceManager *const manager;
       InstanceView *const parent;
       RegionNode *const logical_region;
       RegionTreeForest *const context;
     private:
+      friend class RegionTreeForest;
       friend class InstanceManager;
       bool valid_view;
       bool local_view; // true until it is sent back in some form

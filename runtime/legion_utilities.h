@@ -179,6 +179,8 @@ namespace RegionRuntime {
       // Test to see if everything is zeros
       inline bool operator!(void) const;
     public:
+      inline void shift_left(unsigned shift);
+    public:
       static inline int pop_count(const BitMask<unsigned,MAX> &mask);
       static inline int pop_count(const BitMask<unsigned long,MAX> &mask);
       static inline int pop_count(const BitMask<unsigned long long,MAX> &mask);
@@ -733,6 +735,29 @@ namespace RegionRuntime {
           return false;
       }
       return true;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned MAX>
+    inline void BitMask<T,MAX>::shift_left(unsigned shift)
+    //-------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(shift < (8*sizeof(T))); // TODO: handle bit shift by more than one slot
+#endif
+      T carry_mask = 0;
+      for (unsigned idx = 0; idx < shift; idx++)
+      {
+        carry_mask |= (1 << (8*sizeof(T)-(idx+1)));
+      }
+      for (unsigned idx = (BIT_ELMTS-1); idx > 0; idx--)
+      {
+        T left = bit_vector[idx] << shift;
+        T right = bit_vector[idx-1] & carry_mask;
+        bit_vector[idx] = left | right;
+      }
+      // Handle the last one
+      bit_vector[0] = bit_vector[0] << shift;
     }
 
     //-------------------------------------------------------------------------

@@ -1297,6 +1297,8 @@ namespace RegionRuntime {
       result += (deleted_regions.size() * sizeof(LogicalRegion));
       result += sizeof(size_t); // num deleted partitions
       result += (deleted_partitions.size() * sizeof(LogicalPartition));
+
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -1389,7 +1391,7 @@ namespace RegionRuntime {
       created_index_trees.clear();
       deleted_index_spaces.clear();
       deleted_index_parts.clear();
-      created_field_spaces.clear();
+      //created_field_spaces.clear(); // still need this for packing created state
       deleted_field_spaces.clear();
       created_region_trees.clear();
       deleted_regions.clear();
@@ -1818,42 +1820,300 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_created_state_return(ContextID ctx)
     //--------------------------------------------------------------------------
     {
+      // There are several nice properties about packing the created state.  First,
+      // since it only gets passed back at the end of a task there is no need to
+      // pass back any of the state/users in the InstanceViews since they all
+      // have to have completed prior task which is returning the state completing.
+      //
+      // For the regions that resulted from created field spaces, we can just pass
+      // them back without modifying any of the field masks since there are no
+      // fields that could have been allocated anywhere else to mess with the field
+      // masks.  For created fields of pre-existing field spaces we will need to figure
+      // out how to shift these field masks on the return side.
+      
+      created_field_space_trees.clear();
+      created_field_nodes.clear();
+      unique_managers.clear();
+      unique_views.clear();
+      ordered_views.clear();
+      returning_managers.clear();
+      size_t result = 0;
+      // First go through all the created field spaces and pack up the state for
+      // all of their regions
+      result += sizeof(size_t); // number of created trees
+      for (std::set<FieldSpace>::const_iterator it = created_field_spaces.begin();
+            it != created_field_spaces.end(); it++)
+      {
+        FieldSpaceNode *field_node = get_node(*it);
+        // Get a field mask for all the fields (since we know they were all created)
+        FieldMask packing_mask = field_node->get_field_mask();
+        for (std::list<RegionNode*>::const_iterator rit = field_node->logical_nodes.begin();
+              rit != field_node->logical_nodes.end(); rit++)
+        {
+          created_field_space_trees.push_back(*rit);
+          result += sizeof((*rit)->handle);
+          result += (*rit)->compute_state_size(ctx, packing_mask, unique_managers,
+                                              unique_views, ordered_views,
+                                              true/*mark invalid views*/, true/*recurse*/);
+        }
+      }
+      result += sizeof(size_t); // number of created field trees returning
+      for (std::map<FieldSpace,FieldSpaceNode*>::const_iterator it = field_nodes.begin();
+            it != field_nodes.end(); it++)
+      {
+        // We can skip created field spaces since we already handled them
+        if (created_field_spaces.find(it->first) != created_field_spaces.end())
+          continue;
+        // If there were no created fields then we're done
+        if (it->second->created_fields.empty())
+          continue;
+        created_field_nodes.push_back(it->second);
+        result += sizeof(it->second->handle);
+        result += it->second->compute_created_field_return();
+        result += sizeof(size_t); // number of trees coming back for this field space
+        FieldMask packing_mask = it->second->get_created_field_mask();
+        for (std::list<RegionNode*>::const_iterator rit = it->second->logical_nodes.begin();
+              rit != it->second->logical_nodes.end(); rit++)
+        {
+          result += sizeof((*rit)->handle);
+          result += (*rit)->compute_state_size(ctx, packing_mask, unique_managers,
+                                                unique_views, ordered_views,
+                                                true/*mark invalid views*/, true/*recurse*/);
+        }
+      }
+      // Now filter the managers into the newly created ones and the ones that are remote.  In
+      // actuality the remote managers were created here but have already been returned.  Since
+      // these are the last fields that could hold valid references to them they should all
+      // be valid_free at this point.
+      result += sizeof(size_t); // number of unique managers
+      result += sizeof(size_t); // number of returning managers
+      for (std::set<InstanceManager*>::const_iterator it = unique_managers.begin();
+            it != unique_managers.end(); it++)
+      {
+        if ((*it)->is_remote())
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert((*it)->is_valid_free());
+#endif
+          returning_managers.push_back(*it);
+          result += (sizeof(UniqueManagerID) + sizeof(InstFrac));
+        }
+        else
+        {
+          result += (*it)->compute_return_size();
+        }
+      }
+      // Remove the returning managers from the set of unique managers
+      for (std::vector<InstanceManager*>::const_iterator it = returning_managers.begin();
+            it != returning_managers.end(); it++)
+      {
+        unique_managers.erase(*it);
+      }
 
+      // Only need to send back the InstanceViews that haven't already been returned
+      // otherwise we can filter them out since they already have been sent back.  Note
+      // we don't need to send back any of the users or active events of the InstanceViews.
+      // They are just the place holders for tracking where the valid data is (see note at top).
+      std::vector<InstanceView*> actual_views;
+      result += sizeof(size_t); // number of returning views
+      for (std::vector<InstanceView*>::const_iterator it = ordered_views.begin();
+            it != ordered_views.end(); it++)
+      {
+        if ((*it)->local_view)
+        {
+          actual_views.push_back(*it);
+          result += (*it)->compute_simple_return();
+        }
+      }
+      // Make the actual views the new list of ordered views
+      ordered_views = actual_views; // (should just be a copy of STL handles, not all elements)
+
+      return result;
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_created_state_return(ContextID ctx, Serializer &rez)
     //--------------------------------------------------------------------------
     {
+      // First pack the unique managers and the ordered views 
+      rez.serialize(unique_managers.size());
+      for (std::set<InstanceManager*>::const_iterator it = unique_managers.begin();
+            it != unique_managers.end(); it++)
+      {
+        (*it)->pack_manager_return(rez);
+      }
+      rez.serialize(ordered_views.size());
+      for (std::vector<InstanceView*>::const_iterator it = ordered_views.begin();
+            it != ordered_views.end(); it++)
+      {
+        (*it)->pack_simple_return(rez);
+      }
+      
+      // Now we pack the created field space nodes
+      rez.serialize(created_field_space_trees.size());
+      for (std::vector<RegionNode*>::const_iterator it = created_field_space_trees.begin();
+            it != created_field_space_trees.end(); it++)
+      {
+        // Get the mask with which to pack
+        FieldSpaceNode *field_node = (*it)->column_source;
+        FieldMask packing_mask = field_node->get_field_mask();
+        rez.serialize((*it)->handle);
+        (*it)->pack_physical_state(ctx, packing_mask, rez, true/*invalidate views*/, true/*recurse*/);
+      }
 
+      // Then pack the states for the created fields
+      rez.serialize(created_field_nodes.size());
+      for (std::vector<FieldSpaceNode*>::const_iterator it = created_field_nodes.begin();
+            it != created_field_nodes.end(); it++)
+      {
+        rez.serialize((*it)->handle);
+        (*it)->serialize_created_field_return(rez);
+        rez.serialize((*it)->logical_nodes.size());
+        FieldMask packing_mask = (*it)->get_created_field_mask();
+        for (std::list<RegionNode*>::const_iterator rit = (*it)->logical_nodes.begin();
+              rit != (*it)->logical_nodes.end(); rit++)
+        {
+          rez.serialize((*rit)->handle);    
+          (*rit)->pack_physical_state(ctx, packing_mask, rez, true/*invalidate views*/, true/*recurse*/);
+        }
+      }
+
+      // Finally pack the remote instance managers returning their fractions
+      rez.serialize(returning_managers.size());
+      for (std::vector<InstanceManager*>::const_iterator it = returning_managers.begin();
+            it != returning_managers.end(); it++)
+      {
+        (*it)->pack_remote_fraction(rez);
+      }
+      // clean up our stuff
+      unique_managers.clear();
+      unique_views.clear();
+      ordered_views.clear();
+      returning_managers.clear();
+      created_field_space_trees.clear();
+      created_field_nodes.clear();
+      created_field_spaces.clear();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::unpack_created_state_return(ContextID ctx, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+      // Now doing the unpack
+      size_t num_created_managers;
+      derez.deserialize(num_created_managers);
+      for (unsigned idx = 0; idx < num_created_managers; idx++)
+      {
+        InstanceManager::unpack_manager_return(this, derez); 
+      }
+      size_t num_created_views;
+      derez.deserialize(num_created_views);
+      for (unsigned idx = 0; idx < num_created_views; idx++)
+      {
+        InstanceView::unpack_simple_return(this, derez);
+      }
 
+      size_t num_created_field_space_nodes;
+      derez.deserialize(num_created_field_space_nodes);
+      for (unsigned idx = 0; idx < num_created_field_space_nodes; idx++)
+      {
+        LogicalRegion handle;
+        derez.deserialize(handle);
+        RegionNode *node = get_node(handle);
+        node->unpack_physical_state(ctx, derez, true/*recurse*/);
+      }
+
+      size_t num_created_field_nodes;
+      derez.deserialize(num_created_field_nodes);
+      for (unsigned idx = 0; idx < num_created_field_nodes; idx++)
+      {
+        FieldSpace handle;
+        derez.deserialize(handle);
+        FieldSpaceNode *field_node = get_node(handle);
+        unsigned shift = field_node->deserialize_created_field_return(derez);
+        size_t num_returning_regions;
+        derez.deserialize(num_returning_regions);
+        for (unsigned idx2 = 0; idx2 < num_returning_regions; idx2++)
+        {
+          LogicalRegion reg_handle;
+          derez.deserialize(reg_handle);
+          RegionNode *node = get_node(reg_handle);
+          node->unpack_physical_state(ctx, derez, true/*recurse*/, shift);
+        }
+      }
+
+      size_t num_returning_managers;
+      derez.deserialize(num_returning_managers);
+      for (unsigned idx = 0; idx < num_returning_managers; idx++)
+      {
+        UniqueManagerID mid;
+        derez.deserialize(mid);
+        InstanceManager *manager = find_manager(mid);
+        manager->unpack_remote_fraction(derez);
+      }
     }
 
     //--------------------------------------------------------------------------
     size_t RegionTreeForest::compute_leaked_return_size(void)
     //--------------------------------------------------------------------------
     {
-
+      size_t result = 0;
+      result += sizeof(size_t); // number of escaped users 
+      result += (escaped_users.size() * (sizeof(EscapedUser) + sizeof(unsigned)));
+      result += sizeof(size_t); // number of escaped copy users
+      result += (escaped_copies.size() * sizeof(EscapedCopy));
+      return result;
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_leaked_return(Serializer &rez)
     //--------------------------------------------------------------------------
     {
-
+      rez.serialize(escaped_users.size());
+      for (std::map<EscapedUser,unsigned>::const_iterator it = escaped_users.begin();
+            it != escaped_users.end(); it++)
+      {
+        rez.serialize(it->first);
+        rez.serialize(it->second);
+      }
+      rez.serialize(escaped_copies.size());
+      for (std::set<EscapedCopy>::const_iterator it = escaped_copies.begin();
+            it != escaped_copies.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+      escaped_users.clear();
+      escaped_copies.clear();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::unpack_leaked_return(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
-
+      // Note in some case the leaked references were remove by
+      // the user who copied them back earlier and removed them
+      // explicitly.  In this case we ignore any references which
+      // may try to be pulled twice.
+      size_t num_escaped_users;
+      derez.deserialize(num_escaped_users);
+      for (unsigned idx = 0; idx < num_escaped_users; idx++)
+      {
+        EscapedUser user;
+        derez.deserialize(user);
+        unsigned references;
+        derez.deserialize(references);
+        InstanceView *view = find_view(user.view_key);
+        view->remove_user(user.user, references, false/*strict*/);
+      }
+      size_t num_escaped_copies;
+      derez.deserialize(num_escaped_copies);
+      for (unsigned idx = 0; idx < num_escaped_copies; idx++)
+      {
+        EscapedCopy copy;
+        derez.deserialize(copy);
+        InstanceView *view = find_view(copy.view_key);
+        view->remove_copy(copy.copy_event, false/*strict*/);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2916,7 +3176,7 @@ namespace RegionRuntime {
     {
       size_t result = 0; 
       result += sizeof(size_t); // number of created fields
-      result += (created_fields.size() * (sizeof(FieldID) + sizeof(size_t)));
+      result += (created_fields.size() * (sizeof(FieldID) + sizeof(FieldInfo)));
       result += sizeof(size_t); // number of deleted fields
       result += (deleted_fields.size() * sizeof(FieldID)); 
       return result;
@@ -2935,9 +3195,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(finder != fields.end());
 #endif
-        rez.serialize(finder->second.field_size);
+        rez.serialize(finder->second);
       }
-      created_fields.clear();
+      // Don't clear created fields here, we still need it for finding the created state
+      // created_fields.clear();
       rez.serialize(deleted_fields.size());
       for (std::list<FieldID>::const_iterator it = deleted_fields.begin();
             it != deleted_fields.end(); it++)
@@ -2955,15 +3216,52 @@ namespace RegionRuntime {
         size_t num_new_fields;
         derez.deserialize(num_new_fields);
         std::map<FieldID,size_t> new_fields;
+        std::map<unsigned/*idx*/,FieldID> old_field_indexes;
         for (unsigned idx = 0; idx < num_new_fields; idx++)
         {
           FieldID fid;
           derez.deserialize(fid);
-          size_t fsize;
-          derez.deserialize(fsize);
-          new_fields[fid] = fsize;
+          FieldInfo info;
+          derez.deserialize(info);
+          new_fields[fid] = info.field_size;
+          old_field_indexes[info.idx] = fid;
         }
-        allocate_fields(new_fields);
+        // Rather than doing the standard allocation procedure, we instead
+        // allocated all the fields so that they are all a constant shift
+        // offset from their original index.  As a result when we unpack the
+        // physical state for the created fields, we need only apply a shift
+        // to the FieldMasks rather than rebuilding them all from scratch.
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!new_fields.empty());
+        assert(new_fields.size() == old_field_indexes.size());
+#endif
+        unsigned first_index = old_field_indexes.begin()->first;
+#ifdef DEBUG_HIGH_LEVEL
+        assert(total_index_fields >= first_index);
+#endif
+        unsigned shift = total_index_fields - first_index;
+        for (std::map<unsigned,FieldID>::const_iterator it = old_field_indexes.begin();
+              it != old_field_indexes.end(); it++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(fields.find(it->second) == fields.end());
+#endif
+          fields[it->second] = FieldInfo(new_fields[it->second], it->first + shift);
+          unsigned new_total_index_fields = it->first+shift+1;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(new_total_index_fields > total_index_fields);
+#endif
+          total_index_fields = new_total_index_fields;
+          created_fields.push_back(it->second);
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        if (total_index_fields >= MAX_FIELDS)
+        {
+          log_field(LEVEL_ERROR,"Exceeded maximum number of allocated fields for a field space %d when unpacking. "  
+                                "Change 'MAX_FIELDS' at the top of legion_types.h and recompile.", MAX_FIELDS);
+          exit(ERROR_MAX_FIELD_OVERFLOW);
+        }
+#endif
       }
       {
         size_t num_deleted_fields;
@@ -2980,33 +3278,136 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    FieldMask FieldSpaceNode::get_field_mask(const std::vector<FieldID> &mask_fields)
+    size_t FieldSpaceNode::compute_created_field_return(void) const
+    //--------------------------------------------------------------------------
+    {
+      // Two version here, one were we only send back one field and one where
+      // we sent back all of them to check that the shift is the same for all of them
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!created_fields.empty());
+#endif
+      size_t result = 0;
+#ifdef DEBUG_HIGH_LEVEL
+      result += sizeof(size_t);
+      result += (created_fields.size() * (sizeof(FieldID) + sizeof(unsigned)));
+#else
+      result += sizeof(FieldID);
+      result += sizeof(unsigned);
+#endif
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::serialize_created_field_return(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      rez.serialize(created_fields.size());
+      for (std::list<FieldID>::const_iterator it = created_fields.begin();
+            it != created_fields.end(); it++)
+      {
+        rez.serialize(*it);
+        rez.serialize(fields[*it].idx);
+      }
+#else
+      FieldID first = *(created_fields.begin());
+      rez.serialize(first);
+      rez.serialize(fields[first].idx);
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    unsigned FieldSpaceNode::deserialize_created_field_return(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      unsigned shift;
+#ifdef DEBUG_HIGH_LEVEL
+      size_t num_returning;
+      derez.deserialize(num_returning);
+      FieldID fid;
+      derez.deserialize(fid);
+      unsigned old_idx;
+      derez.deserialize(old_idx);
+      assert(fields[fid].idx >= old_idx);
+      shift = fields[fid].idx - old_idx;
+      for (unsigned idx = 1; idx < num_returning; idx++)
+      {
+        FieldID id;
+        derez.deserialize(id);
+        unsigned old;
+        derez.deserialize(old);
+        assert((fields[id].idx - old) == shift);
+      }
+#else
+      FieldID fid;
+      derez.deserialize(fid);
+      unsigned old_idx;
+      derez.deserialize(old_idx);
+      shift = fields[fid].idx - old_idx;
+#endif
+      return shift;
+    }
+
+    //--------------------------------------------------------------------------
+    FieldMask FieldSpaceNode::get_field_mask(const std::vector<FieldID> &mask_fields) const
     //--------------------------------------------------------------------------
     {
       FieldMask result;
       for (std::vector<FieldID>::const_iterator it = mask_fields.begin();
             it != mask_fields.end(); it++)
       {
+        std::map<FieldID,FieldInfo>::const_iterator finder = fields.find(*it);
 #ifdef DEBUG_HIGH_LEVEL
-        assert(fields.find(*it) != fields.end());
+        assert(finder != fields.end());
 #endif
-        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].idx);
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(finder->second.idx);
       }
       return result;
     }
 
     //--------------------------------------------------------------------------
-    FieldMask FieldSpaceNode::get_field_mask(const std::set<FieldID> &mask_fields)
+    FieldMask FieldSpaceNode::get_field_mask(const std::set<FieldID> &mask_fields) const
     //--------------------------------------------------------------------------
     {
       FieldMask result;
       for (std::set<FieldID>::const_iterator it = mask_fields.begin();
             it != mask_fields.end(); it++)
       {
+        std::map<FieldID,FieldInfo>::const_iterator finder = fields.find(*it);
 #ifdef DEBUG_HIGH_LEVEL
-        assert(fields.find(*it) != fields.end());
+        assert(finder != fields.end());
 #endif
-        result.set_bit<FIELD_SHIFT,FIELD_MASK>(fields[*it].idx);
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(finder->second.idx);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    FieldMask FieldSpaceNode::get_field_mask(void) const
+    //--------------------------------------------------------------------------
+    {
+      FieldMask result;
+      for (std::map<FieldID,FieldInfo>::const_iterator it = fields.begin();
+            it != fields.end(); it++)
+      {
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(it->second.idx);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    FieldMask FieldSpaceNode::get_created_field_mask(void) const
+    //--------------------------------------------------------------------------
+    {
+      FieldMask result;
+      for (std::list<FieldID>::const_iterator it = created_fields.begin();
+            it != created_fields.end(); it++)
+      {
+        std::map<FieldID,FieldInfo>::const_iterator finder = fields.find(*it);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(finder != fields.end());
+#endif
+        result.set_bit<FIELD_SHIFT,FIELD_MASK>(finder->second.idx);
       }
       return result;
     }
@@ -3601,7 +4002,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeNode::FieldState::unpack_physical_state(Deserializer &derez)
+    void RegionTreeNode::FieldState::unpack_physical_state(Deserializer &derez, unsigned shift /*= 0*/)
     //--------------------------------------------------------------------------
     {
       derez.deserialize(open_state);
@@ -3614,6 +4015,8 @@ namespace RegionRuntime {
         derez.deserialize(c);
         FieldMask open_mask;
         derez.deserialize(open_mask);
+        if (shift > 0)
+          open_mask.shift_left(shift);
         open_children[c] = open_mask;
         // Rebuild the valid fields mask as we're doing this
         valid_fields |= open_mask;
@@ -4690,7 +5093,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse)
+    void RegionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse, unsigned shift /*= 0*/)
     //--------------------------------------------------------------------------
     {
       if (physical_states.find(ctx) == physical_states.end())
@@ -4705,6 +5108,8 @@ namespace RegionRuntime {
         derez.deserialize(key);
         FieldMask valid_mask;
         derez.deserialize(valid_mask);
+        if (shift > 0)
+          valid_mask.shift_left(shift);
         InstanceView *new_view = context->find_view(key);
         if (state.valid_views.find(new_view) == state.valid_views.end())
         {
@@ -4719,13 +5124,13 @@ namespace RegionRuntime {
       std::vector<FieldState> new_field_states(num_open_parts);
       for (unsigned idx = 0; idx < num_open_parts; idx++)
       {
-        new_field_states[idx].unpack_physical_state(derez);
+        new_field_states[idx].unpack_physical_state(derez, shift);
         if (recurse)
         {
           for (std::map<Color,FieldMask>::const_iterator it = new_field_states[idx].open_children.begin();
                 it != new_field_states[idx].open_children.end(); it++)
           {
-            color_map[it->first]->unpack_physical_state(ctx, derez, true/*recurse*/);
+            color_map[it->first]->unpack_physical_state(ctx, derez, true/*recurse*/, shift);
           }
         }
       }
@@ -5368,7 +5773,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse)
+    void PartitionNode::unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse, unsigned shift)
     //--------------------------------------------------------------------------
     {
       if (physical_states.find(ctx) == physical_states.end())
@@ -5379,13 +5784,13 @@ namespace RegionRuntime {
       std::vector<FieldState> new_field_states(num_field_states);
       for (unsigned idx = 0; idx < num_field_states; idx++)
       {
-        new_field_states[idx].unpack_physical_state(derez);
+        new_field_states[idx].unpack_physical_state(derez, shift);
         if (recurse)
         {
           for (std::map<Color,FieldMask>::const_iterator it = new_field_states[idx].open_children.begin();
                 it != new_field_states[idx].open_children.end(); it++)
           {
-            color_map[it->first]->unpack_physical_state(ctx, derez, true/*recurse*/);
+            color_map[it->first]->unpack_physical_state(ctx, derez, true/*recurse*/, shift);
           }
         }
       }
@@ -5947,11 +6352,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_user(UniqueID uid, unsigned refs)
+    void InstanceView::remove_user(UniqueID uid, unsigned refs, bool strict /*= true*/)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
+      if ((it == added_users.end()) && !strict)
+        return;
 #ifdef DEBUG_HIGH_LEVEL
       assert(it != added_users.end());
       assert(it->second.references > 0);
@@ -5967,11 +6374,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_copy(Event copy_e)
+    void InstanceView::remove_copy(Event copy_e, bool strict /*= true*/)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<Event,ReductionOpID>::iterator it = added_copy_users.find(copy_e);
+      if ((it == added_copy_users.end()) && !strict)
+        return;
 #ifdef DEBUG_HIGH_LEVEL
       assert(it != added_copy_users.end());
 #endif
@@ -7178,6 +7587,54 @@ namespace RegionRuntime {
         ReductionOpID redop;
         derez.deserialize(redop);
         result->added_copy_users[copy_event] = redop;
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    size_t InstanceView::compute_simple_return(void) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(local_view);
+#endif
+      size_t result = 0;
+      result += sizeof(manager->unique_id);
+      result += sizeof(LogicalRegion); // parent handle
+      result += sizeof(logical_region->handle);
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::pack_simple_return(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(manager->unique_id);
+      if (parent == NULL)
+        rez.serialize(LogicalRegion::NO_REGION);
+      else
+        rez.serialize(parent->logical_region->handle);
+      rez.serialize(logical_region->handle);
+    }
+
+    //--------------------------------------------------------------------------
+    /*static*/ void InstanceView::unpack_simple_return(RegionTreeForest *context, Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      UniqueManagerID mid;
+      LogicalRegion handle, parent_handle;
+      derez.deserialize(mid);
+      derez.deserialize(parent_handle);
+      derez.deserialize(handle);
+      // Check to see if it has already been created
+      if (!context->has_view(InstanceKey(mid, handle)))
+      {
+        // Then we need to make it
+        InstanceManager *manager = context->find_manager(mid);
+        InstanceView *parent = NULL;
+        if (!(parent_handle == LogicalRegion::NO_REGION))
+          parent = context->find_view(InstanceKey(mid, parent_handle));
+        RegionNode *node = context->get_node(handle);
+        context->create_view(manager, parent, node, true/*made local*/);
       }
     }
 
