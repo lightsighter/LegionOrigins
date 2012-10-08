@@ -2709,11 +2709,18 @@ namespace RegionRuntime {
     Color IndexSpaceNode::generate_color(void)
     //--------------------------------------------------------------------------
     {
-      Color result = (color_map.rbegin())->first+1;
+      if (!color_map.empty())
+      {
+        Color result = (color_map.rbegin())->first+1;
 #ifdef DEBUG_HIGH_LEVEL
-      assert(color_map.find(result) == color_map.end());
+        assert(color_map.find(result) == color_map.end());
 #endif
-      return result;
+        return result;
+      }
+      else
+      {
+        return 0;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -3586,8 +3593,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!az.path.empty());
       assert(color_match(az.path.back()));
-      assert(logical_states.find(az.ctx) != logical_states.end());
 #endif
+      if (logical_states.find(az.ctx) == logical_states.end())
+        logical_states[az.ctx] = LogicalState();
       
       LogicalState &state = logical_states[az.ctx];
       if (az.path.size() == 1)
@@ -4372,8 +4380,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!rm.path.empty());
       assert(rm.path.back() == row_source->color);
-      assert(physical_states.find(rm.ctx) != physical_states.end());
 #endif
+      if (physical_states.find(rm.ctx) == physical_states.end())
+        physical_states[rm.ctx] = PhysicalState();
+
       PhysicalState &state = physical_states[rm.ctx];
       if (rm.path.size() == 1)
       {
@@ -5603,8 +5613,10 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!rm.path.empty());
       assert(rm.path.back() == row_source->color);
-      assert(physical_states.find(rm.ctx) != physical_states.end());
 #endif
+      if (physical_states.find(rm.ctx) == physical_states.end())
+        physical_states[rm.ctx] = PhysicalState();
+
       PhysicalState &state = physical_states[rm.ctx];
       if (rm.path.size() == 1)
       {

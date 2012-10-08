@@ -3299,8 +3299,8 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task %s (ID %d) with "
                             "high level runtime on processor %x", task->get_unique_id(), task->variants->name, task_id, local_proc.id);
 #endif
-      task->set_requirements(indexes, fields, regions, true/*perform checks*/);
       task->set_index_space(index_space, arg_map, must);
+      task->set_requirements(indexes, fields, regions, true/*perform checks*/);
 
       // Need to get the future map prior to putting this on the queue to execute
       FutureMap result = task->get_future_map();
@@ -3335,8 +3335,8 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task %s (ID %d) with "
                             "high level runtime on processor %x", task->get_unique_id(), task->variants->name, task_id, local_proc.id);
 #endif
-      task->set_requirements(indexes, fields, regions, true/*perform checks*/);
       task->set_index_space(index_space, arg_map, must);
+      task->set_requirements(indexes, fields, regions, true/*perform checks*/);
       task->set_reduction_args(reduction, initial_value);
 
       // Need to get this before putting it on the queue to execute
@@ -3411,7 +3411,7 @@ namespace RegionRuntime {
       for (std::map<Color,ColoringFunctor::ColoredPoints<unsigned> >::const_iterator cit = 
             coloring.begin(); cit != coloring.end(); cit++)
       {
-        LowLevel::ElementMask child_mask;
+        LowLevel::ElementMask child_mask(parent.get_valid_mask().get_num_elmts());
         const ColoringFunctor::ColoredPoints<unsigned> &coloring = cit->second;
         for (std::set<unsigned>::const_iterator it = coloring.points.begin();
               it != coloring.points.end(); it++)
@@ -4050,7 +4050,7 @@ namespace RegionRuntime {
       assert(result != NULL);
       bool activated = 
 #endif
-      result->activate();
+      result->activate(parent);
 #ifdef DEBUG_HIGH_LEVEL
       assert(activated);
 #endif

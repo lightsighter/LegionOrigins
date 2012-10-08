@@ -1001,6 +1001,7 @@ namespace RegionRuntime {
       created_regions.clear();
       launch_preconditions.clear();
       mapped_preconditions.clear();
+      map_dependent_waiters.clear();
       if (args != NULL)
       {
         free(args);
@@ -1071,6 +1072,7 @@ namespace RegionRuntime {
       indexes = index_reqs;
       fields  = field_reqs;
       regions = region_reqs;
+      map_dependent_waiters.resize(regions.size());
       if (perform_checks)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -2542,7 +2544,9 @@ namespace RegionRuntime {
       {
         // See if this region was pre-mapped
         InstanceRef premapped = find_premapped_region(idx);
-        if (!premapped.is_virtual_ref())
+        // If it was premapped or it has no instance fields to map, continue
+        if (!premapped.is_virtual_ref() ||
+            (regions[idx].instance_fields.empty()))
         {
           lock();
           non_virtual_mapped_region.push_back(true);
@@ -3160,7 +3164,6 @@ namespace RegionRuntime {
     void IndividualTask::deactivate(void)
     //--------------------------------------------------------------------------
     {
-      map_dependent_waiters.clear();
       if (future != NULL)
       {
         if (future->remove_reference())
@@ -4712,7 +4715,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       mapped_points.clear();
-      map_dependent_waiters.clear();
       if (future_map != NULL)
       {
         if (future_map->remove_reference())

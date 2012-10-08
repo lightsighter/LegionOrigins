@@ -284,6 +284,8 @@ namespace RegionRuntime {
       // Additional conditions prior to this task being considered
       // mapped, primarily come from virtual walks for remote tasks
       std::set<Event> mapped_preconditions;
+      // The waiters for each region to be mapped
+      std::vector<std::set<GeneralizedOperation*> > map_dependent_waiters;
     };
 
     /////////////////////////////////////////////////////////////
@@ -565,8 +567,6 @@ namespace RegionRuntime {
     public:
       Future get_future(void);
     private:
-      // The waiters for each region to be mapped
-      std::vector<std::set<GeneralizedOperation*> > map_dependent_waiters;
       Processor target_proc;
       // Keep track of both whether the value has been set as well
       // as what its value is if it has
@@ -734,8 +734,6 @@ namespace RegionRuntime {
       // Keep track of the number of points that have mapped this index space
       std::vector<unsigned> mapped_points;
       unsigned unmapped; // number of unmapped regions
-      // The waiters for each region to be mapped
-      std::vector<std::set<GeneralizedOperation*> > map_dependent_waiters;
       FutureMapImpl *future_map;
       FutureImpl *reduction_future;
       // Vector for tracking source copy instances when performing sanitization
