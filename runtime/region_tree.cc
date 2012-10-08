@@ -175,6 +175,68 @@ namespace RegionRuntime {
 #else
       context_lock.destroy();
 #endif
+      // Now we need to go through and delete all the things that we've created
+      for (std::map<IndexSpace,IndexSpaceNode*>::iterator it = index_nodes.begin();
+            it != index_nodes.end(); it++)
+      {
+        delete it->second;
+      }
+      for (std::map<IndexPartition,IndexPartNode*>::iterator it = index_parts.begin();
+            it != index_parts.end(); it++)
+      {
+        delete it->second;
+      }
+      for (std::map<FieldSpace,FieldSpaceNode*>::iterator it = field_nodes.begin(); 
+            it != field_nodes.end(); it++)
+      {
+        delete it->second;
+      }
+      for (std::map<LogicalRegion,RegionNode*>::iterator it = region_nodes.begin();
+            it != region_nodes.end(); it++)
+      {
+        delete it->second;
+      }
+      for (std::map<LogicalPartition,PartitionNode*>::iterator it = part_nodes.begin();
+            it != part_nodes.end(); it++)
+      {
+        delete it->second;
+      }
+      for (std::map<UniqueManagerID,InstanceManager*>::iterator it = managers.begin();
+            it != managers.end(); it++)
+      {
+        delete it->second;
+      }
+      for (std::map<InstanceKey,InstanceView*>::iterator it = views.begin();
+            it != views.end(); it++)
+      {
+        delete it->second;
+      }
+      if (!created_index_trees.empty())
+      {
+        for (std::list<IndexSpace>::const_iterator it = created_index_trees.begin();
+              it != created_index_trees.end(); it++)
+        {
+          log_leak(LEVEL_WARNING,"The index space tree rooted at index space %x was not deleted",
+                                  it->id);
+        }
+      }
+      if (!created_field_spaces.empty())
+      {
+        for (std::set<FieldSpace>::const_iterator it = created_field_spaces.begin();
+              it != created_field_spaces.end(); it++)
+        {
+          log_leak(LEVEL_WARNING,"The field space %x was not deleted", it->id);
+        }
+      }
+      if (!created_region_trees.empty())
+      {
+        for (std::list<LogicalRegion>::const_iterator it = created_region_trees.begin();
+              it != created_region_trees.end(); it++)
+        {
+          log_leak(LEVEL_WARNING,"The region tree rooted at logical region (%d,%x,%x) was not deleted",
+                    it->tree_id, it->index_space.id, it->field_space.id);
+        }
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -809,6 +871,9 @@ namespace RegionRuntime {
                                                               const std::vector<RegionRequirement> &regions)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Find the sets of trees we need to send
       // Go through and mark all the top nodes we need to send this tree
       for (std::vector<IndexSpaceRequirement>::const_iterator it = indexes.begin();
@@ -901,6 +966,9 @@ namespace RegionRuntime {
     void RegionTreeForest::pack_region_forest_shape(Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       rez.serialize(send_index_nodes.size());
       for (std::set<IndexSpaceNode*>::const_iterator it = send_index_nodes.begin();
             it != send_index_nodes.end(); it++)
@@ -928,6 +996,9 @@ namespace RegionRuntime {
     void RegionTreeForest::unpack_region_forest_shape(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       size_t num_index_trees, num_field_nodes, num_logical_trees;
       derez.deserialize(num_index_trees);
       for (unsigned idx = 0; idx < num_index_trees; idx++)
@@ -951,6 +1022,9 @@ namespace RegionRuntime {
                                                     FieldSpaceNode *field_node) const
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       std::set<FieldID> packing_fields;
       switch (mode)
       {
@@ -984,6 +1058,9 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_region_tree_state_size(const RegionRequirement &req, ContextID ctx, SendingMode mode)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(req.parent.field_space);
       // Field mask for packing is based on the computed packing fields 
       FieldMask packing_mask = compute_field_mask(req, mode, field_node);
@@ -1013,6 +1090,9 @@ namespace RegionRuntime {
     size_t RegionTreeForest::post_compute_region_tree_state_size(void)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Go through all the managers and views and compute the size needed to move them
       size_t result = 0;
       result += (2*sizeof(size_t)); // number of managers and number of views
@@ -1036,6 +1116,9 @@ namespace RegionRuntime {
     void RegionTreeForest::begin_pack_region_tree_state(Serializer &rez, unsigned long num_ways /*= 1*/)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       rez.serialize(unique_managers.size());
       for (std::set<InstanceManager*>::const_iterator it = unique_managers.begin();
             it != unique_managers.end(); it++)
@@ -1063,6 +1146,9 @@ namespace RegionRuntime {
                                                   SendingMode mode, Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Get the field mask for what we're packing
       FieldSpaceNode *field_node = get_node(req.parent.field_space);
       // Field mask for packing is based on the privilege fields
@@ -1086,6 +1172,9 @@ namespace RegionRuntime {
     void RegionTreeForest::begin_unpack_region_tree_state(Deserializer &derez, unsigned long split_factor /*= -1*/)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       size_t num_managers;
       derez.deserialize(num_managers);
       for (unsigned idx = 0; idx < num_managers; idx++)
@@ -1104,6 +1193,9 @@ namespace RegionRuntime {
     void RegionTreeForest::unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(req.parent.field_space);
       FieldMask unpacking_mask = compute_field_mask(req, mode, field_node);
       if (!unpacking_mask)
@@ -1131,6 +1223,9 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_reference_size(InstanceRef ref)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // For right now we're not even going to bother hooking these up to real references
       // since you shouldn't be able to remove it remotely anyway
       size_t result = 0;
@@ -1146,6 +1241,9 @@ namespace RegionRuntime {
     void RegionTreeForest::pack_reference(const InstanceRef &ref, Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       rez.serialize(ref.ready_event);
       rez.serialize(ref.required_lock);
       rez.serialize(ref.location);
@@ -1157,6 +1255,9 @@ namespace RegionRuntime {
     InstanceRef RegionTreeForest::unpack_reference(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       Event ready_event;
       derez.deserialize(ready_event);
       Lock req_lock;
@@ -1174,6 +1275,9 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_reference_size_return(InstanceRef ref)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       size_t result = 0;
       // Only sending back things required for removing a reference
       result += sizeof(ref.ready_event);
@@ -1187,6 +1291,9 @@ namespace RegionRuntime {
     void RegionTreeForest::pack_reference_return(InstanceRef ref, Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       rez.serialize(ref.ready_event);
       rez.serialize(ref.copy);
 #ifdef DEBUG_HIGH_LEVEL
@@ -1200,6 +1307,9 @@ namespace RegionRuntime {
     void RegionTreeForest::unpack_and_remove_reference(Deserializer &derez, UniqueID uid)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       Event ready_event;
       derez.deserialize(ready_event);
       bool copy;
@@ -1219,6 +1329,9 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_region_tree_updates_return(void)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Go through all our top trees and find the created partitions
       for (std::list<IndexSpaceNode*>::const_iterator it = top_index_trees.begin();
             it != top_index_trees.end(); it++)
@@ -1305,6 +1418,9 @@ namespace RegionRuntime {
     void RegionTreeForest::pack_region_tree_updates_return(Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Pack up any created partitions
       rez.serialize(new_index_part_nodes.size());
       for (std::vector<IndexPartNode*>::const_iterator it = new_index_part_nodes.begin();
@@ -1408,6 +1524,9 @@ namespace RegionRuntime {
     void RegionTreeForest::unpack_region_tree_updates_return(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Unpack new partitions
       size_t new_index_part_nodes;
       derez.deserialize(new_index_part_nodes);
@@ -1512,6 +1631,9 @@ namespace RegionRuntime {
                                                               bool overwrite, SendingMode mode)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(req.parent.field_space);
       FieldMask packing_mask = compute_field_mask(req, mode, field_node);
       if (!packing_mask)
@@ -1564,6 +1686,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
       assert(unique_views.size() == ordered_views.size());
 #endif
       // First filter out all the instances that are remote since they
@@ -1629,6 +1752,9 @@ namespace RegionRuntime {
     void RegionTreeForest::begin_pack_region_tree_state_return(Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       rez.serialize(unique_managers.size());
       for (std::set<InstanceManager*>::const_iterator it = unique_managers.begin();
             it != unique_managers.end(); it++)
@@ -1659,6 +1785,9 @@ namespace RegionRuntime {
                                                           bool overwrite, SendingMode mode, Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(req.parent.field_space);
       FieldMask packing_mask = compute_field_mask(req, mode, field_node);
       if (!packing_mask)
@@ -1711,6 +1840,9 @@ namespace RegionRuntime {
     void RegionTreeForest::end_pack_region_tree_state_return(Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Views first so we can't accidentally reclaim something prematurely
       rez.serialize(returning_views.size());
       for (std::vector<InstanceView*>::const_iterator it = returning_views.begin();
@@ -1757,6 +1889,9 @@ namespace RegionRuntime {
                                                             bool overwrite, SendingMode mode, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(req.parent.field_space);
       FieldMask unpacking_mask = compute_field_mask(req, mode, field_node);
       if (!unpacking_mask)
@@ -1796,6 +1931,9 @@ namespace RegionRuntime {
     void RegionTreeForest::end_unpack_region_tree_state_return(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // First unpack the views
       size_t num_returning_views;
       derez.deserialize(num_returning_views);
@@ -1820,6 +1958,9 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_created_state_return(ContextID ctx)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // There are several nice properties about packing the created state.  First,
       // since it only gets passed back at the end of a task there is no need to
       // pass back any of the state/users in the InstanceViews since they all
@@ -1935,6 +2076,9 @@ namespace RegionRuntime {
     void RegionTreeForest::pack_created_state_return(ContextID ctx, Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // First pack the unique managers and the ordered views 
       rez.serialize(unique_managers.size());
       for (std::set<InstanceManager*>::const_iterator it = unique_managers.begin();
@@ -1999,6 +2143,9 @@ namespace RegionRuntime {
     void RegionTreeForest::unpack_created_state_return(ContextID ctx, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Now doing the unpack
       size_t num_created_managers;
       derez.deserialize(num_created_managers);
@@ -2057,6 +2204,9 @@ namespace RegionRuntime {
     size_t RegionTreeForest::compute_leaked_return_size(void)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       size_t result = 0;
       result += sizeof(size_t); // number of escaped users 
       result += (escaped_users.size() * (sizeof(EscapedUser) + sizeof(unsigned)));
@@ -2069,6 +2219,9 @@ namespace RegionRuntime {
     void RegionTreeForest::pack_leaked_return(Serializer &rez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       rez.serialize(escaped_users.size());
       for (std::map<EscapedUser,unsigned>::const_iterator it = escaped_users.begin();
             it != escaped_users.end(); it++)
@@ -2090,6 +2243,9 @@ namespace RegionRuntime {
     void RegionTreeForest::unpack_leaked_return(Deserializer &derez)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       // Note in some case the leaked references were remove by
       // the user who copied them back earlier and removed them
       // explicitly.  In this case we ignore any references which
@@ -4560,21 +4716,31 @@ namespace RegionRuntime {
                 continue;
               if (!(user.field_mask - it->second))
               {
+                // Check to see if have any WAR dependences
+                // in which case we'll skip it for a something better
+                if (enable_WAR && HAS_WRITE(rm.req) && it->first->has_war_dependence(user.field_mask))
+                  continue;
+                // No WAR problems, so it it is good
                 result = it->first;
                 // No need to set needed fields since everything is valid
                 break;
               }
             }
+            // If we found a good instance break, otherwise go onto
+            // the partial instances
+            if (result != NULL)
+            {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(result != NULL);
-            assert(!needed_fields);
+              assert(!needed_fields);
 #endif
-            break; // found what we wanted
+              break;
+            }
           }
-          else
+          // Do this if we couldn't find a better choice
           {
-            // Find the valid instance with the most valid fields and 
-            // Strip out entires along the way to avoid 
+            // These are instances which have space for all the required fields
+            // but only a subset of those fields contain valid data.
+            // Find the valid instance with the most valid fields to use.
             int covered_fields = 0;
             for (std::list<std::pair<InstanceView*,FieldMask> >::const_iterator it =
                   valid_instances.begin(); it != valid_instances.end(); it++)
@@ -4584,16 +4750,22 @@ namespace RegionRuntime {
               int cf = FieldMask::pop_count(it->second);
               if (cf > covered_fields)
               {
+                // Check to see if we have any WAR dependences which might disqualify us
+                if (enable_WAR && HAS_WRITE(rm.req) && it->first->has_war_dependence(user.field_mask))
+                  continue;
                 covered_fields = cf;
                 result = it->first;
                 needed_fields = user.field_mask - it->second; 
               }
             }
+            // If we got a good one break out, otherwise we'll try to make a new instance
+            if (result != NULL)
+            {
 #ifdef DEBUG_HIGH_LEVEL
-            assert(result != NULL);
-            assert(!!needed_fields);
+              assert(!!needed_fields);
 #endif
-            break;
+              break;
+            }
           }
         }
         // If it didn't find a valid instance, try to make one
@@ -5911,6 +6083,23 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    InstanceManager::~InstanceManager(void)
+    //--------------------------------------------------------------------------
+    {
+      if (!remote && instance.exists())
+      {
+        log_leak(LEVEL_WARNING,"Leaking physical instance %x in memory %x",
+                    instance.id, location.id);
+      }
+      if (remote && !remote_frac.is_empty())
+      {
+        log_leak(LEVEL_WARNING,"Leaking remote fraction (%ld/%ld) of instance %x "
+                    "in memory %x (runtime bug)", remote_frac.get_num(),
+                    remote_frac.get_denom(), instance.id, location.id);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     void InstanceManager::add_reference(void)
     //--------------------------------------------------------------------------
     {
@@ -6126,6 +6315,10 @@ namespace RegionRuntime {
       // Finally mark this manager as remote since it has now been sent
       // back and should no longer be allowed to be deleted from this point
       remote = true;
+      // Mark also that we still hold half the remote part, the other
+      // half part will be sent back to enclosing context.  Note this is
+      // done implicitly (see below in unpack_manager_return).
+      remote_frac = InstFrac(1,2);
     }
 
     //--------------------------------------------------------------------------
@@ -6159,8 +6352,12 @@ namespace RegionRuntime {
       FieldSpaceNode *field_node = context->get_node(fsp);
       FieldMask allocated_fields = field_node->get_field_mask(fields);
       // Now make the instance manager
-      context->create_manager(location, inst, field_infos, 
-                  fsp, allocated_fields, false/*remote*/, false/*clone*/, mid);
+      InstanceManager *result = context->create_manager(location, inst, field_infos, 
+                                  fsp, allocated_fields, false/*remote*/, false/*clone*/, mid);
+      // Mark that we only have half the local frac since the other half is still
+      // on the original node.  It's also possible that the other half will be unpacked
+      // later in this process and we'll be whole again.
+      result->local_frac = InstFrac(1,2);
     }
 
     //--------------------------------------------------------------------------
@@ -6428,6 +6625,18 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       return (!to_be_invalidated && valid_view);
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::has_war_dependence(const FieldMask &mask) const
+    //--------------------------------------------------------------------------
+    {
+      // Right now we'll just look for anything which might be reading this
+      // instance that might cause a dependence.  A future optimization is
+      // to check for things like simultaneous reductions which should be ok.
+      if ((parent != NULL) && parent->has_war_dependence_above(mask))
+        return true;
+      return has_war_dependence_below(mask);
     }
 
     //--------------------------------------------------------------------------
@@ -6828,6 +7037,53 @@ namespace RegionRuntime {
         }
       }
       return all_dominated;
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::has_war_dependence_above(const FieldMask &mask) const
+    //--------------------------------------------------------------------------
+    {
+      if (has_local_war_dependence(mask))
+        return true;
+      else if (parent != NULL)
+        return parent->has_war_dependence_above(mask);
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::has_war_dependence_below(const FieldMask &mask) const
+    //--------------------------------------------------------------------------
+    {
+      if (has_local_war_dependence(mask))
+        return true;
+      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it =
+            children.begin(); it != children.end(); it++)
+      {
+        if (it->second->has_war_dependence_below(mask))
+          return true;
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool InstanceView::has_local_war_dependence(const FieldMask &mask) const
+    //--------------------------------------------------------------------------
+    {
+      // If there is anyone who matches on this mask, then there is
+      // a WAR dependence
+      for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
+            it != epoch_users.end(); it++)
+      {
+        if (!(it->second * mask))
+          return true;
+      }
+      for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+            it != epoch_copy_users.end(); it++)
+      {
+        if (!(it->second * mask))
+          return true;
+      }
+      return false;
     }
 
     //--------------------------------------------------------------------------

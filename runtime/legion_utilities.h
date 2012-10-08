@@ -134,6 +134,9 @@ namespace RegionRuntime {
       bool is_whole(void) const;
       bool is_empty(void) const;
     public:
+      inline T get_num(void) const { return numerator; }
+      inline T get_denom(void) const { return denominator; }
+    public:
       Fraction<T>& operator=(const Fraction<T> &rhs);
     private:
       T numerator;

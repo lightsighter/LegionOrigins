@@ -175,6 +175,10 @@ namespace RegionRuntime {
       std::map<FieldSpace,FieldSpaceNode*>     field_nodes;
       std::map<LogicalRegion,RegionNode*>     region_nodes;
       std::map<LogicalPartition,PartitionNode*> part_nodes;
+    private:
+      // References to delete when cleaning up
+      std::map<UniqueManagerID,InstanceManager*> managers;
+      std::map<InstanceKey,InstanceView*> views;
     private: // lists of new things to know what to return
       std::list<IndexSpace> created_index_trees;
       std::list<IndexSpace> deleted_index_spaces;
@@ -205,10 +209,6 @@ namespace RegionRuntime {
       std::set<EscapedCopy>             escaped_copies;
       std::vector<RegionNode*>          created_field_space_trees;
       std::vector<FieldSpaceNode*>      created_field_nodes;
-    private:
-      // References to delete when cleaning up
-      std::map<UniqueManagerID,InstanceManager*> managers;
-      std::map<InstanceKey,InstanceView*> views;
     private:
       std::list<IndexSpaceNode*> top_index_trees;
       std::list<RegionNode*>   top_logical_trees;
@@ -681,6 +681,7 @@ namespace RegionRuntime {
     public:
       InstanceManager(Memory m, PhysicalInstance inst, const std::map<FieldID,IndexSpace::CopySrcDstField> &infos,
               FieldSpace fsp, const FieldMask &mask, RegionTreeForest *ctx, UniqueManagerID mid, bool rem, bool clone);
+      ~InstanceManager(void);
     public:
       inline Memory get_location(void) const { return location; }
       inline PhysicalInstance get_instance(void) const
@@ -807,6 +808,7 @@ namespace RegionRuntime {
       void mark_view(bool valid, bool force);
       void mark_to_be_invalidated(void);
       bool is_valid_view(void) const;
+      bool has_war_dependence(const FieldMask &mask) const;
     public:
       inline Memory get_location(void) const { return manager->get_location(); }
       inline const FieldMask& get_physical_mask(void) const { return manager->get_allocated_fields(); }
@@ -823,6 +825,9 @@ namespace RegionRuntime {
       bool find_dependences_below(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
       bool find_local_dependences(std::set<Event> &wait_on, const PhysicalUser &user);
       bool find_local_dependences(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
+      bool has_war_dependence_above(const FieldMask &mask) const;
+      bool has_war_dependence_below(const FieldMask &mask) const;
+      bool has_local_war_dependence(const FieldMask &mask) const;
       void update_valid_event(Event new_valid, const FieldMask &mask);
       template<typename T>
       void remove_invalid_elements(std::map<T,FieldMask> &elements, const FieldMask &new_mask);
