@@ -591,7 +591,10 @@ namespace RegionRuntime {
 #endif
       // Mark this as one of the deleted regions
       deleted_regions.push_back(handle);
-      destroy_node(get_node(handle), true/*top*/);
+      // Check to see if the region node has been made if, it hasn't been
+      // made, then we don't need to worry about deleting anything
+      if (has_node(handle))
+        destroy_node(get_node(handle), true/*top*/);
       for (std::list<LogicalRegion>::iterator it = created_region_trees.begin();
             it != created_region_trees.end(); it++)
       {
@@ -613,7 +616,10 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       deleted_partitions.push_back(handle);
-      destroy_node(get_node(handle), true/*top*/);
+      // Check to see if it even exists, if it doesn't then
+      // we don't need to worry about deleting it
+      if (has_node(handle))
+        destroy_node(get_node(handle), true/*top*/);
     }
 
     //--------------------------------------------------------------------------
@@ -2329,7 +2335,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(region_nodes.find(r) == region_nodes.end());
+      assert(!has_node(r));
+      if (par != NULL)
+      {
+        assert(r.field_space == par->handle.field_space);
+        assert(r.tree_id == par->handle.tree_id);
+      }
 #endif
       IndexSpaceNode *row_src = get_node(r.index_space);
       FieldSpaceNode *col_src = NULL;
@@ -2355,7 +2366,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(part_nodes.find(p) == part_nodes.end());
+      assert(!has_node(p));
+      if (par != NULL)
+      {
+        assert(p.field_space == par->handle.field_space);
+        assert(p.tree_id == par->handle.tree_id);
+      }
 #endif
       IndexPartNode *row_src = get_node(p.index_partition);
       PartitionNode *result = new PartitionNode(p, par, row_src, add, this);
@@ -2391,7 +2407,7 @@ namespace RegionRuntime {
       }
       // Now remove ourselves from the set of nodes and delete
 #ifdef DEBUG_HIGH_LEVEL
-      assert(index_nodes.find(node->handle) != index_nodes.end());
+      assert(has_node(node->handle));
 #endif
       index_nodes.erase(node->handle);
       // Free the memory
@@ -2419,7 +2435,7 @@ namespace RegionRuntime {
         node->parent->remove_child(node->color);
       }
 #ifdef DEBUG_HIGH_LEVEL
-      assert(index_parts.find(node->handle) != index_parts.end());
+      assert(has_node(node->handle));
 #endif
       index_parts.erase(node->handle);
       // Free the memory
@@ -2462,10 +2478,13 @@ namespace RegionRuntime {
       for (std::map<Color,PartitionNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(has_node(it->second->handle));
+#endif
         destroy_node(it->second, false/*top*/);
       }
 #ifdef DEBUG_HIGH_LEVEL
-      assert(region_nodes.find(node->handle) != region_nodes.end());
+      assert(has_node(node->handle));
 #endif
       region_nodes.erase(node->handle);
       delete node;
@@ -2486,13 +2505,51 @@ namespace RegionRuntime {
       for (std::map<Color,RegionNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(has_node(it->second->handle));
+#endif
         destroy_node(it->second, false/*top*/);
       }
 #ifdef DEBUG_HIGH_LEVEL
-      assert(part_nodes.find(node->handle) != part_nodes.end());
+      assert(has_node(node->handle));
 #endif
       part_nodes.erase(node->handle);
       delete node;
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::has_node(IndexSpace space) const
+    //--------------------------------------------------------------------------
+    {
+      return (index_nodes.find(space) != index_nodes.end());
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::has_node(IndexPartition part) const
+    //--------------------------------------------------------------------------
+    {
+      return (index_parts.find(part) != index_parts.end());
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::has_node(FieldSpace space) const
+    //--------------------------------------------------------------------------
+    {
+      return (field_nodes.find(space) != field_nodes.end());
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::has_node(LogicalRegion handle) const
+    //--------------------------------------------------------------------------
+    {
+      return (region_nodes.find(handle) != region_nodes.end());
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::has_node(LogicalPartition handle) const
+    //--------------------------------------------------------------------------
+    {
+      return (part_nodes.find(handle) != part_nodes.end());
     }
 
     //--------------------------------------------------------------------------
@@ -2657,6 +2714,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->color) == color_map.end());
+      assert(context->has_node(node->handle));
 #endif
       color_map[node->color] = node;
     }
@@ -2922,6 +2980,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->color) == color_map.end());
+      assert(context->has_node(node->handle));
 #endif
       color_map[node->color] = node;
     }
@@ -4314,6 +4373,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->row_source->color) == color_map.end());
+      assert(context->has_node(node->handle));
 #endif
       color_map[node->row_source->color] = node;
     }
@@ -4334,8 +4394,8 @@ namespace RegionRuntime {
       if (finder == color_map.end())
       {
         IndexPartNode *index_child = row_source->get_child(c);
-        LogicalPartition handle(handle.tree_id, index_child->handle, handle.field_space);
-        return context->create_node(handle, this, true/*add*/);  
+        LogicalPartition child_handle(handle.tree_id, index_child->handle, handle.field_space);
+        return context->create_node(child_handle, this, true/*add*/);  
       }
       return finder->second;
     }
@@ -5052,8 +5112,9 @@ namespace RegionRuntime {
         AutoLock m_lock(rm.mapper_lock);
         blocking_factor = rm.mapper->select_region_layout(rm.task, rm.req, rm.idx, location, blocking_factor);
       }
+      FieldSpaceNode *field_node = context->get_node(handle.field_space);
       // Now get the field Mask and see if we can make the instance
-      InstanceManager *manager = column_source->create_instance(location, row_source->handle, 
+      InstanceManager *manager = field_node->create_instance(location, row_source->handle, 
                                                       rm.req.instance_fields, blocking_factor);
       // See if we made the instance
       InstanceView *result = NULL;
@@ -5548,6 +5609,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(color_map.find(node->row_source->color) == color_map.end());
+      assert(context->has_node(node->handle));
 #endif
       color_map[node->row_source->color] = node;
     }
@@ -5568,8 +5630,8 @@ namespace RegionRuntime {
       if (finder == color_map.end())
       {
         IndexSpaceNode *index_child = row_source->get_child(c);
-        LogicalRegion handle(handle.tree_id, index_child->handle, handle.field_space);
-        return context->create_node(handle, this, true/*add*/);
+        LogicalRegion child_handle(handle.tree_id, index_child->handle, handle.field_space);
+        return context->create_node(child_handle, this, true/*add*/);
       }
       return finder->second;
     }
@@ -6531,7 +6593,12 @@ namespace RegionRuntime {
     bool InstanceKey::operator<(const InstanceKey &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((mid < rhs.mid) || (handle < rhs.handle));
+      if (mid < rhs.mid)
+        return true;
+      else if (mid > rhs.mid)
+        return false;
+      else
+        return (handle < rhs.handle);
     }
 
     /////////////////////////////////////////////////////////////
@@ -8061,7 +8128,12 @@ namespace RegionRuntime {
     bool EscapedUser::operator<(const EscapedUser &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((view_key < rhs.view_key) || (user < rhs.user));
+      if (view_key < rhs.view_key)
+        return true;
+      else if (!(view_key == rhs.view_key)) // therefore greater than
+        return false;
+      else
+        return (user < rhs.user);
     }
 
     /////////////////////////////////////////////////////////////
@@ -8079,7 +8151,12 @@ namespace RegionRuntime {
     bool EscapedCopy::operator<(const EscapedCopy &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((view_key < rhs.view_key) || (copy_event < rhs.copy_event));
+      if (view_key < rhs.view_key)
+        return true;
+      else if (!(view_key == rhs.view_key)) // therefore greater than
+        return false;
+      else
+        return (copy_event < rhs.copy_event);
     }
 
     /////////////////////////////////////////////////////////////

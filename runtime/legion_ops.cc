@@ -1863,10 +1863,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // Note we don't need to defer anything here since that has already
-      // been handled by a DeletionOperation 
-      lock_context();
+      // been handled by a DeletionOperation.  No need to hold the context
+      // lock either since the enclosing deletion already has it.
       forest_ctx->destroy_index_space(space);
-      unlock_context();
       // Check to see if it is in the list of spaces that we created
       // and if it is then delete it
       lock();
@@ -1906,10 +1905,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // No need to worry about deferring this, it's already been done
-      // by the DeletionOperation
-      lock_context();
+      // by the DeletionOperation.  The DeletionOperation already has
+      // taken the context lock too.
       forest_ctx->destroy_index_partition(pid);
-      unlock_context();
     }
 
     //--------------------------------------------------------------------------
@@ -1974,10 +1972,9 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // No need to worry about deferring this, it's already been done
-      // by the DeletionOperation
-      lock_context();
+      // by the DeletionOperation.  The DeletionOperation has also taken
+      // the context lock.
       forest_ctx->destroy_field_space(space);
-      unlock_context();
       // Also check to see if this is one of the field spaces we created
       lock();
       for (std::list<FieldSpace>::iterator it = created_field_spaces.begin();
@@ -2081,10 +2078,8 @@ namespace RegionRuntime {
       }
 #endif
       // No need to worry about deferring this, it's already been done
-      // by the DeletionOperation
-      lock_context();
+      // by the DeletionOperation.  DeletionOperation has context lock too.
       forest_ctx->destroy_region(handle);
-      unlock_context();
       // Also check to see if it is one of created regions so we can delete it
       lock();
       for (std::list<LogicalRegion>::iterator it = created_regions.begin();
@@ -2111,9 +2106,9 @@ namespace RegionRuntime {
         exit(ERROR_LEAF_TASK_VIOLATION);
       }
 #endif
-      lock_context();
+      // The DeletionOperation already took the context lock and has
+      // deffered this operation to observe any dependences.
       forest_ctx->destroy_partition(handle);
-      unlock_context();
     }
 
     //--------------------------------------------------------------------------
@@ -3828,12 +3823,12 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!is_leaf); // shouldn't be here if we're a leaf task
 #endif
-      lock_context();
       // Make sure all the deletion operations for this task have been performed
       // to ensure that the region tree is in a good state either to be sent back
       // or for other users to begin using it.
       flush_deletions();
 
+      lock_context();
       std::set<Event> cleanup_events;
       // Get the termination events for all of the tasks
       {

@@ -152,6 +152,12 @@ namespace RegionRuntime {
       RegionNode*     get_node(LogicalRegion handle);
       PartitionNode * get_node(LogicalPartition handle);
     public:
+      bool has_node(IndexSpace space) const;
+      bool has_node(IndexPartition part) const;
+      bool has_node(FieldSpace space) const;
+      bool has_node(LogicalRegion handle) const;
+      bool has_node(LogicalPartition handle) const;
+    public:
       InstanceView* create_view(InstanceManager *manager, InstanceView *par, RegionNode *reg, bool made_local);
       InstanceManager* create_manager(Memory location, PhysicalInstance inst, 
                         const std::map<FieldID,IndexSpace::CopySrcDstField> &infos, FieldSpace fsp,

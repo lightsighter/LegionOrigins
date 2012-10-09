@@ -563,8 +563,26 @@ namespace RegionRuntime {
     bool IndexSpaceRequirement::operator<(const IndexSpaceRequirement &rhs) const
     //--------------------------------------------------------------------------
     {
-      return (handle < rhs.handle) || (privilege < rhs.privilege) ||
-             (parent < rhs.parent) || (verified < rhs.verified);
+      if (handle < rhs.handle)
+        return true;
+      else if (handle != rhs.handle) // therefore greater than
+        return false;
+      else
+      {
+        if (privilege < rhs.privilege)
+          return true;
+        else if (privilege > rhs.privilege)
+          return false;
+        else
+        {
+          if (parent < rhs.parent)
+            return true;
+          else if (parent != rhs.parent) // therefore greater than
+            return false;
+          else
+            return verified < rhs.verified;
+        }
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -598,7 +616,19 @@ namespace RegionRuntime {
     bool FieldSpaceRequirement::operator<(const FieldSpaceRequirement &rhs) const
     //--------------------------------------------------------------------------
     {
-      return (handle < rhs.handle) || (privilege < rhs.privilege) || (verified < rhs.verified);
+      if (handle < rhs.handle)
+        return true;
+      else if (!(handle == rhs.handle)) // therefore greater than
+        return false;
+      else
+      {
+        if (privilege < rhs.privilege)
+          return true;
+        else if (privilege > rhs.privilege)
+          return false;
+        else
+          return verified < rhs.verified;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -805,24 +835,94 @@ namespace RegionRuntime {
     bool RegionRequirement::operator<(const RegionRequirement &rhs) const
     //--------------------------------------------------------------------------
     {
-      if ((handle_type < rhs.handle_type) || (privilege < rhs.privilege) ||
-          (prop < rhs.prop) || (parent < rhs.parent) || (redop < rhs.redop) ||
-          (tag < rhs.tag) || (verified < rhs.verified) ||
-          (sanitized < rhs.sanitized) || (inst_type < rhs.inst_type))
-      {
+      if (handle_type < rhs.handle_type)
         return true;
-      }
-      if (((handle_type == SINGULAR) && (region < rhs.region)) ||
-          ((handle_type == PROJECTION) && ((partition < rhs.partition) || (projection < rhs.projection))))
+      else if (handle_type > rhs.handle_type)
+        return false;
+      else
       {
-        return true;
+        if (privilege < rhs.privilege)
+          return true;
+        else if (privilege > rhs.privilege)
+          return false;
+        else
+        {
+          if (prop < rhs.prop)
+            return true;
+          else if (prop > rhs.prop)
+            return false;
+          else
+          {
+            if (parent < rhs.parent)
+              return true;
+            else if (!(parent == rhs.parent)) // therefore greater than
+              return false;
+            else
+            {
+              if (redop < rhs.redop)
+                return true;
+              else if (redop > rhs.redop)
+                return false;
+              else
+              {
+                if (tag < rhs.tag)
+                  return true;
+                else if (tag > rhs.tag)
+                  return false;
+                else
+                {
+                  if (verified < rhs.verified)
+                    return true;
+                  else if (verified > rhs.verified)
+                    return false;
+                  else
+                  {
+                    if (sanitized < rhs.sanitized)
+                      return true;
+                    else if (sanitized > rhs.sanitized)
+                      return false;
+                    else
+                    {
+                      if (inst_type < rhs.inst_type)
+                        return true;
+                      else if (inst_type > rhs.inst_type)
+                        return false;
+                      else
+                      {
+                        if (privilege_fields < rhs.privilege_fields)
+                          return true;
+                        else if (privilege_fields > rhs.privilege_fields)
+                          return false;
+                        else
+                        {
+                          if (instance_fields < rhs.instance_fields)
+                            return true;
+                          else if (instance_fields > rhs.instance_fields)
+                            return false;
+                          else
+                          {
+                            if (handle_type == SINGULAR)
+                              return (region < rhs.region);
+                            else
+                            {
+                              if (partition < rhs.partition)
+                                return true;
+                              else if (!(partition == rhs.partition)) // therefore greater than
+                                return false;
+                              else
+                                return (projection < rhs.projection);
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
-      if ((privilege_fields.size() < rhs.privilege_fields.size()) ||
-          (instance_fields.size() < rhs.privilege_fields.size()))
-      {
-        return true;
-      }
-      return ((privilege_fields < rhs.privilege_fields) || (instance_fields < rhs.instance_fields));
     }
 
     //--------------------------------------------------------------------------
@@ -1013,15 +1113,23 @@ namespace RegionRuntime {
     bool PhysicalRegion::operator<(const PhysicalRegion &reg) const
     //--------------------------------------------------------------------------
     {
-      if (is_impl != reg.is_impl)
+      if (is_impl < reg.is_impl)
+        return true;
+      else if (is_impl > reg.is_impl)
         return false;
-      if (is_impl)
-      {
-        return (op.impl < reg.op.impl);
-      }
       else
       {
-        return ((op.map < reg.op.map) || (gen_id < reg.gen_id));
+        if (is_impl)
+          return (op.impl < reg.op.impl);
+        else
+        {
+          if (op.map < reg.op.map)
+            return true;
+          else if (op.map > reg.op.map)
+            return false;
+          else
+            return (gen_id < reg.gen_id);
+        }
       }
     }
 
@@ -1894,7 +2002,12 @@ namespace RegionRuntime {
     bool Predicate::operator<(const Predicate &p) const
     //--------------------------------------------------------------------------
     {
-      return (const_value < p.const_value) || (impl < p.impl);
+      if (const_value < p.const_value)
+        return true;
+      else if (const_value > p.const_value)
+        return false;
+      else
+        return (impl < p.impl);
     }
 
     /////////////////////////////////////////////////////////////

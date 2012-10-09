@@ -1717,7 +1717,19 @@ namespace RegionRuntime {
     inline bool LogicalRegion::operator<(const LogicalRegion &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((tree_id < rhs.tree_id) || (index_space < rhs.index_space) || (field_space < rhs.field_space));
+      if (tree_id < rhs.tree_id)
+        return true;
+      else if (tree_id > rhs.tree_id)
+        return false;
+      else
+      {
+        if (index_space < rhs.index_space)
+          return true;
+        else if (index_space != rhs.index_space) // therefore greater than
+          return false;
+        else
+          return field_space < rhs.field_space;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1784,7 +1796,19 @@ namespace RegionRuntime {
     inline bool LogicalPartition::operator<(const LogicalPartition &rhs) const
     //--------------------------------------------------------------------------
     {
-      return ((tree_id < rhs.tree_id) || (index_partition < rhs.index_partition) || (field_space < rhs.field_space));
+      if (tree_id < rhs.tree_id)
+        return true;
+      else if (tree_id > rhs.tree_id)
+        return false;
+      else
+      {
+        if (index_partition < rhs.index_partition)
+          return true;
+        else if (index_partition > rhs.index_partition)
+          return false;
+        else
+          return field_space < rhs.field_space;
+      }
     }
 
     //--------------------------------------------------------------------------

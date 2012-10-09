@@ -575,10 +575,13 @@ namespace RegionRuntime {
       // Only be less than if the bits are a subset of the rhs bits
       for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
       {
-        if (bit_vector[idx] & ~(rhs[idx]))
+        if (bit_vector[idx] < rhs[idx])
+          return true;
+        else if (bit_vector[idx] > rhs[idx])
           return false;
       }
-      return true;
+      // Otherwise they are equal so false
+      return false;
     }
 
     //-------------------------------------------------------------------------
