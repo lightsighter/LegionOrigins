@@ -101,7 +101,7 @@ void top_level_task(const void *args, size_t arglen,
 
   Future f = runtime->execute_task(ctx, TASKID_MAIN, indexes, fields, main_regions,
 				   TaskArgument(&main_args, sizeof(MainArgs)));
-  //f.get_void_result();
+  f.get_void_result();
 
   // Destroy our logical regions clean up the region trees
   runtime->destroy_logical_region(ctx, main_args.r_x);
@@ -193,9 +193,9 @@ void main_task(const void *args, size_t arglen,
 
   // Launch init task
   FutureMap init_f =
-    runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, main_args->ispace,
-                                 index_reqs, field_reqs, init_regions, global, arg_map, false);
-  //init_f.wait_all_results();
+    runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, colors,
+                                 index_reqs, field_reqs, init_regions, global, arg_map, Predicate::TRUE_PRED, false);
+  init_f.wait_all_results();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -209,9 +209,9 @@ void main_task(const void *args, size_t arglen,
 
   // Launch add task
   FutureMap add_f =
-    runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, main_args->ispace,
-                                 index_reqs, field_reqs, add_regions, global, arg_map, false);
-  //add_f.wait_all_results();
+    runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, colors,
+                                 index_reqs, field_reqs, add_regions, global, arg_map, Predicate::TRUE_PRED, false);
+  add_f.wait_all_results();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
