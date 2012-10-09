@@ -5038,6 +5038,7 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = to_delete.begin();
             it != to_delete.end(); it++)
       {
+        (*it)->mark_view(false/*valid*/,true/*force*/);
         state.valid_views.erase(*it);
       }
       if (clean)
@@ -6275,6 +6276,9 @@ namespace RegionRuntime {
             const FieldMask &field_mask, IndexSpace copy_space)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(instance.exists());
+#endif
       // Iterate over our local fields and build the set of copy descriptors  
       std::vector<IndexSpace::CopySrcDstField> srcs;
       std::vector<IndexSpace::CopySrcDstField> dsts;
@@ -6301,6 +6305,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(field_infos.find(fid) != field_infos.end());
+      assert(instance.exists());
 #endif
       sources.push_back(field_infos[fid]);
     }
@@ -6738,7 +6743,7 @@ namespace RegionRuntime {
     void InstanceView::mark_view(bool valid, bool force)
     //--------------------------------------------------------------------------
     {
-      bool diff = (valid_view == valid);
+      bool diff = (valid_view != valid);
       if (force)
       {
         if (diff)
