@@ -2323,10 +2323,11 @@ namespace RegionRuntime {
       return RegionAccessor<AccessorGeneric>((void *)impl);
     }
 
-    // FIXME(Elliott): Dummy to make link
     void RegionInstance::destroy(void) const
     {
-        assert(0 && "Dummy implementation");
+      DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+      RegionInstance::Impl *impl = Runtime::get_runtime()->get_instance_impl(*this);
+      impl->deactivate();
     }
 
 #ifdef OLD_INTFC
