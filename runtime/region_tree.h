@@ -71,7 +71,7 @@ namespace RegionRuntime {
       void analyze_partition_deletion(ContextID ctx, LogicalPartition handle, DeletionOperation *op);
     public:
       // Physical Region contexts
-      InstanceRef initialize_physical_context(LogicalRegion handle, InstanceRef ref, UniqueID uid, ContextID ctx);
+      InstanceRef initialize_physical_context(const RegionRequirement &req, InstanceRef ref, UniqueID uid, ContextID ctx);
       void map_region(RegionMapper &rm, LogicalRegion start_region);
       Event close_to_instance(const InstanceRef &ref, RegionMapper &rm);
     public:
@@ -240,6 +240,7 @@ namespace RegionRuntime {
     public:
       void add_instance(RegionNode *inst);
       void remove_instance(RegionNode *inst);
+      RegionNode* instantiate_region(RegionTreeID tid, FieldSpace fid);
     public:
       size_t compute_tree_size(bool returning) const;
       void serialize_tree(Serializer &rez, bool returning);
@@ -283,6 +284,7 @@ namespace RegionRuntime {
     public:
       void add_instance(PartitionNode *inst);
       void remove_instance(PartitionNode *inst);
+      PartitionNode* instantiate_partition(RegionTreeID tid, FieldSpace fid);
     public:
       size_t compute_tree_size(bool returning) const;
       void serialize_tree(Serializer &rez, bool returning);
@@ -464,6 +466,7 @@ namespace RegionRuntime {
     class RegionNode : public RegionTreeNode {
     public:
       friend class RegionTreeForest;
+      friend class IndexSpaceNode;
       friend class PartitionNode;
       friend class InstanceManager;
       friend class InstanceView;
@@ -479,7 +482,7 @@ namespace RegionRuntime {
       void initialize_logical_context(ContextID ctx);
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     public:
-      void initialize_physical_context(ContextID ctx, const FieldMask &init_mask);
+      void initialize_physical_context(ContextID ctx, const FieldMask &init_mask, bool top);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
       virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);
@@ -549,6 +552,7 @@ namespace RegionRuntime {
     class PartitionNode : public RegionTreeNode {
     public:
       friend class RegionTreeForest;
+      friend class IndexPartNode;
       friend class RegionNode;
       friend class InstanceManager;
       friend class InstanceView;
@@ -564,7 +568,7 @@ namespace RegionRuntime {
       void initialize_logical_context(ContextID ctx);
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     public:
-      void initialize_physical_context(ContextID ctx, const FieldMask &initialize_mask);
+      void initialize_physical_context(ContextID ctx, const FieldMask &initialize_mask, bool top);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
       virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);
@@ -699,7 +703,7 @@ namespace RegionRuntime {
       void remove_reference(void);
       void add_view(InstanceView *view);
       Event issue_copy(InstanceManager *source_manager, Event precondition, 
-                        const FieldMask &mask, FieldSpaceNode *field_space, IndexSpace index_space);
+                        const FieldMask &mask, IndexSpace index_space);
       void find_info(FieldID fid, std::vector<IndexSpace::CopySrcDstField> &sources);
       InstanceManager* clone_manager(const FieldMask &mask, FieldSpaceNode *node) const;
     public:
@@ -1011,8 +1015,8 @@ namespace RegionRuntime {
       RegionNode *const close_target;
       const bool leave_open;
       bool targets_selected;
-      bool partition_valid;
       bool success;
+      bool partition_valid;
       Color partition_color;
       FieldMask dirty_mask;
       std::vector<InstanceView*> lower_targets;

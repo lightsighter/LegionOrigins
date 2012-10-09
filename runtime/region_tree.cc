@@ -809,28 +809,40 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceRef RegionTreeForest::initialize_physical_context(LogicalRegion handle, InstanceRef ref, 
+    InstanceRef RegionTreeForest::initialize_physical_context(const RegionRequirement &req, InstanceRef ref, 
                                                               UniqueID uid, ContextID ctx)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
-      assert(ref.view != NULL);
+      assert(req.handle_type == SINGULAR);
 #endif
       // Initialize the physical context
-      RegionNode *top_node = get_node(handle);
-      top_node->initialize_physical_context(ctx, FieldMask(0xFFFFFFFFFFFFFFFF));
-      // Find the field mask for which this task has privileges
-      const PhysicalUser &user= ref.view->find_user(uid);
-      // Now go through and make a new InstanceManager and InstanceView for the
-      // top level region and put them at the top of the tree
-      InstanceManager *clone_manager = ref.view->manager->clone_manager(user.field_mask, get_node(handle.field_space));
-      InstanceView *clone_view = create_view(clone_manager, NULL/*no parent*/, top_node, true/*make local*/);
-      // Update the state of the top level node 
-      RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
-      state.context_top = true;
-      state.valid_views[clone_view] = user.field_mask;
-      return clone_view->add_user(uid, user);  
+      RegionNode *top_node = get_node(req.region);
+      FieldSpaceNode *field_node = get_node(req.region.field_space);
+      FieldMask init_mask = field_node->get_field_mask(req.instance_fields);
+      top_node->initialize_physical_context(ctx, init_mask, true/*top*/);
+      if (!ref.is_virtual_ref())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(ref.view != NULL);
+#endif
+        // Find the field mask for which this task has privileges
+        const PhysicalUser &user= ref.view->find_user(uid);
+        // Now go through and make a new InstanceManager and InstanceView for the
+        // top level region and put them at the top of the tree
+        InstanceManager *clone_manager = ref.view->manager->clone_manager(user.field_mask, field_node);
+        InstanceView *clone_view = create_view(clone_manager, NULL/*no parent*/, top_node, true/*make local*/);
+        // Update the state of the top level node 
+        RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
+        state.valid_views[clone_view] = user.field_mask;
+        return clone_view->add_user(uid, user);  
+      }
+      else
+      {
+        // Virtual reference so no need to do anything
+        return ref;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1822,17 +1834,6 @@ namespace RegionRuntime {
         }
         diff_regions.clear();
         diff_partitions.clear();
-        // Clear out the context for the same reason listed above for the overwrite case
-        if (req.handle_type == SINGULAR)
-        {
-          RegionNode *top_node = get_node(req.region);
-          top_node->initialize_physical_context(ctx, packing_mask);
-        }
-        else
-        {
-          PartitionNode *top_node = get_node(req.partition);
-          top_node->initialize_physical_context(ctx, packing_mask);
-        }
       }
     }
 
@@ -1903,7 +1904,7 @@ namespace RegionRuntime {
 #endif
         // Re-initialize the state and then unpack the state
         RegionNode *top_node = get_node(req.region);
-        top_node->initialize_physical_context(ctx, unpacking_mask);
+        top_node->initialize_physical_context(ctx, unpacking_mask, true/*top*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/); 
       }
       else
@@ -2543,10 +2544,15 @@ namespace RegionRuntime {
       std::map<LogicalRegion,RegionNode*>::const_iterator it = region_nodes.find(handle);
       if (it == region_nodes.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for logical region (%x,%x,%x).  This means it has either been "
-                              "deleted or the appropriate privileges are not being requested.", 
-                              handle.tree_id,handle.index_space.id,handle.field_space.id);
-        exit(ERROR_INVALID_REGION_ENTRY);
+        IndexSpaceNode *index_node = get_node(handle.index_space);
+        if (index_node == NULL)
+        {
+          log_region(LEVEL_ERROR,"Unable to find entry for logical region (%x,%x,%x).  This means it has either been "
+                                "deleted or the appropriate privileges are not being requested.", 
+                                handle.tree_id,handle.index_space.id,handle.field_space.id);
+          exit(ERROR_INVALID_REGION_ENTRY);
+        }
+        return index_node->instantiate_region(handle.tree_id, handle.field_space);
       }
       return it->second;
     }
@@ -2558,10 +2564,15 @@ namespace RegionRuntime {
       std::map<LogicalPartition,PartitionNode*>::const_iterator it = part_nodes.find(handle);
       if (it == part_nodes.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for logical partition (%x,%x,%x).  This means it has either been "
-                              "deleted or the appropriate privileges are not being requested.", 
-                              handle.tree_id,handle.index_partition,handle.field_space.id);
-        exit(ERROR_INVALID_PARTITION_ENTRY);
+        IndexPartNode *index_node = get_node(handle.index_partition);
+        if (index_node == NULL)
+        {
+          log_region(LEVEL_ERROR,"Unable to find entry for logical partition (%x,%x,%x).  This means it has either been "
+                                "deleted or the appropriate privileges are not being requested.", 
+                                handle.tree_id,handle.index_partition,handle.field_space.id);
+          exit(ERROR_INVALID_PARTITION_ENTRY);
+        }
+        return index_node->instantiate_partition(handle.tree_id, handle.field_space);
       }
       return it->second;
     }
@@ -2677,10 +2688,6 @@ namespace RegionRuntime {
       // Quick out
       if (c1 == c2) 
         return false;
-#ifdef DEBUG_HIGH_LEVEL
-      assert(color_map.find(c1) != color_map.end());
-      assert(color_map.find(c2) != color_map.end());
-#endif
       if (disjoint_subsets.find(std::pair<Color,Color>(c1,c2)) !=
           disjoint_subsets.end())
         return true;
@@ -2751,6 +2758,28 @@ namespace RegionRuntime {
         }
       }
       assert(false); // should never get here
+    }
+
+    //--------------------------------------------------------------------------
+    RegionNode* IndexSpaceNode::instantiate_region(RegionTreeID tid, FieldSpace fid)
+    //--------------------------------------------------------------------------
+    {
+      LogicalRegion target(tid, handle, fid);
+      // Check to see if we already have one made
+      for (std::list<RegionNode*>::const_iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        if ((*it)->handle == target)
+          return *it;
+      }
+      // Otherwise we're going to need to make it, first make the parent
+#ifdef DEBUG_HIGH_LEVEL
+      // This requires that there is always at least a part of the region
+      // tree that is local.  It might prove to be false later.
+      assert(parent != NULL);
+#endif
+      PartitionNode *target_parent = parent->instantiate_partition(tid, fid);
+      return context->create_node(target, target_parent, true/*add*/); 
     }
 
     //--------------------------------------------------------------------------
@@ -2975,6 +3004,27 @@ namespace RegionRuntime {
         }
       }
       assert(false); // should never get here
+    }
+
+    //--------------------------------------------------------------------------
+    PartitionNode* IndexPartNode::instantiate_partition(RegionTreeID tid, FieldSpace fid)
+    //--------------------------------------------------------------------------
+    {
+      LogicalPartition target(tid, handle, fid);
+      for (std::list<PartitionNode*>::const_iterator it = logical_nodes.begin();
+            it != logical_nodes.end(); it++)
+      {
+        if ((*it)->handle == target)
+          return *it;
+      }
+      // Otherwise we're going to need to make it
+#ifdef DEBUG_HIGH_LEVEL
+      // This requires that there always be at least part of the region
+      // tree local.  This might not always be true.
+      assert(parent != NULL);
+#endif
+      RegionNode *target_parent = parent->instantiate_region(tid, fid);
+      return context->create_node(target, target_parent, true/*add*/);
     }
 
     //--------------------------------------------------------------------------
@@ -3847,7 +3897,7 @@ namespace RegionRuntime {
         if ((next_child >= 0) && (next_child == int(it->first)))
         {
           FieldMask open_users = it->second & closing_mask;
-          result.open_children[unsigned(it->first)] = open_users;
+          result.open_children[it->first] = open_users;
           result.valid_fields = open_users;
           // Remove the open users from the current mask
           it->second -= open_users;
@@ -4003,7 +4053,7 @@ namespace RegionRuntime {
         }
       }
       // Create a new state for the open mask
-      if (!!open_mask)
+      if ((next_child >= 0) && !!open_mask)
         new_states.push_back(FieldState(user, open_mask, next_child));
       // Merge the new field states into the old field states
       merge_new_field_states(state, new_states, true/*add states*/);
@@ -4279,10 +4329,15 @@ namespace RegionRuntime {
     PartitionNode* RegionNode::get_child(Color c)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(color_map.find(c) != color_map.end());
-#endif
-      return color_map[c];
+      // If it doesn't exist yet, we have to make it
+      std::map<Color,PartitionNode*>::const_iterator finder = color_map.find(c);
+      if (finder == color_map.end())
+      {
+        IndexPartNode *index_child = row_source->get_child(c);
+        LogicalPartition handle(handle.tree_id, index_child->handle, handle.field_space);
+        return context->create_node(handle, this, true/*add*/);  
+      }
+      return finder->second;
     }
 
     //--------------------------------------------------------------------------
@@ -4352,24 +4407,25 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionNode::initialize_physical_context(ContextID ctx, const FieldMask &init_mask)
+    void RegionNode::initialize_physical_context(ContextID ctx, const FieldMask &init_mask, bool top)
     //--------------------------------------------------------------------------
     {
       if (physical_states.find(ctx) == physical_states.end())
       {
         physical_states[ctx] = PhysicalState();
-        physical_states[ctx].context_top = false;
+        physical_states[ctx].context_top = top;
       }
       else
       {
         PhysicalState &state = physical_states[ctx];
         state.clear_state(init_mask);  
+        state.context_top = top;
       }
       // Now do all our children
       for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
             it != color_map.end(); it++)
       {
-        it->second->initialize_physical_context(ctx, init_mask);
+        it->second->initialize_physical_context(ctx, init_mask, false/*top*/);
       }
     }
 
@@ -5507,10 +5563,15 @@ namespace RegionRuntime {
     RegionNode* PartitionNode::get_child(Color c)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(color_map.find(c) != color_map.end());
-#endif
-      return color_map[c];
+      // If it doesn't exist then we have to make the node
+      std::map<Color,RegionNode*>::const_iterator finder = color_map.find(c);
+      if (finder == color_map.end())
+      {
+        IndexSpaceNode *index_child = row_source->get_child(c);
+        LogicalRegion handle(handle.tree_id, index_child->handle, handle.field_space);
+        return context->create_node(handle, this, true/*add*/);
+      }
+      return finder->second;
     }
 
     //--------------------------------------------------------------------------
@@ -5580,13 +5641,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void PartitionNode::initialize_physical_context(ContextID ctx, const FieldMask &init_mask)
+    void PartitionNode::initialize_physical_context(ContextID ctx, const FieldMask &init_mask, bool top)
     //--------------------------------------------------------------------------
     {
       if (physical_states.find(ctx) == physical_states.end())
       {
         physical_states[ctx] = PhysicalState();
-        physical_states[ctx].context_top = false;
+        physical_states[ctx].context_top = top;
       }
       else
       {
@@ -5597,12 +5658,13 @@ namespace RegionRuntime {
         assert(!state.context_top);
 #endif
         state.clear_state(init_mask);
+        state.context_top = top;
       }
       // Handle all our children
       for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
             it != color_map.end(); it++)
       {
-        it->second->initialize_physical_context(ctx, init_mask);
+        it->second->initialize_physical_context(ctx, init_mask, false/*top*/);
       }
     }
 
@@ -5669,6 +5731,9 @@ namespace RegionRuntime {
         // and then continue the traversal
         // Use the parent node as the target of any close operations
         PhysicalCloser closer(user, rm, parent, IS_READ_ONLY(user.usage));
+        // Since we're already down the partition, mark it as such before traversing
+        closer.partition_color = row_source->color;
+        closer.partition_valid = true;
         bool open_only = siphon_open_children(closer, state, user, user.field_mask, next_reg);
         // Check to see if the close was successful  
         if (!closer.success)
@@ -6145,12 +6210,13 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     Event InstanceManager::issue_copy(InstanceManager *source_manager, Event precondition,
-            const FieldMask &field_mask, FieldSpaceNode *field_space, IndexSpace copy_space)
+            const FieldMask &field_mask, IndexSpace copy_space)
     //--------------------------------------------------------------------------
     {
       // Iterate over our local fields and build the set of copy descriptors  
       std::vector<IndexSpace::CopySrcDstField> srcs;
       std::vector<IndexSpace::CopySrcDstField> dsts;
+      FieldSpaceNode *field_space = context->get_node(fspace);
       for (std::map<FieldID,IndexSpace::CopySrcDstField>::const_iterator it = 
             field_infos.begin(); it != field_infos.end(); it++)
       {
@@ -6524,10 +6590,12 @@ namespace RegionRuntime {
       if (all_dominated)
         update_valid_event(wait_event, user.field_mask);
       // Now update the list of users
-      std::map<UniqueID,TaskUser>::iterator it = users.find(uid);
-      if (it == users.end())
+      std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
+      if (it == added_users.end())
       {
-        users[uid] = TaskUser(user, 1);
+        if (added_users.empty())
+          check_state_change(true/*adding*/);
+        added_users[uid] = TaskUser(user, 1);
       }
       else
       {
@@ -6664,15 +6732,16 @@ namespace RegionRuntime {
       src_view->find_copy_preconditions(preconditions, false/*writing*/, rm.req.redop, copy_mask);
       Event copy_pre = Event::merge_events(preconditions);
       Event copy_post = manager->issue_copy(src_view->manager, copy_pre, copy_mask, 
-                    logical_region->column_source, logical_region->handle.index_space);
+                                            logical_region->handle.index_space);
       // If this is a write copy, update the valid event, otherwise
       // add it as a reduction copy to this instance
       if (rm.req.redop == 0)
         update_valid_event(copy_post, copy_mask);
-      else
-        add_copy_user(rm.req.redop, copy_post, copy_mask);
+      else if (copy_post.exists())
+        rm.source_copy_instances.push_back(add_copy_user(rm.req.redop, copy_post, copy_mask));
       // Add a new user to the source, no need to pass redop since this is a read
-      src_view->add_copy_user(0, copy_post, copy_mask);
+      if (copy_post.exists())
+        rm.source_copy_instances.push_back(src_view->add_copy_user(0, copy_post, copy_mask));
     }
 
     //--------------------------------------------------------------------------
@@ -8061,7 +8130,7 @@ namespace RegionRuntime {
     PhysicalCloser::PhysicalCloser(const PhysicalUser &u, RegionMapper &r,
                                     RegionNode *ct, bool lo)
       : user(u), rm(r), close_target(ct), leave_open(lo), 
-        targets_selected(false), partition_valid(false), success(true)
+        targets_selected(false), success(true), partition_valid(false)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -8072,7 +8141,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     PhysicalCloser::PhysicalCloser(const PhysicalCloser &rhs, RegionNode *ct)
       : user(rhs.user), rm(rhs.rm), close_target(ct), leave_open(rhs.leave_open),
-        targets_selected(rhs.targets_selected), partition_valid(false), success(true)
+        targets_selected(rhs.targets_selected), success(true), partition_valid(false)
     //--------------------------------------------------------------------------
     {
       if (targets_selected)
@@ -8208,8 +8277,8 @@ namespace RegionRuntime {
       assert(lower_targets.empty());
       assert(partition_valid);
 #endif
-      for (std::vector<InstanceView*>::const_iterator it = lower_targets.begin();
-            it != lower_targets.end(); it++)
+      for (std::vector<InstanceView*>::const_iterator it = upper_targets.begin();
+            it != upper_targets.end(); it++)
       {
         lower_targets.push_back((*it)->get_subview(partition_color,region_color));
 #ifdef DEBUG_HIGH_LEVEL

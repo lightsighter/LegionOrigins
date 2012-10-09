@@ -3299,7 +3299,7 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task %s (ID %d) with "
                             "high level runtime on processor %x", task->get_unique_id(), task->variants->name, task_id, local_proc.id);
 #endif
-      task->set_index_space(index_space, arg_map, must);
+      task->set_index_space(index_space, arg_map, regions.size(), must);
       task->set_requirements(indexes, fields, regions, true/*perform checks*/);
 
       // Need to get the future map prior to putting this on the queue to execute
@@ -3335,7 +3335,7 @@ namespace RegionRuntime {
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task %s (ID %d) with "
                             "high level runtime on processor %x", task->get_unique_id(), task->variants->name, task_id, local_proc.id);
 #endif
-      task->set_index_space(index_space, arg_map, must);
+      task->set_index_space(index_space, arg_map, regions.size(), must);
       task->set_requirements(indexes, fields, regions, true/*perform checks*/);
       task->set_reduction_args(reduction, initial_value);
 
@@ -4143,7 +4143,7 @@ namespace RegionRuntime {
       assert(result != NULL);
       bool activated = 
 #endif
-      result->activate();
+      result->activate(parent);
 #ifdef DEBUG_HIGH_LEVEL
       assert(activated);
 #endif
@@ -4178,7 +4178,7 @@ namespace RegionRuntime {
       assert(result != NULL);
       bool activated = 
 #endif
-      result->activate();
+      result->activate(parent);
 #ifdef DEBUG_HIGH_LEVEL
       assert(activated);
 #endif

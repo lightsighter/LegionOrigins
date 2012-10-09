@@ -241,7 +241,12 @@ namespace RegionRuntime {
       // For returning privileges (stored in create_* lists)
       void return_privileges(const std::list<IndexSpace> &new_indexes,
                              const std::list<FieldSpace> &new_fields,
-                             const std::list<LogicalRegion> &new_regions);
+                             const std::list<LogicalRegion> &new_regions,
+                             const std::list<FieldID> &new_field_ids);
+      bool has_created_index_space(IndexSpace handle) const;
+      bool has_created_field_space(FieldSpace handle) const;
+      bool has_created_region(LogicalRegion handle) const;
+      bool has_created_field(FieldID fid) const;
     protected:
       size_t compute_task_context_size(void);
       void pack_task_context(Serializer &rez);
@@ -278,6 +283,7 @@ namespace RegionRuntime {
       std::list<IndexSpace> created_index_spaces;
       std::list<FieldSpace> created_field_spaces;
       std::list<LogicalRegion> created_regions;
+      std::list<FieldID>    created_fields;
     protected:
       // Any other conditions needed for launching the task
       std::set<Event> launch_preconditions;
@@ -708,7 +714,7 @@ namespace RegionRuntime {
       virtual bool post_slice(void);
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event);
     public:
-      void set_index_space(IndexSpace space, const ArgumentMap &map, bool must);
+      void set_index_space(IndexSpace space, const ArgumentMap &map, size_t num_regions, bool must);
       void set_reduction_args(ReductionOpID redop, const TaskArgument &initial_value);
       Future get_future(void);
       FutureMap get_future_map(void);

@@ -999,6 +999,7 @@ namespace RegionRuntime {
       created_index_spaces.clear();
       created_field_spaces.clear();
       created_regions.clear();
+      created_fields.clear();
       launch_preconditions.clear();
       mapped_preconditions.clear();
       map_dependent_waiters.clear();
@@ -1289,14 +1290,68 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     void TaskContext::return_privileges(const std::list<IndexSpace> &new_indexes,
                                         const std::list<FieldSpace> &new_fields,
-                                        const std::list<LogicalRegion> &new_regions)
+                                        const std::list<LogicalRegion> &new_regions,
+                                        const std::list<FieldID> &new_field_ids)
     //--------------------------------------------------------------------------
     {
       lock();
       created_index_spaces.insert(created_index_spaces.end(),new_indexes.begin(),new_indexes.end());
       created_field_spaces.insert(created_field_spaces.end(),new_fields.begin(),new_fields.end());
       created_regions.insert(created_regions.end(),new_regions.begin(),new_regions.end());
+      created_fields.insert(created_fields.end(),new_field_ids.begin(),new_field_ids.end());
       unlock();
+    }
+
+    //--------------------------------------------------------------------------
+    bool TaskContext::has_created_index_space(IndexSpace handle) const
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<IndexSpace>::const_iterator it = created_index_spaces.begin();
+            it != created_index_spaces.end(); it++)
+      {
+        if (handle == (*it))
+          return true;
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool TaskContext::has_created_field_space(FieldSpace handle) const
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<FieldSpace>::const_iterator it = created_field_spaces.begin();
+            it != created_field_spaces.end(); it++)
+      {
+        if (handle == (*it))
+          return true;
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool TaskContext::has_created_region(LogicalRegion handle) const
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        if (handle == (*it))
+          return true;
+      }
+      return false;
+    }
+
+    //--------------------------------------------------------------------------
+    bool TaskContext::has_created_field(FieldID fid) const
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<FieldID>::const_iterator it = created_fields.begin();
+            it != created_fields.end(); it++)
+      {
+        if (fid == (*it))
+          return true;
+      }
+      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -1436,10 +1491,11 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // No need to hold the lock here since we know the task is done
-      size_t result = 3*sizeof(size_t);
+      size_t result = 4*sizeof(size_t);
       result += (created_index_spaces.size() * sizeof(IndexSpace));
       result += (created_field_spaces.size() * sizeof(FieldSpace));
       result += (created_regions.size() * sizeof(LogicalRegion));
+      result += (created_fields.size() * sizeof(FieldID));
       return result;
     }
 
@@ -1465,6 +1521,12 @@ namespace RegionRuntime {
             it != created_regions.end(); it++)
       {
         rez.serialize<LogicalRegion>(*it);
+      }
+      rez.serialize(created_fields.size());
+      for (std::list<FieldID>::const_iterator it = created_fields.begin();
+            it != created_fields.end(); it++)
+      {
+        rez.serialize<FieldID>(*it);
       }
     }
 
@@ -1496,6 +1558,13 @@ namespace RegionRuntime {
         LogicalRegion region;
         derez.deserialize<LogicalRegion>(region);
         created_regions.push_back(region);
+      }
+      derez.deserialize<size_t>(num_elmts);
+      for (unsigned idx = 0; idx < num_elmts; idx++)
+      {
+        FieldID fid;
+        derez.deserialize<FieldID>(fid);
+        created_fields.push_back(fid);
       }
       unlock();
       // Return the number of new regions
@@ -1938,6 +2007,14 @@ namespace RegionRuntime {
       lock_context();
       forest_ctx->allocate_fields(space, field_allocations);
       unlock_context();
+      // Also add this to the list of fields we created
+      lock();
+      for (std::map<FieldID,size_t>::const_iterator it = field_allocations.begin();
+            it != field_allocations.end(); it++)
+      {
+        created_fields.push_back(it->first);
+      }
+      unlock();
     }
 
     //--------------------------------------------------------------------------
@@ -1957,6 +2034,17 @@ namespace RegionRuntime {
       lock_context();
       forest_ctx->free_fields(space, to_free);
       unlock_context();
+      lock();
+      // Check to see if there are any fields that we created that we need to remove
+      for (std::list<FieldID>::iterator it = created_fields.begin();
+            it != created_fields.end(); /*nothing*/)
+      {
+        if (to_free.find(*it) != to_free.end())
+          it = created_fields.erase(it);
+        else
+          it++;
+      }
+      unlock();
     }
 
     //--------------------------------------------------------------------------
@@ -2290,7 +2378,8 @@ namespace RegionRuntime {
           for (std::set<FieldID>::const_iterator fit = req.privilege_fields.begin();
                 fit != req.privilege_fields.end(); fit++)
           {
-            if (it->privilege_fields.find(*fit) == it->privilege_fields.end())
+            if ((it->privilege_fields.find(*fit) == it->privilege_fields.end()) &&
+                (!has_created_field(*fit)))
             {
               bad_field = *fit;
               return ERROR_BAD_REGION_TYPE;
@@ -2737,15 +2826,8 @@ namespace RegionRuntime {
       // with a specified reference, otherwise make them a virtual reference
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
-        if (physical_instances[idx].is_virtual_ref())
-        {
-          clone_instances.push_back(InstanceRef());
-        }
-        else
-        {
-          clone_instances.push_back(forest_ctx->initialize_physical_context(regions[idx].region, 
+        clone_instances.push_back(forest_ctx->initialize_physical_context(regions[idx],
                                                     physical_instances[idx], unique_id, ctx_id));
-        }
       }
       unlock_context();
     }
@@ -3938,7 +4020,8 @@ namespace RegionRuntime {
         // Note parent_ctx is only NULL if this is the top level task
         if (parent_ctx != NULL)
         {
-          parent_ctx->return_privileges(created_index_spaces,created_field_spaces,created_regions);
+          parent_ctx->return_privileges(created_index_spaces,created_field_spaces,
+                                        created_regions,created_fields);
         }
         // Now we can trigger the termination event
         termination_event.trigger();
@@ -4497,7 +4580,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       // Return privileges to the slice owner
-      slice_owner->return_privileges(created_index_spaces,created_field_spaces,created_regions);
+      slice_owner->return_privileges(created_index_spaces,created_field_spaces,
+                                      created_regions,created_fields);
       // If not remote, remove our physical instance usages
       if (!slice_owner->remote)
       {
@@ -5271,7 +5355,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void IndexTask::set_index_space(IndexSpace space, const ArgumentMap &map, bool must)
+    void IndexTask::set_index_space(IndexSpace space, const ArgumentMap &map, size_t num_regions, bool must)
     //--------------------------------------------------------------------------
     {
       this->is_index_space = true;
@@ -5283,6 +5367,9 @@ namespace RegionRuntime {
       // Freeze the current impl so we can use it
       arg_map_impl = map.impl->freeze();
       arg_map_impl->add_reference();
+      mapped_points.resize(num_regions);
+      for (unsigned idx = 0; idx < num_regions; idx++)
+        mapped_points[idx] = 0;
     }
 
     //--------------------------------------------------------------------------
@@ -5398,6 +5485,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(mapped_points.size() == regions.size());
 #endif
+        lock_context();
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           if (mapped_points[idx] < num_total_points)
@@ -5417,6 +5505,7 @@ namespace RegionRuntime {
             waiters.clear();
           }
         }
+        unlock_context();
         // Check to see if we're fully mapped, if so trigger the mapped event
         if (unmapped == 0)
         {
@@ -5502,7 +5591,8 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(parent_ctx != NULL);
 #endif
-        parent_ctx->return_privileges(created_index_spaces,created_field_spaces,created_regions);
+        parent_ctx->return_privileges(created_index_spaces,created_field_spaces,
+                                      created_regions,created_fields);
         // We're done, trigger the termination event
         termination_event.trigger();
         runtime->notify_operation_complete(parent_ctx);
@@ -5995,6 +6085,11 @@ namespace RegionRuntime {
             value++;
           }
         }
+        else
+        {
+          // Our enumerator is done
+          break;
+        }
       }
       while (remaining_enumerated > 0);
       unlock();
@@ -6485,6 +6580,8 @@ namespace RegionRuntime {
     {
       PointTask *result = runtime->get_available_point_task(this);
       result->clone_task_context_from(this);
+      // Clear out the region requirements since we don't actually want that clone
+      result->regions.clear();
       result->slice_owner = this;
       if (new_point)
         result->point_termination_event = UserEvent::create_user_event();
@@ -6819,7 +6916,8 @@ namespace RegionRuntime {
       else
       {
         // Otherwise we're done, so pass back our privileges and then tell the owner
-        index_owner->return_privileges(created_index_spaces,created_field_spaces,created_regions);
+        index_owner->return_privileges(created_index_spaces,created_field_spaces,
+                                        created_regions,created_fields);
         index_owner->slice_finished(points.size());
       }
 
