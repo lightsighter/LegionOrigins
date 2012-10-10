@@ -5689,7 +5689,7 @@ namespace RegionRuntime {
           std::set<LogicalRegion> touched_regions;
           // Pretend this is a single region coming back
           regions[idx].handle_type = SINGULAR;
-          for (unsigned cnt = 0; cnt <= num_regions; cnt++)
+          for (unsigned cnt = 0; cnt < num_regions; cnt++)
           {
             LogicalRegion touched;
             derez.deserialize(touched);
@@ -6402,6 +6402,7 @@ namespace RegionRuntime {
       else
       {
         forest_ctx->unpack_region_forest_shape(derez);
+        forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
         // Unpack any premapped regions
         size_t num_premapped;
         derez.deserialize(num_premapped);
@@ -6411,7 +6412,6 @@ namespace RegionRuntime {
           derez.deserialize(idx);
           premapped_regions[idx] = forest_ctx->unpack_reference(derez);
         }
-        forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           if (premapped_regions.find(idx) != premapped_regions.end())
@@ -6660,7 +6660,7 @@ namespace RegionRuntime {
         // Otherwise we have to pack stuff up and send it back
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
         buffer_size += sizeof(denominator);
-        buffer_size += sizeof(size_t);
+        buffer_size += sizeof(size_t); // number of points
         buffer_size += (regions.size() * sizeof(unsigned));
         lock_context();
         for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -6681,10 +6681,10 @@ namespace RegionRuntime {
         buffer_size += forest_ctx->post_compute_region_tree_state_return();
         // Now pack everything up
         Serializer rez(buffer_size);
-        rez.serialize<Processor>(orig_proc);
+        rez.serialize(orig_proc);
         rez.serialize<IndexTask*>(index_owner);
-        rez.serialize<unsigned long>(denominator);
-        rez.serialize<size_t>(points.size());
+        rez.serialize(denominator);
+        rez.serialize(points.size());
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           rez.serialize<unsigned>(non_virtual_mappings[idx]);
@@ -6692,7 +6692,8 @@ namespace RegionRuntime {
         forest_ctx->begin_pack_region_tree_state_return(rez);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          if (non_virtual_mappings[idx] == points.size())
+          if ((non_virtual_mappings[idx] == points.size()) &&
+              (premapped_regions.find(idx) == premapped_regions.end()))
           {
             pack_tree_state_return(idx, ctx_id, RegionTreeForest::PHYSICAL, rez);
           }
@@ -6970,6 +6971,9 @@ namespace RegionRuntime {
           {
             if (sending_set.find((*it)->regions[idx].region) == sending_set.end())
             {
+#ifdef DEBUG_HIGH_LEVEL
+              assert((*it)->regions[idx].handle_type == SINGULAR);
+#endif
               sending_set.insert((*it)->regions[idx].region);
               result += forest_ctx->compute_region_tree_state_return((*it)->regions[idx], ctx_id,
                                                       true/*overwrite*/, mode);

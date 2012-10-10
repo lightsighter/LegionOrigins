@@ -912,8 +912,7 @@ namespace RegionRuntime {
         if (it->privilege != NO_MEMORY)
         {
           FieldSpaceNode *node = get_node(it->handle);
-          if (send_field_nodes.find(node) == send_field_nodes.end())
-            send_field_nodes.insert(node);
+          send_field_nodes.insert(node);
         }
       }
       for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
@@ -925,12 +924,23 @@ namespace RegionRuntime {
           {
             RegionNode *node = get_node(it->region);
             node->mark_node(true/*recurse*/);
+            // Also do the field spaces and the index spaces
+            FieldSpaceNode *fnode = get_node(it->region.field_space);
+            send_field_nodes.insert(fnode);
+            IndexSpaceNode *inode = get_node(it->region.index_space);
+            inode->mark_node(true/*recurse*/);
           }
           else
           {
             PartitionNode *node = get_node(it->partition);
             node->mark_node(true/*recurse*/);
             node->parent->mark_node(false/*recurse*/);
+            // Also do the field spaces and the index spaces
+            FieldSpaceNode *fnode = get_node(it->partition.field_space);
+            send_field_nodes.insert(fnode);
+            IndexPartNode *inode = get_node(it->partition.index_partition);
+            inode->mark_node(true/*recurse*/);
+            inode->parent->mark_node(false/*recurse*/);
           }
         }
       }
@@ -953,11 +963,15 @@ namespace RegionRuntime {
           {
             RegionNode *node = get_node(it->region);
             send_logical_nodes.insert(node->find_top_marked());
+            IndexSpaceNode *inode = get_node(it->region.index_space);
+            send_index_nodes.insert(inode->find_top_marked());
           }
           else
           {
             PartitionNode *node = get_node(it->partition);
             send_logical_nodes.insert(node->find_top_marked());
+            IndexPartNode *inode = get_node(it->partition.index_partition);
+            send_index_nodes.insert(inode->find_top_marked());
           }
         }
       }
@@ -1224,19 +1238,15 @@ namespace RegionRuntime {
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
-        // No need to initialize state since we just made these trees
+        top_node->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
-        RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
-        state.context_top = true;
       }
       else
       {
         PartitionNode *top_node = get_node(req.partition);
-        // No need to initialize state since we just made these trees
+        top_node->parent->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
         top_node->parent->unpack_physical_state(ctx, derez, false/*recurse*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
-        RegionTreeNode::PhysicalState &state = top_node->parent->physical_states[ctx];
-        state.context_top = true;
       }
     }
 
@@ -2506,7 +2516,7 @@ namespace RegionRuntime {
       std::map<IndexSpace,IndexSpaceNode*>::const_iterator it = index_nodes.find(space);
       if (it == index_nodes.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for index space %x.  This means it has either been "
+        log_index(LEVEL_ERROR,"Unable to find entry for index space %x.  This means it has either been "
                               "deleted or the appropriate privileges are not being requested.", space.id);
         exit(ERROR_INVALID_INDEX_SPACE_ENTRY);
       }
@@ -2520,7 +2530,7 @@ namespace RegionRuntime {
       std::map<IndexPartition,IndexPartNode*>::const_iterator it = index_parts.find(part);
       if (it == index_parts.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for index partition %d.  This means it has either been "
+        log_index(LEVEL_ERROR,"Unable to find entry for index partition %d.  This means it has either been "
                               "deleted or the appropriate privileges are not being requested.", part);
         exit(ERROR_INVALID_INDEX_PART_ENTRY);
       }
@@ -2534,7 +2544,7 @@ namespace RegionRuntime {
       std::map<FieldSpace,FieldSpaceNode*>::const_iterator it = field_nodes.find(space);
       if (it == field_nodes.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for field space %x.  This means it has either been "
+        log_field(LEVEL_ERROR,"Unable to find entry for field space %x.  This means it has either been "
                               "deleted or the appropriate privileges are not being requested.", space.id); 
         exit(ERROR_INVALID_FIELD_SPACE_ENTRY);
       }
@@ -2640,7 +2650,7 @@ namespace RegionRuntime {
     bool RegionTreeForest::has_view(InstanceKey key) const
     //--------------------------------------------------------------------------
     {
-      return (views.find(key) == views.end());
+      return (views.find(key) != views.end());
     }
 
     /////////////////////////////////////////////////////////////
@@ -2802,12 +2812,9 @@ namespace RegionRuntime {
           return *it;
       }
       // Otherwise we're going to need to make it, first make the parent
-#ifdef DEBUG_HIGH_LEVEL
-      // This requires that there is always at least a part of the region
-      // tree that is local.  It might prove to be false later.
-      assert(parent != NULL);
-#endif
-      PartitionNode *target_parent = parent->instantiate_partition(tid, fid);
+      PartitionNode *target_parent = NULL;
+      if (parent != NULL)
+        target_parent = parent->instantiate_partition(tid, fid);
       return context->create_node(target, target_parent, true/*add*/); 
     }
 
