@@ -5217,6 +5217,8 @@ namespace RegionRuntime {
       {
         size_t result_size;
         derez.deserialize<size_t>(result_size);
+        derez.deserialize<size_t>(this->index_element_size);
+        derez.deserialize<unsigned>(this->index_dimensions);
         size_t point_size = index_element_size * index_dimensions;
         for (unsigned idx = 0; idx < num_points; idx++)
         {
@@ -6342,9 +6344,11 @@ namespace RegionRuntime {
       derez.deserialize<bool>(distributed);
       derez.deserialize<bool>(locally_mapped);
       derez.deserialize<bool>(stealable);
+      remote = true;
       if (locally_mapped)
         derez.deserialize<bool>(is_leaf);
       derez.deserialize<Event>(termination_event);
+      derez.deserialize<IndexTask*>(index_owner);
       derez.deserialize<unsigned long>(denominator);
       remaining_bytes = derez.get_remaining_bytes();
       remaining_buffer = malloc(remaining_bytes);
@@ -6656,7 +6660,6 @@ namespace RegionRuntime {
         // Otherwise we have to pack stuff up and send it back
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
         buffer_size += sizeof(denominator);
-        buffer_size += sizeof(split_factor);
         buffer_size += sizeof(size_t);
         buffer_size += (regions.size() * sizeof(unsigned));
         lock_context();
@@ -6681,7 +6684,6 @@ namespace RegionRuntime {
         rez.serialize<Processor>(orig_proc);
         rez.serialize<IndexTask*>(index_owner);
         rez.serialize<unsigned long>(denominator);
-        rez.serialize<unsigned long>(split_factor);
         rez.serialize<size_t>(points.size());
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
@@ -6857,8 +6859,14 @@ namespace RegionRuntime {
           assert(future_results.size() == points.size());
 #endif
           // Get the result size
-          result_size = (future_results.begin())->second.buffer_size;
+          std::map<AnyPoint,FutureResult>::const_iterator first_point = future_results.begin();
+          this->index_element_size = first_point->first.elmt_size;
+          this->index_dimensions = first_point->first.dim;
+          result_size = first_point->second.buffer_size;
+
           buffer_size += sizeof(size_t); // number of future results
+          buffer_size += sizeof(this->index_element_size);
+          buffer_size += sizeof(this->index_dimensions);
           buffer_size += (future_results.size() * (index_dimensions*index_element_size + result_size + sizeof(Event)));
         }
 
@@ -6884,6 +6892,8 @@ namespace RegionRuntime {
         else
         {
           rez.serialize<size_t>(result_size); 
+          rez.serialize<size_t>(this->index_element_size);
+          rez.serialize<unsigned>(this->index_dimensions);
           for (std::map<AnyPoint,FutureResult>::const_iterator it = future_results.begin();
                 it != future_results.end(); it++)
           {
