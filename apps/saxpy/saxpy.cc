@@ -381,6 +381,7 @@ T safe_prioritized_pick(const std::vector<T> &vec, T choice1, T choice2) {
   return garbage;
 }
 
+#if 0
 #ifdef USE_SAXPY_SHARED
 class SharedMapper : public Mapper {
 public:
@@ -662,6 +663,88 @@ public:
     Mapper::rank_copy_sources(current_instances, dst, chosen_order);
   }
 };
+#endif
+
+class TestMapper : public Mapper {
+public:
+  TestMapper(Machine *machine, HighLevelRuntime *runtime, Processor local)
+    : Mapper(machine, runtime, local) 
+  { 
+    const std::set<Memory> &visible = machine->get_visible_memories(local);  
+    if (local.id == 1)
+    {
+      for (std::set<Memory>::const_iterator it = visible.begin();
+            it != visible.end(); it++)
+      {
+        printf("Mapper has memory %x\n",it->id);
+      }
+    }
+    std::set<Memory>::const_iterator it = visible.begin();
+    for (unsigned idx = 0; idx < 4; idx++)
+    {
+      ordered_mems.push_back(*it);
+      it++;
+    }
+    last_memory = *it;
+  }
+public:
+  virtual void map_task_region(const Task *task, Processor target, MappingTagID tag, bool inline_mapping,
+                                const RegionRequirement &req, unsigned index,
+                                const std::map<Memory,bool> &current_instances, std::vector<Memory> &target_ranking,
+                                bool &enable_WAR_optimization)
+  {
+    enable_WAR_optimization = false;
+    switch (task->task_id)
+    {
+      case TOP_LEVEL_TASK_ID:
+        assert(false);
+        break;
+      case TASKID_MAIN:
+        assert(inline_mapping);
+        target_ranking.push_back(last_memory);
+        break;
+      case TASKID_INIT_VECTORS:
+        {
+        assert(task->is_index_space);
+        assert(task->index_point != NULL);
+        unsigned point = *((unsigned*)task->index_point);
+        printf("Mapping logical region (%d,%x) of point %d to memory %x for init vectors index %d\n", req.region.get_tree_id(), req.region.get_index_space().id, point, ordered_mems[3-point].id, index);
+        target_ranking.push_back(ordered_mems[3 - point]);
+        break;
+        }
+      case TASKID_ADD_VECTORS:
+        {
+        assert(task->is_index_space);
+        assert(task->index_point != NULL);
+        unsigned point2 = *((unsigned*)task->index_point);
+        printf("Mapping logical region (%d,%x) of point %d to memory %x for add vectors index %d\n",req.region.get_tree_id(), req.region.get_index_space().id, point2, ordered_mems[point2].id, index);
+        target_ranking.push_back(ordered_mems[point2]);
+        break;
+        }
+      default:
+        assert(false);
+    }
+  }
+
+  virtual void notify_failed_mapping(const Task *task, const RegionRequirement &req, unsigned index, bool inline_mapping)
+  {
+    assert(false);
+  }
+
+#if 0
+  virtual void rank_copy_targets(const Task *task, MappingTagID tag, bool inline_mapping,
+                                  const RegionRequirement &req, unsigned index,
+                                  const std::set<Memory> &current_instances,
+                                  std::set<Memory> &to_reuse,
+                                  std::vector<Memory> &to_create, bool &create_one)
+  {
+
+  }
+#endif
+private:
+  std::vector<Memory> ordered_mems;
+  Memory last_memory;
+};
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     Processor local) {
@@ -672,6 +755,7 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 #endif
   //runtime->replace_default_mapper(new DebugMapper(machine, runtime, local));
   //runtime->replace_default_mapper(new SequoiaMapper(machine, runtime, local));
+  //runtime->replace_default_mapper(new TestMapper(machine, runtime, local));
 }
 
 int main(int argc, char **argv) {
