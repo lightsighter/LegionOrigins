@@ -3285,25 +3285,18 @@ namespace RegionRuntime {
         assert(idx < map_dependent_waiters.size());
 #endif
         // Check to see if everything has been mapped
-        if (unmapped == 0)
+        if ((idx >= non_virtual_mapped_region.size()) ||
+            !non_virtual_mapped_region[idx])
         {
-          result = false;
+          // hasn't been mapped yet, try adding it
+          std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+            map_dependent_waiters[idx].insert(waiter);
+          result = added.second;
         }
         else
         {
-          if ((idx >= non_virtual_mapped_region.size()) ||
-              !non_virtual_mapped_region[idx])
-          {
-            // hasn't been mapped yet, try adding it
-            std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
-              map_dependent_waiters[idx].insert(waiter);
-            result = added.second;
-          }
-          else
-          {
-            // It's already been mapped
-            result = false;
-          }
+          // It's already been mapped
+          result = false;
         }
       } while (false);
       unlock();
@@ -3474,6 +3467,7 @@ namespace RegionRuntime {
         else
         {
           // Hold the lock to prevent new waiters from registering
+          lock_context();
           lock();
           // notify any tasks that we have waiting on us
 #ifdef DEBUG_HIGH_LEVEL
@@ -3493,6 +3487,7 @@ namespace RegionRuntime {
             }
           }
           unlock();
+          unlock_context();
           if (unmapped == 0)
           {
             // If everything has been mapped, then trigger the mapped event

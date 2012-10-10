@@ -631,10 +631,9 @@ namespace RegionRuntime {
 #endif
       // Check to see if has already been instantiated, if it has
       // then we can just return it, otherwise we need to make the new node
-      IndexPartNode *index_node = get_node(handle);
       RegionNode *parent_node = get_node(parent);
       LogicalPartition result(parent.tree_id, handle, parent.field_space);
-      if (!parent_node->has_child(index_node->color))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -650,10 +649,9 @@ namespace RegionRuntime {
 #endif
       // Check to see if has already been instantiated, if it has
       // then we can just return it, otherwise we need to make the new node
-      IndexSpaceNode *index_node = get_node(handle);
       PartitionNode *parent_node = get_node(parent);
       LogicalRegion result(parent.tree_id, handle, parent.field_space);
-      if (!parent_node->has_child(index_node->color))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -672,7 +670,7 @@ namespace RegionRuntime {
       RegionNode *parent_node = get_node(parent);
       IndexPartNode *index_node = parent_node->row_source->get_child(c);
       LogicalPartition result(parent.tree_id, index_node->handle, parent.field_space);
-      if (!parent_node->has_child(c))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -691,7 +689,7 @@ namespace RegionRuntime {
       PartitionNode *parent_node = get_node(parent);
       IndexSpaceNode *index_node = parent_node->row_source->get_child(c);
       LogicalRegion result(parent.tree_id, index_node->handle, parent.field_space);
-      if (!parent_node->has_child(c))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -716,8 +714,12 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       FieldSpaceNode *field_space = get_node(az.start.field_space);
+      FieldMask user_mask = field_space->get_field_mask(az.fields);
+      // Handle the special case of when there are no field allocated yet
+      if (!user_mask)
+        user_mask = FieldMask(FIELD_ALL_ONES);
       // Build the logical user and then do the traversal
-      LogicalUser user(az.op, az.idx, field_space->get_field_mask(az.fields), az.usage);
+      LogicalUser user(az.op, az.idx, user_mask, az.usage);
       // Now do the traversal
       RegionNode *start_node = get_node(az.start);
       start_node->register_logical_region(user, az);
@@ -731,7 +733,7 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       IndexSpaceNode *index_node = get_node(sp);
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       // Perform the deletion registration across all instances
       for (std::list<RegionNode*>::const_iterator it = index_node->logical_nodes.begin();
             it != index_node->logical_nodes.end(); it++)
@@ -748,7 +750,7 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       IndexPartNode *index_node = get_node(part);
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       // Perform the deletion registration across all instances
       for (std::list<PartitionNode*>::const_iterator it = index_node->logical_nodes.begin();
             it != index_node->logical_nodes.end(); it++)
@@ -765,7 +767,7 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       FieldSpaceNode *field_node = get_node(sp);
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       // Perform the deletion operation across all instances
       for (std::list<RegionNode*>::const_iterator it = field_node->logical_nodes.begin();
             it != field_node->logical_nodes.end(); it++)
@@ -799,7 +801,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
 #endif
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       get_node(handle)->register_deletion_operation(ctx, op, deletion_mask); 
     }
 
@@ -810,7 +812,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
 #endif
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       get_node(handle)->register_deletion_operation(ctx, op, deletion_mask);
     }
 
@@ -2399,20 +2401,9 @@ namespace RegionRuntime {
       {
         destroy_node(it->second, false/*top*/);
       }
-      // Remove ourselves from our parent only if we're at the
-      // top of the deletion, otherwise don't do it to avoid
-      // invalidating the iterator at the next level up
-      if (top && (node->parent != NULL))
-      {
-        node->parent->remove_child(node->color); 
-      }
-      // Now remove ourselves from the set of nodes and delete
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      index_nodes.erase(node->handle);
-      // Free the memory
-      delete node;
+      // Don't actually destroy anything, just mark destroyed, when the
+      // destructor is called we'll decide if we want to do anything
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
@@ -2428,19 +2419,7 @@ namespace RegionRuntime {
       {
         destroy_node(it->second, false/*top*/);
       }
-      // Remove ourselves from our parent only if we're at the
-      // top of the deletion, otherwise don't do it to avoid
-      // invalidating the iterator at the next level up
-      if (top && (node->parent != NULL))
-      {
-        node->parent->remove_child(node->color);
-      }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      index_parts.erase(node->handle);
-      // Free the memory
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
@@ -2451,30 +2430,13 @@ namespace RegionRuntime {
       assert(node->logical_nodes.empty());
       assert(field_nodes.find(node->handle) != field_nodes.end());
 #endif
-      field_nodes.erase(node->handle);
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::destroy_node(RegionNode *node, bool top)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(node->row_source != NULL);
-#endif
-      node->row_source->remove_instance(node);
-      // If we're the top of the region tree, remove ourself from our sources 
-      if (node->parent == NULL)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(node->column_source != NULL);
-#endif
-        node->column_source->remove_instance(node);
-      }
-      else if (top) // if top remove ourselves from our parent
-      {
-        node->parent->remove_child(node->row_source->color);
-      }
       // Now destroy our children
       for (std::map<Color,PartitionNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
@@ -2484,25 +2446,13 @@ namespace RegionRuntime {
 #endif
         destroy_node(it->second, false/*top*/);
       }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      region_nodes.erase(node->handle);
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::destroy_node(PartitionNode *node, bool top)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(node->row_source != NULL);
-#endif
-      node->row_source->remove_instance(node);
-      if (top && (node->parent != NULL))
-      {
-        node->parent->remove_child(node->row_source->color);
-      }
       for (std::map<Color,RegionNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
       {
@@ -2511,11 +2461,7 @@ namespace RegionRuntime {
 #endif
         destroy_node(it->second, false/*top*/);
       }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      part_nodes.erase(node->handle);
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
@@ -2704,9 +2650,33 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     IndexSpaceNode::IndexSpaceNode(IndexSpace sp, IndexPartNode *par, Color c, bool add, RegionTreeForest *ctx)
       : handle(sp), depth((par == NULL) ? 0 : par->depth+1),
-        color(c), parent(par), context(ctx), added(add), marked(false)
+        color(c), parent(par), context(ctx), added(add), marked(false), destroy_index_space(false)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    IndexSpaceNode::~IndexSpaceNode(void)
+    //--------------------------------------------------------------------------
+    {
+      if (destroy_index_space)
+      {
+        // We were the owner so tell the low-level runtime we're done
+        handle.destroy();
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      // If we were the owners of this index space mark that we can free
+      // the index space when our destructor is called
+      if (added)
+      {
+        destroy_index_space = true;
+        added = false;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2976,6 +2946,20 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    IndexPartNode::~IndexPartNode(void)
+    //--------------------------------------------------------------------------
+    {
+      // In the future we may want to reclaim partition handles here
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      added = false;
+    }
+
+    //--------------------------------------------------------------------------
     void IndexPartNode::add_child(IndexSpace handle, IndexSpaceNode *node)
     //--------------------------------------------------------------------------
     {
@@ -3221,6 +3205,20 @@ namespace RegionRuntime {
       : handle(sp), context(ctx), total_index_fields(0)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    FieldSpaceNode::~FieldSpaceNode(void)
+    //--------------------------------------------------------------------------
+    {
+      // In the future we may want to reclaim field space names here
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      // Intentionally do nothing
     }
 
     //--------------------------------------------------------------------------
@@ -4390,6 +4388,20 @@ namespace RegionRuntime {
         row_source(row_src), column_source(col_src), added(add), marked(false)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    RegionNode::~RegionNode(void)
+    //--------------------------------------------------------------------------
+    {
+      // In the future we may want to reclaim region tree IDs here
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      added = false;
     }
 
     //--------------------------------------------------------------------------
@@ -5644,6 +5656,19 @@ namespace RegionRuntime {
         disjoint(row_src->disjoint), added(add), marked(false)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    PartitionNode::~PartitionNode(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      added = false;
     }
 
     //--------------------------------------------------------------------------

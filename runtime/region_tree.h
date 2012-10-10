@@ -236,6 +236,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       IndexSpaceNode(IndexSpace sp, IndexPartNode *par,
                 Color c, bool add, RegionTreeForest *ctx);
+      ~IndexSpaceNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(IndexPartition handle, IndexPartNode *node);
       void remove_child(Color c);
@@ -266,6 +268,7 @@ namespace RegionRuntime {
       std::set<std::pair<Color,Color> > disjoint_subsets; // pairs of disjoint subsets
       bool added;
       bool marked;
+      bool destroy_index_space;
     };
 
     /////////////////////////////////////////////////////////////
@@ -281,6 +284,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       IndexPartNode(IndexPartition p, IndexSpaceNode *par,
                 Color c, bool dis, bool add, RegionTreeForest *ctx);
+      ~IndexPartNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(IndexSpace handle, IndexSpaceNode *node);
       void remove_child(Color c);
@@ -322,6 +327,8 @@ namespace RegionRuntime {
       friend class InstanceManager;
       friend class InstanceView;
       FieldSpaceNode(FieldSpace sp, RegionTreeForest *ctx);
+      ~FieldSpaceNode(void);
+      void mark_destroyed(void);
     public:
       struct FieldInfo {
       public:
@@ -479,6 +486,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
                  FieldSpaceNode *col_src, bool add, RegionTreeForest *ctx);
+      ~RegionNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(LogicalPartition handle, PartitionNode *child);
       bool has_child(Color c);
@@ -565,6 +574,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src,
                     bool add, RegionTreeForest *ctx);
+      ~PartitionNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(LogicalRegion handle, RegionNode *child);
       bool has_child(Color c);

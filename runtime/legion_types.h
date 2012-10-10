@@ -25,7 +25,7 @@
 #define FIELD_TYPE          uint64_t 
 #define FIELD_SHIFT         6
 #define FIELD_MASK          0x3F
-
+#define FIELD_ALL_ONES      0xFFFFFFFFFFFFFFFF
 
 
 namespace RegionRuntime {
