@@ -417,7 +417,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::rank_copy_targets(const Task *task, const RegionRequirement &req,
+    void Mapper::rank_copy_targets(const Task *task, MappingTagID tag, bool inline_mapping,
+                                   const RegionRequirement &req, unsigned index,
                                    const std::set<Memory> &current_instances,
                                    std::set<Memory> &to_reuse,
                                    std::vector<Memory> &to_create,

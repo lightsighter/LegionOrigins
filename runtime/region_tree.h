@@ -444,7 +444,8 @@ namespace RegionRuntime {
       bool siphon_open_children(TreeCloser &closer, GenericState &state, 
             const GenericUser &user, const FieldMask &current_mask, int next_child = -1);
       FieldState perform_close_operations(TreeCloser &closer, const GenericUser &user, 
-                    const FieldMask &closing_mask, FieldState &state, int next_child=-1);
+                    const FieldMask &closing_mask, FieldState &state, 
+                    bool allow_same_child, bool &close_successful, int next_child=-1);
     protected:
       // Logical region helper functions
       FieldMask perform_dependence_checks(const LogicalUser &user, 

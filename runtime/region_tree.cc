@@ -409,7 +409,7 @@ namespace RegionRuntime {
         part_color = parent_node->generate_color();
       else
         part_color = unsigned(color);
-      IndexPartNode *new_part = create_node(pid, parent_node, disjoint, part_color, true/*add*/);
+      IndexPartNode *new_part = create_node(pid, parent_node, part_color, disjoint, true/*add*/);
       // Now do all of the child nodes
       for (std::map<Color,IndexSpace>::const_iterator it = coloring.begin();
             it != coloring.end(); it++)
@@ -3922,7 +3922,12 @@ namespace RegionRuntime {
         gstate.added_states.insert(gstate.added_states.end(),
                         new_states.begin(),new_states.end());
       }
+#if 0
+      // Actually this is no longer a valid check since children can be
+      // open in different modes if they are disjoint even if they're
+      // both using the same field.
 #ifdef DEBUG_HIGH_LEVEL
+      if (gstate.field_states.size() > 1)
       {
         // Each field should appear in at most one of these states
         // at any point in time
@@ -3935,11 +3940,13 @@ namespace RegionRuntime {
         }
       }
 #endif
+#endif
     }
 
     //--------------------------------------------------------------------------
     RegionTreeNode::FieldState RegionTreeNode::perform_close_operations(TreeCloser &closer,
-        const GenericUser &user, const FieldMask &closing_mask, FieldState &state, int next_child/*= -1*/)
+        const GenericUser &user, const FieldMask &closing_mask, FieldState &state, 
+        bool allow_same_child, bool &close_successful, int next_child/*= -1*/)
     //--------------------------------------------------------------------------
     {
       std::vector<Color> to_delete;
@@ -3952,8 +3959,10 @@ namespace RegionRuntime {
         // Check field disjointnes
         if (it->second * closing_mask)
           continue;
-        // Check for same child 
-        if ((next_child >= 0) && (next_child == int(it->first)))
+        // Check for same child, only allow upgrades in some cases
+        // such as read-only -> exclusive.  This is calling context
+        // sensitive hence the parameter.
+        if (allow_same_child && (next_child >= 0) && (next_child == int(it->first)))
         {
           FieldMask open_users = it->second & closing_mask;
           result.open_children[it->first] = open_users;
@@ -3968,6 +3977,12 @@ namespace RegionRuntime {
         // Now we need to close this child 
         FieldMask close_mask = it->second & closing_mask;
         RegionTreeNode *child_node = get_tree_child(it->first);
+        // Check to see if the closer is ready to do the close
+        if (!closer.closing_state(state))
+        {
+          close_successful = false;
+          break;
+        }
         closer.close_tree_node(child_node, close_mask);
         // Remove the close fields
         it->second -= close_mask;
@@ -3995,6 +4010,7 @@ namespace RegionRuntime {
       state.valid_fields = next_valid;
 
       // Return a FieldState with the new children and its field mask
+      close_successful = true;
       return result;
     }
 
@@ -4019,11 +4035,6 @@ namespace RegionRuntime {
           continue;
         }
         FieldMask overlap = it->valid_fields & current_mask;
-        // Ask the closer if it wants to continue
-        if (!closer.closing_state(*it))
-        {
-          return false;
-        }
         // Now check the state 
         switch (it->open_state)
         {
@@ -4048,8 +4059,12 @@ namespace RegionRuntime {
                 // Close up all the open partitions except the one
                 // we want to go down, make a new state to be added
                 // containing the fields that are still open
+                bool success = true;
                 FieldState exclusive_open = perform_close_operations(closer, user, 
-                                                  current_mask, *it, next_child);
+                                                  current_mask, *it, true/*allow same child*/,
+                                                  success, next_child);
+                if (!success) // make sure the close worked
+                  return false;
                 if (exclusive_open.still_valid())
                 {
                   open_mask -= exclusive_open.valid_fields;
@@ -4066,8 +4081,12 @@ namespace RegionRuntime {
           case OPEN_EXCLUSIVE:
             {
               // Close up any open partitions that conflict with ours
+              bool success = true;
               FieldState exclusive_open = perform_close_operations(closer, user, 
-                                                current_mask, *it, next_child);
+                                                current_mask, *it, IS_WRITE(user.usage),
+                                                success, next_child);
+              if (!success)
+                return false;
               if (exclusive_open.still_valid())
               {
                 open_mask -= exclusive_open.valid_fields;
@@ -4099,7 +4118,11 @@ namespace RegionRuntime {
               {
                 // Need to close up the open fields since we're going to have to do
                 // an open anyway
-                perform_close_operations(closer, user, current_mask, *it, next_child);
+                bool success = true;
+                perform_close_operations(closer, user, current_mask, *it, 
+                                          false/*allow same child*/, success, next_child);
+                if (!success)
+                  return false;
                 if (!(it->still_valid()))
                   it = state.field_states.erase(it);
                 else
@@ -4550,6 +4573,7 @@ namespace RegionRuntime {
           siphon_open_children(closer, state, user, user.field_mask);
 #ifdef DEBUG_HIGH_LEVEL
           assert(closer.success);
+          assert(state.valid_views.find(new_view) != state.valid_views.end());
 #endif
           // Note that when the siphon operation is done it will automatically
           // update the set of valid instances
@@ -4919,19 +4943,17 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!!copy_mask);
+      assert(dst->logical_region == this);
 #endif
       // Get the list of valid regions for all the fields we need to do the copy for
       std::list<std::pair<InstanceView*,FieldMask> > valid_instances;
       find_valid_instance_views(rm.ctx, valid_instances, copy_mask, copy_mask, false/*needs space*/);
-      // No valid copies anywhere, so we're done
-      if (valid_instances.empty())
-        return;
       // If we only have one valid instance, no need to ask the mapper what to do
       if (valid_instances.size() == 1)
       {
         perform_copy_operation(rm, valid_instances.back().first, dst, copy_mask & valid_instances.back().second);   
       }
-      else
+      else if (!valid_instances.empty())
       {
         // Ask the mapper to put everything in order
         std::set<Memory> available_memories;
@@ -5005,6 +5027,7 @@ namespace RegionRuntime {
           }
         }
       }
+      // Otherwise there were no valid instances so this is a valid copy
     }
 
     //--------------------------------------------------------------------------
@@ -6798,6 +6821,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(logical_region == src_view->logical_region);
 #endif
+      //printf("Copying logical region (%d,%x,%x) from memory %x to memory %x\n",
+      //      logical_region->handle.tree_id, logical_region->handle.index_space.id, logical_region->handle.field_space.id,
+      //      src_view->manager->location.id, manager->location.id);
       // Find the copy preconditions
       std::set<Event> preconditions;
       find_copy_preconditions(preconditions, true/*writing*/, rm.req.redop, copy_mask);
@@ -8277,7 +8303,7 @@ namespace RegionRuntime {
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
           AutoLock m_lock(rm.mapper_lock);
-          rm.mapper->rank_copy_targets(rm.task, rm.req, valid_memories, to_reuse, to_create, create_one);
+          rm.mapper->rank_copy_targets(rm.task, rm.tag, rm.inline_mapping, rm.req, rm.idx, valid_memories, to_reuse, to_create, create_one);
         }
         // Now process the results
         // First see if we should re-use any instances

@@ -207,7 +207,7 @@ namespace RegionRuntime {
           (IS_WRITE(req)))
       {
         lock_context();
-        if (forest_ctx->is_disjoint(req.partition))
+        if (!forest_ctx->is_disjoint(req.partition))
         {
           unlock_context();
           return ERROR_NON_DISJOINT_PARTITION;

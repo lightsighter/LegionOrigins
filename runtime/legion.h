@@ -52,6 +52,7 @@ namespace RegionRuntime {
       inline bool operator==(const LogicalRegion &rhs) const;
       inline bool operator<(const LogicalRegion &rhs) const;
     public:
+      inline RegionTreeID get_tree_id(void) const { return tree_id; }
       inline IndexSpace get_index_space(void) const;
       inline FieldSpace get_field_space(void) const;
     private:
@@ -1318,7 +1319,7 @@ namespace RegionRuntime {
 
       /**
        * A copy-up operation is occuring to write dirty data back to a parent physical
-       * instance.  To perform the copy-up, the compiler is asking for a target location to
+       * instance.  To perform the copy-up, the runtime is asking for a target location to
        * perform the copy-up operation.  The mapper must give at least one memory to perform
        * the close operation to.  The mapper can chose to re-use an existing instance or
        * to create a new one in one or memories.  In order for the closer operation to
@@ -1328,7 +1329,8 @@ namespace RegionRuntime {
        * last parameter lets the mapper say whether the runtime should only try to create
        * one or all of the instances (default is true).
        */
-      virtual void rank_copy_targets(const Task *task, const RegionRequirement &req,
+      virtual void rank_copy_targets(const Task *task, MappingTagID tag, bool inline_mapping,
+                                    const RegionRequirement &req, unsigned index,
                                     const std::set<Memory> &current_instances,
                                     std::set<Memory> &to_reuse,
                                     std::vector<Memory> &to_create,
