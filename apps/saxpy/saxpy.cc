@@ -151,7 +151,7 @@ void main_task(const void *args, size_t arglen,
   IndexPartition partition = runtime->create_index_partition(ctx, main_args->ispace, colors, coloring);
   LogicalPartition p_x = runtime->get_logical_partition(ctx, main_args->r_x, partition);
   LogicalPartition p_y = runtime->get_logical_partition(ctx, main_args->r_y, partition);
-  LogicalPartition p_z = runtime->get_logical_partition(ctx, main_args->r_y, partition);
+  LogicalPartition p_z = runtime->get_logical_partition(ctx, main_args->r_z, partition);
   for (unsigned i = 0; i < *get_num_blocks(); i++) {
     blocks[i].r_x = runtime->get_logical_subregion_by_color(ctx, p_x, i);
     blocks[i].r_y = runtime->get_logical_subregion_by_color(ctx, p_y, i);
