@@ -816,7 +816,8 @@ namespace RegionRuntime {
       // These two are methods mark when a view is valid in the region tree
       void remove_user(UniqueID uid, unsigned refs, bool strict = true);
       void remove_copy(Event copy, bool strict = true);
-      void mark_view(bool valid, bool force);
+      void add_valid_reference(void);
+      void remove_valid_reference(void);
       void mark_to_be_invalidated(void);
       bool is_valid_view(void) const;
       bool has_war_dependence(const FieldMask &mask) const;
@@ -880,7 +881,7 @@ namespace RegionRuntime {
     private:
       friend class RegionTreeForest;
       friend class InstanceManager;
-      bool valid_view;
+      unsigned valid_references;
       bool local_view; // true until it is sent back in some form
       std::map<std::pair<Color,Color>,InstanceView*> children;
       // The next four members only deal with garbage collection

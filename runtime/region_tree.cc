@@ -839,6 +839,7 @@ namespace RegionRuntime {
         // top level region and put them at the top of the tree
         InstanceManager *clone_manager = ref.view->manager->clone_manager(user.field_mask, field_node);
         InstanceView *clone_view = create_view(clone_manager, NULL/*no parent*/, top_node, true/*make local*/);
+        clone_view->add_valid_reference();
         // Update the state of the top level node 
         RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
         state.valid_views[clone_view] = user.field_mask;
@@ -4354,7 +4355,8 @@ namespace RegionRuntime {
               it != to_delete.end(); it++)
         {
           // Remove the reference, we can add it back later if it gets put back on
-          (*it)->mark_view(false/*valid*/, true/*force*/);
+          //(*it)->mark_view(false/*valid*/, true/*force*/);
+          (*it)->remove_valid_reference();
           valid_views.erase(*it);
         }
       }
@@ -4750,7 +4752,8 @@ namespace RegionRuntime {
       PhysicalState &state = physical_states[ctx];
       // Add our reference first in case the new view is also currently in
       // the list of valid views.  We don't want it to be prematurely deleted
-      new_view->mark_view(true/*valid*/,true/*force*/);
+      //new_view->mark_view(true/*valid*/,true/*force*/);
+      new_view->add_valid_reference();
       if (dirty)
       {
         invalidate_instance_views(ctx, valid_mask, false/*clean*/);
@@ -4765,6 +4768,8 @@ namespace RegionRuntime {
       {
         // It already existed update the valid mask
         state.valid_views[new_view] |= valid_mask;
+        // Remove the reference that we added since it already was referenced
+        new_view->remove_valid_reference();
       }
       // Also handle this for the added views
       if (state.added_views.find(new_view) == state.added_views.end())
@@ -4790,7 +4795,8 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = new_views.begin();
             it != new_views.end(); it++)
       {
-        (*it)->mark_view(true/*valid*/,true/*force*/);
+        //(*it)->mark_view(true/*valid*/,true/*force*/);
+        (*it)->add_valid_reference();
       }
       if (!!dirty_mask)
       {
@@ -4812,6 +4818,17 @@ namespace RegionRuntime {
         {
           // It already existed update the valid mask
           state.valid_views[*it] |= valid_mask;
+          // Remove the reference that we added since it already was referenced
+          (*it)->remove_valid_reference();
+        }
+        // Also handle this for the added views
+        if (state.added_views.find(*it) == state.added_views.end())
+        {
+          state.added_views[*it] = valid_mask;
+        }
+        else
+        {
+          state.added_views[*it] |= valid_mask;
         }
       }
     }
@@ -5061,7 +5078,8 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = to_delete.begin();
             it != to_delete.end(); it++)
       {
-        (*it)->mark_view(false/*valid*/,true/*force*/);
+        //(*it)->mark_view(false/*valid*/,true/*force*/);
+        (*it)->remove_valid_reference();
         state.valid_views.erase(*it);
       }
       if (clean)
@@ -5437,7 +5455,8 @@ namespace RegionRuntime {
         if (state.valid_views.find(new_view) == state.valid_views.end())
         {
           state.valid_views[new_view] = valid_mask;
-          new_view->mark_view(true/*valid*/, true/*force*/);
+          //new_view->mark_view(true/*valid*/, true/*force*/);
+          new_view->add_valid_reference();
         }
         else
           state.valid_views[new_view] |= valid_mask;
@@ -6637,7 +6656,7 @@ namespace RegionRuntime {
     InstanceView::InstanceView(InstanceManager *man, InstanceView *par, 
                                RegionNode *reg, RegionTreeForest *contx, bool made_local)
       : manager(man), parent(par), logical_region(reg), 
-        context(contx), valid_view(false), local_view(made_local),
+        context(contx), valid_references(0), local_view(made_local),
         filtered(false), to_be_invalidated(false)
     //--------------------------------------------------------------------------
     {
@@ -6763,25 +6782,25 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::mark_view(bool valid, bool force)
+    void InstanceView::add_valid_reference(void)
     //--------------------------------------------------------------------------
     {
-      bool diff = (valid_view != valid);
-      if (force)
-      {
-        if (diff)
-        {
-          check_state_change(valid);
-          if (!valid && to_be_invalidated)
-            to_be_invalidated = false;
+      if (valid_references == 0)
+        check_state_change(true/*valid*/);
+      valid_references++;
+    }
 
-          // Update after checking the sate change
-          valid_view = valid;
-        }
-      }
-      // Otherwise do nothing since either they are the
-      // same and there is nothing to do, or they differ
-      // and we've been told not to force the change
+    //--------------------------------------------------------------------------
+    void InstanceView::remove_valid_reference(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid_references > 0);
+#endif
+      valid_references--;
+      to_be_invalidated = false;
+      if (valid_references == 0)
+        check_state_change(false/*valid*/);
     }
 
     //--------------------------------------------------------------------------
@@ -6790,7 +6809,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!to_be_invalidated);
-      assert(valid_view);
+      assert(valid_references > 0);
 #endif
       to_be_invalidated = true;
     }
@@ -6799,7 +6818,7 @@ namespace RegionRuntime {
     bool InstanceView::is_valid_view(void) const
     //--------------------------------------------------------------------------
     {
-      return (!to_be_invalidated && valid_view);
+      return (!to_be_invalidated && (valid_references > 0));
     }
 
     //--------------------------------------------------------------------------
@@ -6887,22 +6906,12 @@ namespace RegionRuntime {
     void InstanceView::check_state_change(bool adding)
     //--------------------------------------------------------------------------
     {
-      if (manager->is_remote())
-      {
-        // If the manager is remote, then we only need to update valid references
-        // so that we know when it is safe to send back the managers remote fraction
-        if (valid_view)
-        {
-          if (adding)
-            manager->add_reference();
-          else
-            manager->remove_reference();
-        }
-      }
-      else
+      // Only add or remove references if the manager is remote,
+      // otherwise it doesn't matter since the instance can't be collected anyway
+      if (!manager->is_remote())
       {
         // This is the actual garbage collection case
-        if ((!valid_view) && users.empty() && added_users.empty() &&
+        if ((valid_references == 0) && users.empty() && added_users.empty() &&
             copy_users.empty() && added_copy_users.empty())
         {
           if (adding)
