@@ -24,10 +24,26 @@ hy[x, y, z] corresponds to Hy(x + 1/2, y, z + 1/2)
 hz[x, y, z] corresponds to Hz(x + 1/2, y + 1/2, z)
 
 The computation proceeds in alternating phases, updating E, then
-updating H, then E, then H, etc. Updates to each block in E requires
-read-write access to the E block itself, plus read-only access to the
-equivalent H block, plus some ghost cells in H. Exactly which ghost
-cells depends on which component of E is being updated.
+updating H, then E, then H, etc. To enable parallel execution across a
+cluster of nodes, we split the grid of cells into blocks in three
+dimensions. Each block will then be paritioned 3 times into a total of
+9 subblocks, to allow communication with nearby blocks cells.
+
+    /-------------\                       /-------------\
+   /             /|                      //-----------//|
+  /             / |                     //           ///|
+ /             /  |     one block      //-----------///||
+/-------------/   |  subdivides into  /-------------// ||
+|             |   /  ==============>  |+-----------+|| //
+|             |  /     9 sub-blocks   ||           |||//
+|             | /   (3 per dimension) ||           ||//
+|             |/                      |+-----------+|/
+\-------------/                       \-------------/
+
+Updates to each block in E requires read-write access to the E block
+itself, plus read-only access to the equivalent H block, plus some
+ghost cells in H. Exactly which ghost cells depends on which component
+of E is being updated.
 
 For example, an update to Hx requires access to the previous values of
 Hx, plus Ey and Ez. Since the Hx vectors are offset in the middle of
