@@ -1,5 +1,57 @@
-// Finite-difference time-domain simulation.
-// http://en.wikipedia.org/wiki/Finite-difference_time-domain_method
+/*
+
+Finite-difference time-domain simulation
+(http://en.wikipedia.org/wiki/Finite-difference_time-domain_method).
+
+This algorithm uses the Yee Latice as formulated by Meep
+(http://ab-initio.mit.edu/wiki/index.php/Yee_lattices). Note that the
+image given on the wiki page is slightly confusing in that it shows
+the vectors that would be visible to someone looking at the exterior
+of the cube, rather than showing the vectors actually owned by the
+cube, some of which are located on the hidden interior of the cube.
+
+Under this formulation, the vectors for each component stored are
+slightly offset from the cordinates of the array. Specifically,
+
+ex[x, y, z] corresponds to Ex(x + 1/2, y, z)
+ey[x, y, z] corresponds to Ey(x, y + 1/2, z)
+ez[x, y, z] corresponds to Ez(x, y, z + 1/2)
+
+and
+
+hx[x, y, z] corresponds to Hx(x, y + 1/2, z + 1/2)
+hy[x, y, z] corresponds to Hy(x + 1/2, y, z + 1/2)
+hz[x, y, z] corresponds to Hz(x + 1/2, y + 1/2, z)
+
+The computation proceeds in alternating phases, updating E, then
+updating H, then E, then H, etc. Updates to each block in E requires
+read-write access to the E block itself, plus read-only access to the
+equivalent H block, plus some ghost cells in H. Exactly which ghost
+cells depends on which component of E is being updated.
+
+For example, an update to Hx requires access to the previous values of
+Hx, plus Ey and Ez. Since the Hx vectors are offset in the middle of
+each cube face, and Ey and Ez vectors are in the middle of each cube
+edge, we can interpolate Ey and Ez at Hx by taking the copy of Ey and
+Ez owned by each cube and subtracting the one in the positive
+direction.
+
+So since hx[x, y, z] is Hx(x, y + 1/2, z + 1/2), we need to
+interpolate dEy/dz and dEz/dy.
+
+dEy/dz (x, y + 1/2, z + 1/2) = Ey(x, y + 1/2, z + 1) - Ey(x, y + 1/2, z)
+dEz/dy (x, y + 1/2, z + 1/2) = Ez(x, y + 1, z + 1/2) - Ez(x, y, z + 1/2)
+
+This effectively amounts to the following computation on hx, ey, and ez:
+
+hx[x, y, z] += (ez[x, y + 1, z] - ez[x, y, z]) -
+               (ey[x, y, z + 1] - ey[x, y, z])
+
+The result is that the computation on a block of cubes in Hx depends
+on the corresponding block of cubes in Ey and Ez, plus a rectangular
+block of cubes in +z direction for Ey, and in the +y direction for Ez.
+
+*/
 
 #include <cstdio>
 
