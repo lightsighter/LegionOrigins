@@ -166,48 +166,59 @@ can be written into the heap and later read and
 unpacked, giving new local names to the regions contained in
 the instance.
 
+As Legion attempts to benefit from both static and dynamic checks
+to achieve performance while maintaining safety, both the type system and the operational
+semantics have been extended in interesting ways from a basic expression language.  We
+will describe these extensions in the next two subsections, and explain how these extensions
+were chosen to preserve a straightforward proof of the soundness of the type system.
+
 \subsection{Core Type System}
 \label{subsec:coretypes}
 
 Core Legion is explicitly typed using judgments of the form
 $$\typeenv{e}{T}$$
-where:
-\begin{itemize}
-\item $\Gamma$ is the type environment, mapping the names of local variables and global functions
-to their types,
-\item $\Phi$ is the region access privileges under which the expression is evaluated, and
-\item $\Omega$ is the set of constraints that must hold between regions
-\end{itemize}
-As regions are hierarchical, privileges and/or constraints on a region often imply similar
-privileges or constraints on subregions.  Figure~\ref{fig:closure} defines closure
-operations for $\Phi^*$ and $\Omega^*$ that explicitly add these implied constraints.
-The type checking rules are in Figure~\ref{fig:types}.  Many of the rules are 
-straightforward, but several deserve more explanation.
 
-Core Legion has no subtyping. A pointer's region is changed only via explicit
-{\em upregion} and {\em downregion} operations.  {\em Upregion} calls can be inferred,
-but {\em downregion} must be accompanied by a run-time check that the pointer really does
-point into the subregion(s), so {\em upregion} is made explicit as well for simplicity.
+In addition to the traditional type environment $\Gamma$, a Legion type judgment includes the
+set of access privileges $\Phi$ for the logical regions in the expression as well as a set of
+constraints $\Omega$ that must hold between those logical regions.
 
-Accesses to heap memory are performed via the {\em read}, {\em write}, and {\em reduce}
-operations, which are only legal if the regions in a pointer's type are ones for which the
-enclosing function has privileges.
-Similarly, a call to another function is permitted only if the privileges required by the 
-callee are a subset of those held by the caller.  There is no way to create privileges within
-a Legion function - it is limited to privileges given to it by its caller.  (The
-top-level task of a Core Legion program begins with a single, empty region from which other
-regions can be partitioned and full read and
-write privileges.)
+Both $\Phi$ and $\Omega$ are used in the heap access expressions: {\em read}, {\em write}, and {\em reduce}.
+For a heap access to be valid, the the appropriate permission must exist for logical region(s) in the
+pointer's type.  As regions are hierarchical, the exact region need not be named in $\Phi$ if permissions
+exist for a logical region that is known to contain the pointer's region.  To simplify this check, we
+define closure operations in Figure~\ref{fig:closure} that expand $\Omega$ into an $\Omega^*$, which is
+then used to expand $\Phi$ into a $\Phi^*$ that does explicitly name every logical region for which
+privileges are known to exist.
 
-The {\em partition} operation uses a {\em coloring} to split a region into 
-disjoint subregions.  The subregions are given names within the body of the partition,
-as well as constraints asserting subregions are pairwise disjoint and contained within the parent region.
-%These constraints can be used locally, or packed into region relation instances that can be unpacked and used later.
+Core Legion provides no automatic pointer type conversions.  Valid pointers are created via the {\em new}
+expression in specified region and invalid (i.e. {\em null}) pointers must also be typed.  Pointers can be
+``upcast'' via the {\em upregion} expression, which uses the expanded constraints $\Omega^*$ to verify that
+every possible region a pointer might point into is covered by at least one of the regions in the desired
+pointer type.  In contrast, a ``downcast'' using the {\em downregion} expression must perform a dynamic
+test to verify which region a run-time pointer value points into.  A static test similar to the one used
+for {\em upregion} could be used to catch cases in which the downcast can never succeed at runtime, but we
+have left it out for simplicity.
 
-The {\em pack} expression packs together a value and the corresponding logical regions,
-provided the region relation's constraints hold.  The
-corresponding {\em unpack} expression gives (new) names to those regions.  For simplicity, in Core Legion neither the 
-{\em partition} nor the {\em unpack} expression allows shadowing of region names.
+The introduction of constraints into $\Omega$ occurs through the use of the {\em partition} expression,
+which makes use of a new type specific to Legion, a {\em coloring}.  A coloring is an opaque mapping from
+pointers (which much point into the region being colored) to integer ``color'' values.  (For simplicity, 
+Core Legion allows only an iterative construction of a coloring via a {\em newcolor} expression that generates
+an empty map and a {\em color} expression which adds a new entry to an existing map, but the opacity of the
+coloring allows for more efficient generation (and storage) of colorings as needed.)  The {\em partition} 
+expression introduces names for subregions corresponding to each of those ``colors'', guaranteeing that each
+subregion is disjoint from the other subregions and all are included in the original region.
+
+The {\em pack} and {\em unpack} expressions allow the storage of pointers in the heap.  Logical region names
+are lexically scoped and if stored in the heap as-is, can only be read within the same scope.  A region relationship
+is used instead to capture the (dynamic) physical regions while preserving the statically known constraints
+between those regions.  Because the {\em pack} expression is able to verify these constraints hold when the 
+region relationship value is created, the {\em unpack} expression is able to reintroduce these constraints on
+the (fresh) logical region names given to the contents of an unwrapped region relationship value.
+
+Finally, the task call expression handles the aliasing of logical region names between the caller and callee and
+verifies the property that the privileges held by a called task are always a subset of those held
+by the caller.  In addition to being necessary for the proof of soundness, this property is critical to
+enable the hierarchical scheduling model used by the Legion runtime.
 
 \begin{comment}
 \begin{figure*}
