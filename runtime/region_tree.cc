@@ -409,7 +409,7 @@ namespace RegionRuntime {
         part_color = parent_node->generate_color();
       else
         part_color = unsigned(color);
-      IndexPartNode *new_part = create_node(pid, parent_node, disjoint, part_color, true/*add*/);
+      IndexPartNode *new_part = create_node(pid, parent_node, part_color, disjoint, true/*add*/);
       // Now do all of the child nodes
       for (std::map<Color,IndexSpace>::const_iterator it = coloring.begin();
             it != coloring.end(); it++)
@@ -631,10 +631,9 @@ namespace RegionRuntime {
 #endif
       // Check to see if has already been instantiated, if it has
       // then we can just return it, otherwise we need to make the new node
-      IndexPartNode *index_node = get_node(handle);
       RegionNode *parent_node = get_node(parent);
       LogicalPartition result(parent.tree_id, handle, parent.field_space);
-      if (!parent_node->has_child(index_node->color))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -650,10 +649,9 @@ namespace RegionRuntime {
 #endif
       // Check to see if has already been instantiated, if it has
       // then we can just return it, otherwise we need to make the new node
-      IndexSpaceNode *index_node = get_node(handle);
       PartitionNode *parent_node = get_node(parent);
       LogicalRegion result(parent.tree_id, handle, parent.field_space);
-      if (!parent_node->has_child(index_node->color))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -672,7 +670,7 @@ namespace RegionRuntime {
       RegionNode *parent_node = get_node(parent);
       IndexPartNode *index_node = parent_node->row_source->get_child(c);
       LogicalPartition result(parent.tree_id, index_node->handle, parent.field_space);
-      if (!parent_node->has_child(c))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -691,7 +689,7 @@ namespace RegionRuntime {
       PartitionNode *parent_node = get_node(parent);
       IndexSpaceNode *index_node = parent_node->row_source->get_child(c);
       LogicalRegion result(parent.tree_id, index_node->handle, parent.field_space);
-      if (!parent_node->has_child(c))
+      if (!has_node(result))
       {
         create_node(result, parent_node, true/*add*/);
       }
@@ -716,8 +714,12 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       FieldSpaceNode *field_space = get_node(az.start.field_space);
+      FieldMask user_mask = field_space->get_field_mask(az.fields);
+      // Handle the special case of when there are no field allocated yet
+      if (!user_mask)
+        user_mask = FieldMask(FIELD_ALL_ONES);
       // Build the logical user and then do the traversal
-      LogicalUser user(az.op, az.idx, field_space->get_field_mask(az.fields), az.usage);
+      LogicalUser user(az.op, az.idx, user_mask, az.usage);
       // Now do the traversal
       RegionNode *start_node = get_node(az.start);
       start_node->register_logical_region(user, az);
@@ -731,7 +733,7 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       IndexSpaceNode *index_node = get_node(sp);
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       // Perform the deletion registration across all instances
       for (std::list<RegionNode*>::const_iterator it = index_node->logical_nodes.begin();
             it != index_node->logical_nodes.end(); it++)
@@ -748,7 +750,7 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       IndexPartNode *index_node = get_node(part);
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       // Perform the deletion registration across all instances
       for (std::list<PartitionNode*>::const_iterator it = index_node->logical_nodes.begin();
             it != index_node->logical_nodes.end(); it++)
@@ -765,7 +767,7 @@ namespace RegionRuntime {
       assert(lock_held);
 #endif
       FieldSpaceNode *field_node = get_node(sp);
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       // Perform the deletion operation across all instances
       for (std::list<RegionNode*>::const_iterator it = field_node->logical_nodes.begin();
             it != field_node->logical_nodes.end(); it++)
@@ -799,7 +801,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
 #endif
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       get_node(handle)->register_deletion_operation(ctx, op, deletion_mask); 
     }
 
@@ -810,7 +812,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(lock_held);
 #endif
-      FieldMask deletion_mask(0xFFFFFFFFFFFFFFFF);
+      FieldMask deletion_mask(FIELD_ALL_ONES);
       get_node(handle)->register_deletion_operation(ctx, op, deletion_mask);
     }
 
@@ -839,6 +841,7 @@ namespace RegionRuntime {
         // top level region and put them at the top of the tree
         InstanceManager *clone_manager = ref.view->manager->clone_manager(user.field_mask, field_node);
         InstanceView *clone_view = create_view(clone_manager, NULL/*no parent*/, top_node, true/*make local*/);
+        clone_view->add_valid_reference();
         // Update the state of the top level node 
         RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
         state.valid_views[clone_view] = user.field_mask;
@@ -909,8 +912,7 @@ namespace RegionRuntime {
         if (it->privilege != NO_MEMORY)
         {
           FieldSpaceNode *node = get_node(it->handle);
-          if (send_field_nodes.find(node) == send_field_nodes.end())
-            send_field_nodes.insert(node);
+          send_field_nodes.insert(node);
         }
       }
       for (std::vector<RegionRequirement>::const_iterator it = regions.begin();
@@ -922,12 +924,23 @@ namespace RegionRuntime {
           {
             RegionNode *node = get_node(it->region);
             node->mark_node(true/*recurse*/);
+            // Also do the field spaces and the index spaces
+            FieldSpaceNode *fnode = get_node(it->region.field_space);
+            send_field_nodes.insert(fnode);
+            IndexSpaceNode *inode = get_node(it->region.index_space);
+            inode->mark_node(true/*recurse*/);
           }
           else
           {
             PartitionNode *node = get_node(it->partition);
             node->mark_node(true/*recurse*/);
             node->parent->mark_node(false/*recurse*/);
+            // Also do the field spaces and the index spaces
+            FieldSpaceNode *fnode = get_node(it->partition.field_space);
+            send_field_nodes.insert(fnode);
+            IndexPartNode *inode = get_node(it->partition.index_partition);
+            inode->mark_node(true/*recurse*/);
+            inode->parent->mark_node(false/*recurse*/);
           }
         }
       }
@@ -950,11 +963,15 @@ namespace RegionRuntime {
           {
             RegionNode *node = get_node(it->region);
             send_logical_nodes.insert(node->find_top_marked());
+            IndexSpaceNode *inode = get_node(it->region.index_space);
+            send_index_nodes.insert(inode->find_top_marked());
           }
           else
           {
             PartitionNode *node = get_node(it->partition);
             send_logical_nodes.insert(node->find_top_marked());
+            IndexPartNode *inode = get_node(it->partition.index_partition);
+            send_index_nodes.insert(inode->find_top_marked());
           }
         }
       }
@@ -1221,19 +1238,15 @@ namespace RegionRuntime {
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
-        // No need to initialize state since we just made these trees
+        top_node->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
-        RegionTreeNode::PhysicalState &state = top_node->physical_states[ctx];
-        state.context_top = true;
       }
       else
       {
         PartitionNode *top_node = get_node(req.partition);
-        // No need to initialize state since we just made these trees
+        top_node->parent->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
         top_node->parent->unpack_physical_state(ctx, derez, false/*recurse*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
-        RegionTreeNode::PhysicalState &state = top_node->parent->physical_states[ctx];
-        state.context_top = true;
       }
     }
 
@@ -2398,20 +2411,9 @@ namespace RegionRuntime {
       {
         destroy_node(it->second, false/*top*/);
       }
-      // Remove ourselves from our parent only if we're at the
-      // top of the deletion, otherwise don't do it to avoid
-      // invalidating the iterator at the next level up
-      if (top && (node->parent != NULL))
-      {
-        node->parent->remove_child(node->color); 
-      }
-      // Now remove ourselves from the set of nodes and delete
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      index_nodes.erase(node->handle);
-      // Free the memory
-      delete node;
+      // Don't actually destroy anything, just mark destroyed, when the
+      // destructor is called we'll decide if we want to do anything
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
@@ -2427,19 +2429,7 @@ namespace RegionRuntime {
       {
         destroy_node(it->second, false/*top*/);
       }
-      // Remove ourselves from our parent only if we're at the
-      // top of the deletion, otherwise don't do it to avoid
-      // invalidating the iterator at the next level up
-      if (top && (node->parent != NULL))
-      {
-        node->parent->remove_child(node->color);
-      }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      index_parts.erase(node->handle);
-      // Free the memory
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
@@ -2450,30 +2440,13 @@ namespace RegionRuntime {
       assert(node->logical_nodes.empty());
       assert(field_nodes.find(node->handle) != field_nodes.end());
 #endif
-      field_nodes.erase(node->handle);
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::destroy_node(RegionNode *node, bool top)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(node->row_source != NULL);
-#endif
-      node->row_source->remove_instance(node);
-      // If we're the top of the region tree, remove ourself from our sources 
-      if (node->parent == NULL)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(node->column_source != NULL);
-#endif
-        node->column_source->remove_instance(node);
-      }
-      else if (top) // if top remove ourselves from our parent
-      {
-        node->parent->remove_child(node->row_source->color);
-      }
       // Now destroy our children
       for (std::map<Color,PartitionNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
@@ -2483,25 +2456,13 @@ namespace RegionRuntime {
 #endif
         destroy_node(it->second, false/*top*/);
       }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      region_nodes.erase(node->handle);
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::destroy_node(PartitionNode *node, bool top)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(node->row_source != NULL);
-#endif
-      node->row_source->remove_instance(node);
-      if (top && (node->parent != NULL))
-      {
-        node->parent->remove_child(node->row_source->color);
-      }
       for (std::map<Color,RegionNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
       {
@@ -2510,11 +2471,7 @@ namespace RegionRuntime {
 #endif
         destroy_node(it->second, false/*top*/);
       }
-#ifdef DEBUG_HIGH_LEVEL
-      assert(has_node(node->handle));
-#endif
-      part_nodes.erase(node->handle);
-      delete node;
+      node->mark_destroyed();
     }
 
     //--------------------------------------------------------------------------
@@ -2559,7 +2516,7 @@ namespace RegionRuntime {
       std::map<IndexSpace,IndexSpaceNode*>::const_iterator it = index_nodes.find(space);
       if (it == index_nodes.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for index space %x.  This means it has either been "
+        log_index(LEVEL_ERROR,"Unable to find entry for index space %x.  This means it has either been "
                               "deleted or the appropriate privileges are not being requested.", space.id);
         exit(ERROR_INVALID_INDEX_SPACE_ENTRY);
       }
@@ -2573,7 +2530,7 @@ namespace RegionRuntime {
       std::map<IndexPartition,IndexPartNode*>::const_iterator it = index_parts.find(part);
       if (it == index_parts.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for index partition %d.  This means it has either been "
+        log_index(LEVEL_ERROR,"Unable to find entry for index partition %d.  This means it has either been "
                               "deleted or the appropriate privileges are not being requested.", part);
         exit(ERROR_INVALID_INDEX_PART_ENTRY);
       }
@@ -2587,7 +2544,7 @@ namespace RegionRuntime {
       std::map<FieldSpace,FieldSpaceNode*>::const_iterator it = field_nodes.find(space);
       if (it == field_nodes.end())
       {
-        log_region(LEVEL_ERROR,"Unable to find entry for field space %x.  This means it has either been "
+        log_field(LEVEL_ERROR,"Unable to find entry for field space %x.  This means it has either been "
                               "deleted or the appropriate privileges are not being requested.", space.id); 
         exit(ERROR_INVALID_FIELD_SPACE_ENTRY);
       }
@@ -2693,7 +2650,7 @@ namespace RegionRuntime {
     bool RegionTreeForest::has_view(InstanceKey key) const
     //--------------------------------------------------------------------------
     {
-      return (views.find(key) == views.end());
+      return (views.find(key) != views.end());
     }
 
     /////////////////////////////////////////////////////////////
@@ -2703,9 +2660,33 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     IndexSpaceNode::IndexSpaceNode(IndexSpace sp, IndexPartNode *par, Color c, bool add, RegionTreeForest *ctx)
       : handle(sp), depth((par == NULL) ? 0 : par->depth+1),
-        color(c), parent(par), context(ctx), added(add), marked(false)
+        color(c), parent(par), context(ctx), added(add), marked(false), destroy_index_space(false)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    IndexSpaceNode::~IndexSpaceNode(void)
+    //--------------------------------------------------------------------------
+    {
+      if (destroy_index_space)
+      {
+        // We were the owner so tell the low-level runtime we're done
+        handle.destroy();
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexSpaceNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      // If we were the owners of this index space mark that we can free
+      // the index space when our destructor is called
+      if (added)
+      {
+        destroy_index_space = true;
+        added = false;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2831,12 +2812,9 @@ namespace RegionRuntime {
           return *it;
       }
       // Otherwise we're going to need to make it, first make the parent
-#ifdef DEBUG_HIGH_LEVEL
-      // This requires that there is always at least a part of the region
-      // tree that is local.  It might prove to be false later.
-      assert(parent != NULL);
-#endif
-      PartitionNode *target_parent = parent->instantiate_partition(tid, fid);
+      PartitionNode *target_parent = NULL;
+      if (parent != NULL)
+        target_parent = parent->instantiate_partition(tid, fid);
       return context->create_node(target, target_parent, true/*add*/); 
     }
 
@@ -2972,6 +2950,20 @@ namespace RegionRuntime {
         color(c), parent(par), context(ctx), disjoint(dis), added(add), marked(false)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    IndexPartNode::~IndexPartNode(void)
+    //--------------------------------------------------------------------------
+    {
+      // In the future we may want to reclaim partition handles here
+    }
+
+    //--------------------------------------------------------------------------
+    void IndexPartNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      added = false;
     }
 
     //--------------------------------------------------------------------------
@@ -3220,6 +3212,20 @@ namespace RegionRuntime {
       : handle(sp), context(ctx), total_index_fields(0)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    FieldSpaceNode::~FieldSpaceNode(void)
+    //--------------------------------------------------------------------------
+    {
+      // In the future we may want to reclaim field space names here
+    }
+
+    //--------------------------------------------------------------------------
+    void FieldSpaceNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      // Intentionally do nothing
     }
 
     //--------------------------------------------------------------------------
@@ -3922,7 +3928,12 @@ namespace RegionRuntime {
         gstate.added_states.insert(gstate.added_states.end(),
                         new_states.begin(),new_states.end());
       }
+#if 0
+      // Actually this is no longer a valid check since children can be
+      // open in different modes if they are disjoint even if they're
+      // both using the same field.
 #ifdef DEBUG_HIGH_LEVEL
+      if (gstate.field_states.size() > 1)
       {
         // Each field should appear in at most one of these states
         // at any point in time
@@ -3935,11 +3946,13 @@ namespace RegionRuntime {
         }
       }
 #endif
+#endif
     }
 
     //--------------------------------------------------------------------------
     RegionTreeNode::FieldState RegionTreeNode::perform_close_operations(TreeCloser &closer,
-        const GenericUser &user, const FieldMask &closing_mask, FieldState &state, int next_child/*= -1*/)
+        const GenericUser &user, const FieldMask &closing_mask, FieldState &state, 
+        bool allow_same_child, bool &close_successful, int next_child/*= -1*/)
     //--------------------------------------------------------------------------
     {
       std::vector<Color> to_delete;
@@ -3952,8 +3965,10 @@ namespace RegionRuntime {
         // Check field disjointnes
         if (it->second * closing_mask)
           continue;
-        // Check for same child 
-        if ((next_child >= 0) && (next_child == int(it->first)))
+        // Check for same child, only allow upgrades in some cases
+        // such as read-only -> exclusive.  This is calling context
+        // sensitive hence the parameter.
+        if (allow_same_child && (next_child >= 0) && (next_child == int(it->first)))
         {
           FieldMask open_users = it->second & closing_mask;
           result.open_children[it->first] = open_users;
@@ -3968,6 +3983,12 @@ namespace RegionRuntime {
         // Now we need to close this child 
         FieldMask close_mask = it->second & closing_mask;
         RegionTreeNode *child_node = get_tree_child(it->first);
+        // Check to see if the closer is ready to do the close
+        if (!closer.closing_state(state))
+        {
+          close_successful = false;
+          break;
+        }
         closer.close_tree_node(child_node, close_mask);
         // Remove the close fields
         it->second -= close_mask;
@@ -3995,6 +4016,7 @@ namespace RegionRuntime {
       state.valid_fields = next_valid;
 
       // Return a FieldState with the new children and its field mask
+      close_successful = true;
       return result;
     }
 
@@ -4019,11 +4041,6 @@ namespace RegionRuntime {
           continue;
         }
         FieldMask overlap = it->valid_fields & current_mask;
-        // Ask the closer if it wants to continue
-        if (!closer.closing_state(*it))
-        {
-          return false;
-        }
         // Now check the state 
         switch (it->open_state)
         {
@@ -4048,8 +4065,12 @@ namespace RegionRuntime {
                 // Close up all the open partitions except the one
                 // we want to go down, make a new state to be added
                 // containing the fields that are still open
+                bool success = true;
                 FieldState exclusive_open = perform_close_operations(closer, user, 
-                                                  current_mask, *it, next_child);
+                                                  current_mask, *it, true/*allow same child*/,
+                                                  success, next_child);
+                if (!success) // make sure the close worked
+                  return false;
                 if (exclusive_open.still_valid())
                 {
                   open_mask -= exclusive_open.valid_fields;
@@ -4066,8 +4087,12 @@ namespace RegionRuntime {
           case OPEN_EXCLUSIVE:
             {
               // Close up any open partitions that conflict with ours
+              bool success = true;
               FieldState exclusive_open = perform_close_operations(closer, user, 
-                                                current_mask, *it, next_child);
+                                                current_mask, *it, IS_WRITE(user.usage),
+                                                success, next_child);
+              if (!success)
+                return false;
               if (exclusive_open.still_valid())
               {
                 open_mask -= exclusive_open.valid_fields;
@@ -4099,7 +4124,11 @@ namespace RegionRuntime {
               {
                 // Need to close up the open fields since we're going to have to do
                 // an open anyway
-                perform_close_operations(closer, user, current_mask, *it, next_child);
+                bool success = true;
+                perform_close_operations(closer, user, current_mask, *it, 
+                                          false/*allow same child*/, success, next_child);
+                if (!success)
+                  return false;
                 if (!(it->still_valid()))
                   it = state.field_states.erase(it);
                 else
@@ -4331,7 +4360,8 @@ namespace RegionRuntime {
               it != to_delete.end(); it++)
         {
           // Remove the reference, we can add it back later if it gets put back on
-          (*it)->mark_view(false/*valid*/, true/*force*/);
+          //(*it)->mark_view(false/*valid*/, true/*force*/);
+          (*it)->remove_valid_reference();
           valid_views.erase(*it);
         }
       }
@@ -4365,6 +4395,20 @@ namespace RegionRuntime {
         row_source(row_src), column_source(col_src), added(add), marked(false)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    RegionNode::~RegionNode(void)
+    //--------------------------------------------------------------------------
+    {
+      // In the future we may want to reclaim region tree IDs here
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      added = false;
     }
 
     //--------------------------------------------------------------------------
@@ -4550,6 +4594,7 @@ namespace RegionRuntime {
           siphon_open_children(closer, state, user, user.field_mask);
 #ifdef DEBUG_HIGH_LEVEL
           assert(closer.success);
+          assert(state.valid_views.find(new_view) != state.valid_views.end());
 #endif
           // Note that when the siphon operation is done it will automatically
           // update the set of valid instances
@@ -4726,7 +4771,8 @@ namespace RegionRuntime {
       PhysicalState &state = physical_states[ctx];
       // Add our reference first in case the new view is also currently in
       // the list of valid views.  We don't want it to be prematurely deleted
-      new_view->mark_view(true/*valid*/,true/*force*/);
+      //new_view->mark_view(true/*valid*/,true/*force*/);
+      new_view->add_valid_reference();
       if (dirty)
       {
         invalidate_instance_views(ctx, valid_mask, false/*clean*/);
@@ -4741,6 +4787,8 @@ namespace RegionRuntime {
       {
         // It already existed update the valid mask
         state.valid_views[new_view] |= valid_mask;
+        // Remove the reference that we added since it already was referenced
+        new_view->remove_valid_reference();
       }
       // Also handle this for the added views
       if (state.added_views.find(new_view) == state.added_views.end())
@@ -4766,7 +4814,8 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = new_views.begin();
             it != new_views.end(); it++)
       {
-        (*it)->mark_view(true/*valid*/,true/*force*/);
+        //(*it)->mark_view(true/*valid*/,true/*force*/);
+        (*it)->add_valid_reference();
       }
       if (!!dirty_mask)
       {
@@ -4788,6 +4837,17 @@ namespace RegionRuntime {
         {
           // It already existed update the valid mask
           state.valid_views[*it] |= valid_mask;
+          // Remove the reference that we added since it already was referenced
+          (*it)->remove_valid_reference();
+        }
+        // Also handle this for the added views
+        if (state.added_views.find(*it) == state.added_views.end())
+        {
+          state.added_views[*it] = valid_mask;
+        }
+        else
+        {
+          state.added_views[*it] |= valid_mask;
         }
       }
     }
@@ -4919,19 +4979,17 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!!copy_mask);
+      assert(dst->logical_region == this);
 #endif
       // Get the list of valid regions for all the fields we need to do the copy for
       std::list<std::pair<InstanceView*,FieldMask> > valid_instances;
       find_valid_instance_views(rm.ctx, valid_instances, copy_mask, copy_mask, false/*needs space*/);
-      // No valid copies anywhere, so we're done
-      if (valid_instances.empty())
-        return;
       // If we only have one valid instance, no need to ask the mapper what to do
       if (valid_instances.size() == 1)
       {
         perform_copy_operation(rm, valid_instances.back().first, dst, copy_mask & valid_instances.back().second);   
       }
-      else
+      else if (!valid_instances.empty())
       {
         // Ask the mapper to put everything in order
         std::set<Memory> available_memories;
@@ -5005,6 +5063,7 @@ namespace RegionRuntime {
           }
         }
       }
+      // Otherwise there were no valid instances so this is a valid copy
     }
 
     //--------------------------------------------------------------------------
@@ -5038,7 +5097,8 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = to_delete.begin();
             it != to_delete.end(); it++)
       {
-        (*it)->mark_view(false/*valid*/,true/*force*/);
+        //(*it)->mark_view(false/*valid*/,true/*force*/);
+        (*it)->remove_valid_reference();
         state.valid_views.erase(*it);
       }
       if (clean)
@@ -5414,7 +5474,8 @@ namespace RegionRuntime {
         if (state.valid_views.find(new_view) == state.valid_views.end())
         {
           state.valid_views[new_view] = valid_mask;
-          new_view->mark_view(true/*valid*/, true/*force*/);
+          //new_view->mark_view(true/*valid*/, true/*force*/);
+          new_view->add_valid_reference();
         }
         else
           state.valid_views[new_view] |= valid_mask;
@@ -5602,6 +5663,19 @@ namespace RegionRuntime {
         disjoint(row_src->disjoint), added(add), marked(false)
     //--------------------------------------------------------------------------
     {
+    }
+
+    //--------------------------------------------------------------------------
+    PartitionNode::~PartitionNode(void)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::mark_destroyed(void)
+    //--------------------------------------------------------------------------
+    {
+      added = false;
     }
 
     //--------------------------------------------------------------------------
@@ -6614,7 +6688,7 @@ namespace RegionRuntime {
     InstanceView::InstanceView(InstanceManager *man, InstanceView *par, 
                                RegionNode *reg, RegionTreeForest *contx, bool made_local)
       : manager(man), parent(par), logical_region(reg), 
-        context(contx), valid_view(false), local_view(made_local),
+        context(contx), valid_references(0), local_view(made_local),
         filtered(false), to_be_invalidated(false)
     //--------------------------------------------------------------------------
     {
@@ -6740,25 +6814,25 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::mark_view(bool valid, bool force)
+    void InstanceView::add_valid_reference(void)
     //--------------------------------------------------------------------------
     {
-      bool diff = (valid_view != valid);
-      if (force)
-      {
-        if (diff)
-        {
-          check_state_change(valid);
-          if (!valid && to_be_invalidated)
-            to_be_invalidated = false;
+      if (valid_references == 0)
+        check_state_change(true/*valid*/);
+      valid_references++;
+    }
 
-          // Update after checking the sate change
-          valid_view = valid;
-        }
-      }
-      // Otherwise do nothing since either they are the
-      // same and there is nothing to do, or they differ
-      // and we've been told not to force the change
+    //--------------------------------------------------------------------------
+    void InstanceView::remove_valid_reference(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(valid_references > 0);
+#endif
+      valid_references--;
+      to_be_invalidated = false;
+      if (valid_references == 0)
+        check_state_change(false/*valid*/);
     }
 
     //--------------------------------------------------------------------------
@@ -6767,7 +6841,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!to_be_invalidated);
-      assert(valid_view);
+      assert(valid_references > 0);
 #endif
       to_be_invalidated = true;
     }
@@ -6776,7 +6850,7 @@ namespace RegionRuntime {
     bool InstanceView::is_valid_view(void) const
     //--------------------------------------------------------------------------
     {
-      return (!to_be_invalidated && valid_view);
+      return (!to_be_invalidated && (valid_references > 0));
     }
 
     //--------------------------------------------------------------------------
@@ -6798,6 +6872,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(logical_region == src_view->logical_region);
 #endif
+      //printf("Copying logical region (%d,%x,%x) from memory %x to memory %x\n",
+      //      logical_region->handle.tree_id, logical_region->handle.index_space.id, logical_region->handle.field_space.id,
+      //      src_view->manager->location.id, manager->location.id);
       // Find the copy preconditions
       std::set<Event> preconditions;
       find_copy_preconditions(preconditions, true/*writing*/, rm.req.redop, copy_mask);
@@ -6861,22 +6938,12 @@ namespace RegionRuntime {
     void InstanceView::check_state_change(bool adding)
     //--------------------------------------------------------------------------
     {
-      if (manager->is_remote())
-      {
-        // If the manager is remote, then we only need to update valid references
-        // so that we know when it is safe to send back the managers remote fraction
-        if (valid_view)
-        {
-          if (adding)
-            manager->add_reference();
-          else
-            manager->remove_reference();
-        }
-      }
-      else
+      // Only add or remove references if the manager is remote,
+      // otherwise it doesn't matter since the instance can't be collected anyway
+      if (!manager->is_remote())
       {
         // This is the actual garbage collection case
-        if ((!valid_view) && users.empty() && added_users.empty() &&
+        if ((valid_references == 0) && users.empty() && added_users.empty() &&
             copy_users.empty() && added_copy_users.empty())
         {
           if (adding)
@@ -8277,7 +8344,7 @@ namespace RegionRuntime {
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
           AutoLock m_lock(rm.mapper_lock);
-          rm.mapper->rank_copy_targets(rm.task, rm.req, valid_memories, to_reuse, to_create, create_one);
+          rm.mapper->rank_copy_targets(rm.task, rm.tag, rm.inline_mapping, rm.req, rm.idx, valid_memories, to_reuse, to_create, create_one);
         }
         // Now process the results
         // First see if we should re-use any instances

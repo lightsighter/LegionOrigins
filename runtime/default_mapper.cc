@@ -353,7 +353,7 @@ namespace RegionRuntime {
       for (unsigned chunk = 0; chunk < num_chunks; chunk++) {
         // TODO: For better perf, don't run everything on the local processor.
         slice.push_back(IndexSplit(IndexSpace::create_index_space(index_space, chunks[chunk]),
-                                   local_proc, false, false));
+                                   proc_group[(chunk % proc_group.size())], false, false));
       }
     }
 
@@ -417,7 +417,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void Mapper::rank_copy_targets(const Task *task, const RegionRequirement &req,
+    void Mapper::rank_copy_targets(const Task *task, MappingTagID tag, bool inline_mapping,
+                                   const RegionRequirement &req, unsigned index,
                                    const std::set<Memory> &current_instances,
                                    std::set<Memory> &to_reuse,
                                    std::vector<Memory> &to_create,

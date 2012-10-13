@@ -207,7 +207,7 @@ namespace RegionRuntime {
           (IS_WRITE(req)))
       {
         lock_context();
-        if (forest_ctx->is_disjoint(req.partition))
+        if (!forest_ctx->is_disjoint(req.partition))
         {
           unlock_context();
           return ERROR_NON_DISJOINT_PARTITION;
@@ -3285,25 +3285,18 @@ namespace RegionRuntime {
         assert(idx < map_dependent_waiters.size());
 #endif
         // Check to see if everything has been mapped
-        if (unmapped == 0)
+        if ((idx >= non_virtual_mapped_region.size()) ||
+            !non_virtual_mapped_region[idx])
         {
-          result = false;
+          // hasn't been mapped yet, try adding it
+          std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
+            map_dependent_waiters[idx].insert(waiter);
+          result = added.second;
         }
         else
         {
-          if ((idx >= non_virtual_mapped_region.size()) ||
-              !non_virtual_mapped_region[idx])
-          {
-            // hasn't been mapped yet, try adding it
-            std::pair<std::set<GeneralizedOperation*>::iterator,bool> added = 
-              map_dependent_waiters[idx].insert(waiter);
-            result = added.second;
-          }
-          else
-          {
-            // It's already been mapped
-            result = false;
-          }
+          // It's already been mapped
+          result = false;
         }
       } while (false);
       unlock();
@@ -3474,6 +3467,7 @@ namespace RegionRuntime {
         else
         {
           // Hold the lock to prevent new waiters from registering
+          lock_context();
           lock();
           // notify any tasks that we have waiting on us
 #ifdef DEBUG_HIGH_LEVEL
@@ -3493,6 +3487,7 @@ namespace RegionRuntime {
             }
           }
           unlock();
+          unlock_context();
           if (unmapped == 0)
           {
             // If everything has been mapped, then trigger the mapped event
@@ -5222,6 +5217,8 @@ namespace RegionRuntime {
       {
         size_t result_size;
         derez.deserialize<size_t>(result_size);
+        derez.deserialize<size_t>(this->index_element_size);
+        derez.deserialize<unsigned>(this->index_dimensions);
         size_t point_size = index_element_size * index_dimensions;
         for (unsigned idx = 0; idx < num_points; idx++)
         {
@@ -5692,7 +5689,7 @@ namespace RegionRuntime {
           std::set<LogicalRegion> touched_regions;
           // Pretend this is a single region coming back
           regions[idx].handle_type = SINGULAR;
-          for (unsigned cnt = 0; cnt <= num_regions; cnt++)
+          for (unsigned cnt = 0; cnt < num_regions; cnt++)
           {
             LogicalRegion touched;
             derez.deserialize(touched);
@@ -6347,9 +6344,11 @@ namespace RegionRuntime {
       derez.deserialize<bool>(distributed);
       derez.deserialize<bool>(locally_mapped);
       derez.deserialize<bool>(stealable);
+      remote = true;
       if (locally_mapped)
         derez.deserialize<bool>(is_leaf);
       derez.deserialize<Event>(termination_event);
+      derez.deserialize<IndexTask*>(index_owner);
       derez.deserialize<unsigned long>(denominator);
       remaining_bytes = derez.get_remaining_bytes();
       remaining_buffer = malloc(remaining_bytes);
@@ -6403,6 +6402,7 @@ namespace RegionRuntime {
       else
       {
         forest_ctx->unpack_region_forest_shape(derez);
+        forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
         // Unpack any premapped regions
         size_t num_premapped;
         derez.deserialize(num_premapped);
@@ -6412,7 +6412,6 @@ namespace RegionRuntime {
           derez.deserialize(idx);
           premapped_regions[idx] = forest_ctx->unpack_reference(derez);
         }
-        forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           if (premapped_regions.find(idx) != premapped_regions.end())
@@ -6661,8 +6660,7 @@ namespace RegionRuntime {
         // Otherwise we have to pack stuff up and send it back
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
         buffer_size += sizeof(denominator);
-        buffer_size += sizeof(split_factor);
-        buffer_size += sizeof(size_t);
+        buffer_size += sizeof(size_t); // number of points
         buffer_size += (regions.size() * sizeof(unsigned));
         lock_context();
         for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -6683,11 +6681,10 @@ namespace RegionRuntime {
         buffer_size += forest_ctx->post_compute_region_tree_state_return();
         // Now pack everything up
         Serializer rez(buffer_size);
-        rez.serialize<Processor>(orig_proc);
+        rez.serialize(orig_proc);
         rez.serialize<IndexTask*>(index_owner);
-        rez.serialize<unsigned long>(denominator);
-        rez.serialize<unsigned long>(split_factor);
-        rez.serialize<size_t>(points.size());
+        rez.serialize(denominator);
+        rez.serialize(points.size());
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           rez.serialize<unsigned>(non_virtual_mappings[idx]);
@@ -6695,7 +6692,8 @@ namespace RegionRuntime {
         forest_ctx->begin_pack_region_tree_state_return(rez);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
-          if (non_virtual_mappings[idx] == points.size())
+          if ((non_virtual_mappings[idx] == points.size()) &&
+              (premapped_regions.find(idx) == premapped_regions.end()))
           {
             pack_tree_state_return(idx, ctx_id, RegionTreeForest::PHYSICAL, rez);
           }
@@ -6862,8 +6860,14 @@ namespace RegionRuntime {
           assert(future_results.size() == points.size());
 #endif
           // Get the result size
-          result_size = (future_results.begin())->second.buffer_size;
+          std::map<AnyPoint,FutureResult>::const_iterator first_point = future_results.begin();
+          this->index_element_size = first_point->first.elmt_size;
+          this->index_dimensions = first_point->first.dim;
+          result_size = first_point->second.buffer_size;
+
           buffer_size += sizeof(size_t); // number of future results
+          buffer_size += sizeof(this->index_element_size);
+          buffer_size += sizeof(this->index_dimensions);
           buffer_size += (future_results.size() * (index_dimensions*index_element_size + result_size + sizeof(Event)));
         }
 
@@ -6889,6 +6893,8 @@ namespace RegionRuntime {
         else
         {
           rez.serialize<size_t>(result_size); 
+          rez.serialize<size_t>(this->index_element_size);
+          rez.serialize<unsigned>(this->index_dimensions);
           for (std::map<AnyPoint,FutureResult>::const_iterator it = future_results.begin();
                 it != future_results.end(); it++)
           {
@@ -6965,6 +6971,9 @@ namespace RegionRuntime {
           {
             if (sending_set.find((*it)->regions[idx].region) == sending_set.end())
             {
+#ifdef DEBUG_HIGH_LEVEL
+              assert((*it)->regions[idx].handle_type == SINGULAR);
+#endif
               sending_set.insert((*it)->regions[idx].region);
               result += forest_ctx->compute_region_tree_state_return((*it)->regions[idx], ctx_id,
                                                       true/*overwrite*/, mode);

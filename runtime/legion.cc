@@ -1710,7 +1710,6 @@ namespace RegionRuntime {
       lock();
       result = malloc(result_size); 
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!set_event.has_triggered());
       if (result_size > 0)
       {
         assert(res != NULL);
@@ -1856,7 +1855,7 @@ namespace RegionRuntime {
       void * point_buffer = malloc(point.elmt_size * point.dim);
       memcpy(point_buffer,point.buffer,point.elmt_size * point.dim);
       AnyPoint p(point_buffer,point.elmt_size,point.dim);
-      FutureImpl *impl = new FutureImpl();
+      FutureImpl *impl = new FutureImpl(point_finish);
       impl->add_reference();
       impl->set_result(res, result_size, point_finish);
       futures[p] = impl;
@@ -4745,13 +4744,14 @@ namespace RegionRuntime {
     void HighLevelRuntime::send_task(Processor target_proc, TaskContext *task) const
     //--------------------------------------------------------------------------------------------
     {
-      size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t);
+      size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + sizeof(bool);
       task->lock_context();
       buffer_size += task->compute_task_size();
       Serializer rez(buffer_size); 
       rez.serialize<Processor>(target_proc);
       rez.serialize<Processor>(local_proc);
       rez.serialize<size_t>(1); // only one task
+      rez.serialize<bool>(task->is_single());
       task->pack_task(rez);
       task->unlock_context();
       // Send the result back to the target's utility processor
@@ -4763,7 +4763,7 @@ namespace RegionRuntime {
     void HighLevelRuntime::send_tasks(Processor target_proc, const std::set<TaskContext*> &tasks) const
     //--------------------------------------------------------------------------------------------
     {
-      size_t total_buffer_size = 2*sizeof(Processor) + sizeof(size_t);
+      size_t total_buffer_size = 2*sizeof(Processor) + sizeof(size_t) + (tasks.size() * sizeof(bool));
       Serializer rez(total_buffer_size); 
       rez.serialize<Processor>(target_proc);
       rez.serialize<Processor>(local_proc);
@@ -4771,6 +4771,7 @@ namespace RegionRuntime {
       for (std::set<TaskContext*>::const_iterator it = tasks.begin();
             it != tasks.end(); it++)
       {
+        rez.serialize<bool>((*it)->is_single());
         (*it)->lock_context();
         size_t task_size = (*it)->compute_task_size();
         total_buffer_size += task_size;
@@ -4804,13 +4805,17 @@ namespace RegionRuntime {
         if (single)
         {
           IndividualTask *task = get_available_individual_task(NULL/*no parent on this node*/);
+          task->lock_context();
           task->unpack_task(derez);
+          task->unlock_context();
           add_to_ready_queue(task, true/*remote*/);
         }
         else
         {
           SliceTask *task = get_available_slice_task(NULL/*no parent on this node*/);
+          task->lock_context();
           task->unpack_task(derez);
+          task->unlock_context();
           add_to_ready_queue(task);
         }
       }

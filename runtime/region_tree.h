@@ -236,6 +236,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       IndexSpaceNode(IndexSpace sp, IndexPartNode *par,
                 Color c, bool add, RegionTreeForest *ctx);
+      ~IndexSpaceNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(IndexPartition handle, IndexPartNode *node);
       void remove_child(Color c);
@@ -266,6 +268,7 @@ namespace RegionRuntime {
       std::set<std::pair<Color,Color> > disjoint_subsets; // pairs of disjoint subsets
       bool added;
       bool marked;
+      bool destroy_index_space;
     };
 
     /////////////////////////////////////////////////////////////
@@ -281,6 +284,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       IndexPartNode(IndexPartition p, IndexSpaceNode *par,
                 Color c, bool dis, bool add, RegionTreeForest *ctx);
+      ~IndexPartNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(IndexSpace handle, IndexSpaceNode *node);
       void remove_child(Color c);
@@ -322,6 +327,8 @@ namespace RegionRuntime {
       friend class InstanceManager;
       friend class InstanceView;
       FieldSpaceNode(FieldSpace sp, RegionTreeForest *ctx);
+      ~FieldSpaceNode(void);
+      void mark_destroyed(void);
     public:
       struct FieldInfo {
       public:
@@ -444,7 +451,8 @@ namespace RegionRuntime {
       bool siphon_open_children(TreeCloser &closer, GenericState &state, 
             const GenericUser &user, const FieldMask &current_mask, int next_child = -1);
       FieldState perform_close_operations(TreeCloser &closer, const GenericUser &user, 
-                    const FieldMask &closing_mask, FieldState &state, int next_child=-1);
+                    const FieldMask &closing_mask, FieldState &state, 
+                    bool allow_same_child, bool &close_successful, int next_child=-1);
     protected:
       // Logical region helper functions
       FieldMask perform_dependence_checks(const LogicalUser &user, 
@@ -478,6 +486,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
                  FieldSpaceNode *col_src, bool add, RegionTreeForest *ctx);
+      ~RegionNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(LogicalPartition handle, PartitionNode *child);
       bool has_child(Color c);
@@ -564,6 +574,8 @@ namespace RegionRuntime {
       friend class InstanceView;
       PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src,
                     bool add, RegionTreeForest *ctx);
+      ~PartitionNode(void);
+      void mark_destroyed(void);
     public:
       void add_child(LogicalRegion handle, RegionNode *child);
       bool has_child(Color c);
@@ -815,7 +827,8 @@ namespace RegionRuntime {
       // These two are methods mark when a view is valid in the region tree
       void remove_user(UniqueID uid, unsigned refs, bool strict = true);
       void remove_copy(Event copy, bool strict = true);
-      void mark_view(bool valid, bool force);
+      void add_valid_reference(void);
+      void remove_valid_reference(void);
       void mark_to_be_invalidated(void);
       bool is_valid_view(void) const;
       bool has_war_dependence(const FieldMask &mask) const;
@@ -879,7 +892,7 @@ namespace RegionRuntime {
     private:
       friend class RegionTreeForest;
       friend class InstanceManager;
-      bool valid_view;
+      unsigned valid_references;
       bool local_view; // true until it is sent back in some form
       std::map<std::pair<Color,Color>,InstanceView*> children;
       // The next four members only deal with garbage collection

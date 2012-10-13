@@ -213,6 +213,7 @@ namespace RegionRuntime {
       virtual bool perform_operation(void) = 0;
       virtual void trigger(void) = 0;
     public:
+      virtual bool is_single(void) const = 0;
       virtual bool is_distributed(void) = 0;
       virtual bool is_locally_mapped(void) = 0;
       virtual bool is_stealable(void) = 0;
@@ -318,6 +319,7 @@ namespace RegionRuntime {
       virtual void deactivate(void) = 0;
     public:
       // Functions from TaskContext
+      virtual bool is_single(void) const { return true; }
       virtual bool is_distributed(void) = 0;
       virtual bool is_locally_mapped(void) = 0;
       virtual bool is_stealable(void) = 0;
@@ -456,6 +458,7 @@ namespace RegionRuntime {
       virtual bool add_waiting_dependence(GeneralizedOperation *waiter, unsigned idx, GenerationID gen) = 0;
     public:
       // Functions from TaskContext
+      virtual bool is_single(void) const { return false; }
       virtual bool is_distributed(void) = 0;
       virtual bool is_locally_mapped(void) = 0;
       virtual bool is_stealable(void) = 0;
