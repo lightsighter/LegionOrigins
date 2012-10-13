@@ -81,7 +81,7 @@ enum {
 };
 
 const double DEFAULT_S = 1.0, DEFAULT_A = 10.0;
-const int DEFAULT_NB = 1;
+const unsigned DEFAULT_NB = 1;
 struct MainArgs {
   MainArgs()
     : sx(DEFAULT_S), sy(DEFAULT_S), sz(DEFAULT_S), a(DEFAULT_A),
@@ -91,14 +91,48 @@ struct MainArgs {
   // Number of cells per unit distance.
   double a;
   // Number of blocks.
-  int nbx, nby, nbz;
+  unsigned nbx, nby, nbz;
   // Number of cells.
-  int nx, ny, nz;
+  unsigned nx, ny, nz;
   // Index and field spaces.
   IndexSpace ispace;
   FieldSpace fspace;
   // Region containing data for each cell.
   LogicalRegion cells;
+};
+
+class BlockColoring : public ColoringFunctor {
+public:
+  BlockColoring(unsigned nx, unsigned ny, unsigned nz,
+                std::vector<std::pair<unsigned, unsigned> > x_divs,
+                std::vector<std::pair<unsigned, unsigned> > y_divs,
+                std::vector<std::pair<unsigned, unsigned> > z_divs)
+    : nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
+
+  virtual bool is_disjoint(void) { return true; }
+
+  virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
+                                std::map<Color,ColoredPoints<unsigned> > &coloring) {
+    unsigned next_index = 0;
+    unsigned nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
+    for (unsigned bx = 0, x = 0; x < nx; x++) {
+      if (bx + 1 < nbx && nx >= x_divs[bx + 1].first) bx++;
+      for (unsigned by = 0, y = 0; y < ny; y++) {
+        if (by + 1 < nby && ny >= y_divs[by + 1].first) by++;
+        for (unsigned bz = 0; bz < nbz; bz++) {
+          unsigned block_size = z_divs[bz].second - z_divs[bz].first;
+          coloring[next_index] = ColoredPoints<unsigned>();
+          coloring[next_index].ranges.insert(
+            std::pair<unsigned, unsigned>(next_index, next_index + block_size));
+          next_index += block_size;
+        }
+      }
+    }
+  }
+
+private:
+  const unsigned nx, ny, nz;
+  const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
 };
 
 void top_level_task(const void *, size_t,
@@ -107,8 +141,8 @@ void top_level_task(const void *, size_t,
 		    Context ctx, HighLevelRuntime *runtime) {
   MainArgs args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
-  int &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
-  int &nx = args.nx, &ny = args.ny, &nz = args.nz;
+  unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
+  unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
   IndexSpace &ispace = args.ispace;
   FieldSpace &fspace = args.fspace;
   LogicalRegion &cells = args.cells;
@@ -148,12 +182,11 @@ void top_level_task(const void *, size_t,
   }
 
   // Total number of cells in each dimension.
-  nx = (int)(sx*a + 0.5);
-  ny = (int)(sy*a + 0.5);
-  nz = (int)(sz*a + 0.5);
+  nx = (unsigned)(sx*a + 0.5);
+  ny = (unsigned)(sy*a + 0.5);
+  nz = (unsigned)(sz*a + 0.5);
 
   // Create index and field spaces and logical region for cells.
-  // TODO(Elliott): Ghost cells?
   ispace = runtime->create_index_space(ctx, nx*ny*nz);
   fspace = runtime->create_field_space(ctx);
   cells = runtime->create_logical_region(ctx, ispace, fspace);
@@ -182,8 +215,8 @@ void main_task(const void *input_args, size_t input_arglen,
                Context ctx, HighLevelRuntime *runtime) {
   MainArgs &args = *(MainArgs *)input_args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
-  int &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
-  int &nx = args.nx, &ny = args.ny, &nz = args.nz;
+  unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
+  unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
   IndexSpace &ispace = args.ispace;
   FieldSpace &fspace = args.fspace;
 
@@ -198,20 +231,75 @@ void main_task(const void *input_args, size_t input_arglen,
   printf("  cells per unit dist : %.1f\n",               a);
   printf("  number of blocks    : %d x %d x %d\n",       nbx, nby, nbz);
   printf("  number of cells     : %d x %d x %d\n",       nx, ny, nz);
-  printf("\n");
-  printf("+---------------------------------------------+\n");
 
   // Allocate fields and indices.
   FieldAllocator field_alloc = runtime->create_field_allocator(ctx, fspace);
-  FieldID field_dx = field_alloc.allocate_field(sizeof(double));
-  FieldID field_dy = field_alloc.allocate_field(sizeof(double));
-  FieldID field_dz = field_alloc.allocate_field(sizeof(double));
-  FieldID field_bx = field_alloc.allocate_field(sizeof(double));
-  FieldID field_by = field_alloc.allocate_field(sizeof(double));
-  FieldID field_bz = field_alloc.allocate_field(sizeof(double));
+  FieldID field_ex = field_alloc.allocate_field(sizeof(double));
+  FieldID field_ey = field_alloc.allocate_field(sizeof(double));
+  FieldID field_ez = field_alloc.allocate_field(sizeof(double));
+  FieldID field_hx = field_alloc.allocate_field(sizeof(double));
+  FieldID field_hy = field_alloc.allocate_field(sizeof(double));
+  FieldID field_hz = field_alloc.allocate_field(sizeof(double));
 
   IndexAllocator alloc = runtime->create_index_allocator(ctx, ispace);
   unsigned initial_index = alloc.alloc(nx*ny*nz);
+
+  // Decide how many cells to allocate to each block.
+  std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
+  unsigned x_cells_per_block = nx/nbx, x_cells_extra = nx%nbx;
+  unsigned y_cells_per_block = ny/nby, y_cells_extra = ny%nby;
+  unsigned z_cells_per_block = nz/nbz, z_cells_extra = nz%nbz;
+  for (unsigned bx = 0, x = 0; bx < nbx; bx++) {
+    unsigned size = x_cells_per_block;
+    if (bx < x_cells_extra) {
+      size++;
+    }
+    x_divs.push_back(std::pair<unsigned, unsigned>(x, x + size));
+    x += size;
+  }
+  for (unsigned by = 0, y = 0; by < nby; by++) {
+    unsigned size = y_cells_per_block;
+    if (by < y_cells_extra) {
+      size++;
+    }
+    y_divs.push_back(std::pair<unsigned, unsigned>(y, y + size));
+    y += size;
+  }
+  for (unsigned bz = 0, z = 0; bz < nbz; bz++) {
+    unsigned size = z_cells_per_block;
+    if (bz < z_cells_extra) {
+      size++;
+    }
+    z_divs.push_back(std::pair<unsigned, unsigned>(z, z + size));
+    z += size;
+  }
+
+  printf("  divisions in x      : ");
+  for (unsigned bx = 0; bx < nbx; bx++) {
+    printf("%d..%d", x_divs[bx].first, x_divs[bx].second);
+    if (bx + 1 < nbx) printf(", ");
+  }
+  printf("\n");
+  printf("  divisions in y      : ");
+  for (unsigned by = 0; by < nby; by++) {
+    printf("%d..%d", y_divs[by].first, y_divs[by].second);
+    if (by + 1 < nby) printf(", ");
+  }
+  printf("\n");
+  printf("  divisions in z      : ");
+  for (unsigned bz = 0; bz < nbz; bz++) {
+    printf("%d..%d", z_divs[bz].first, z_divs[bz].second);
+    if (bz + 1 < nbz) printf(", ");
+  }
+  printf("\n\n");
+  printf("+---------------------------------------------+\n");
+
+  // Partion in blocks and sub-blocks.
+  IndexSpace colors = runtime->create_index_space(ctx, nbx*nby*nbz);
+  runtime->create_index_allocator(ctx, colors).alloc(nbx*nby*nbz);
+  BlockColoring coloring(nx, ny, nz, x_divs, y_divs, z_divs);
+  IndexPartition partition = runtime->create_index_partition(ctx, ispace, colors, coloring);
+  LogicalPartition p_cells = runtime->get_logical_partition(ctx, args.cells, partition);
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
