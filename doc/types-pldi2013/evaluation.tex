@@ -2,11 +2,13 @@
 \section{Evaluation}
 \label{sec:evaluation}
 
-We evaluate the Legion type system on three criteria:
+We evaluate the Legion type system on four criteria:
 \begin{itemize}
 \item Expressivity: Can real applications be written (Section~\ref{subsec:expressivity})?
 \item Overhead: Does it reduce checking costs (Section~\ref{subsec:overhead})?
 \item Scalability: Can it leverage hierarchical scheduling (Section~\ref{subsec:scalability})?
+\item Performance: Does the performance increase from relaxed coherence modes (Section~\ref{subsec:relaxedperf})
+warrant the increased complexity in the operational semantics?
 \end{itemize}
 %Our evaluation uses a prototype implementation of the Legion language and programming model.
 Our prototype implementation has two components: a type checker
@@ -201,3 +203,11 @@ a result of the algorithm chosen by the programmer, not the Legion runtime.
 Even in the case of the Circuit application, which exhibits quadratic communication scaling, the Legion
 runtime is able to achieve a 62.5X speedup on 96 GPUs over a hand-coded single GPU implementation\cite{Legion12}.
 
+\subsection{Performance}
+\label{subsec:relaxedperf}
+
+To demonstrate the benefit of relaxed coherence modes, we modified the circuit example from Section~\ref{sec:example}
+to use exclusive coherence in the {\em distribute\_charge} task and compared the performance of the two versions.
+The results are shown in Figure~\ref{fig:circuit_excl}.  Even though the {\em distribute\_charge} tasks
+are a small fraction of the total work, the serialization that results from requiring exclusive access to the 
+overlapping ghost regions limits the scalability of the application, as would be expected from Amdahl's Law.
