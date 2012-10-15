@@ -69,6 +69,7 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 
 */
 
+#include <cassert>
 #include <cstdio>
 
 #include "legion.h"
@@ -115,19 +116,76 @@ public:
                                 std::map<Color,ColoredPoints<unsigned> > &coloring) {
     unsigned next_index = 0;
     unsigned nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
-    for (unsigned bx = 0, x = 0; x < nx; x++) {
-      if (bx + 1 < nbx && nx >= x_divs[bx + 1].first) bx++;
-      for (unsigned by = 0, y = 0; y < ny; y++) {
-        if (by + 1 < nby && ny >= y_divs[by + 1].first) by++;
+
+    // Color points for plane of points at x == 0 boundary.
+    unsigned border = 0;
+    coloring[border] = ColoredPoints<unsigned>();
+    unsigned x_plane_size = (ny + 2)*(nz + 2);
+    printf("Assigning points %d..%d to x == 0 plane\n",
+           next_index, next_index + x_plane_size);
+    coloring[border].ranges.insert(
+      std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
+    next_index += x_plane_size;
+
+    // Color rest of points in xyz cube.
+    for (unsigned bx = 0, x = 1; x < nx + 1; x++) {
+      if (bx + 1 < nbx && x >= x_divs[bx + 1].first) bx++;
+
+      // Color points for line of points at y == 0 boundary.
+      unsigned y_line_size = nz + 2;
+      printf("Assigning points %d..%d to y == 0 line\n",
+             next_index, next_index + y_line_size);
+      coloring[border].ranges.insert(
+        std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
+      next_index += y_line_size;
+
+      // Color rest of points in yz plane.
+      for (unsigned by = 0, y = 1; y < ny + 1; y++) {
+        if (by + 1 < nby && y >= y_divs[by + 1].first) by++;
+
+        // Color point at z == 0 boundary.
+        printf("Assigning point %d to z == 0 point\n",
+               next_index);
+        coloring[border].ranges.insert(
+          std::pair<unsigned, unsigned>(next_index, next_index + 1));
+        next_index++;
+
         for (unsigned bz = 0; bz < nbz; bz++) {
+          unsigned id = (bz*nby + by)*nbx + bx + 1;
           unsigned block_size = z_divs[bz].second - z_divs[bz].first;
-          coloring[next_index] = ColoredPoints<unsigned>();
-          coloring[next_index].ranges.insert(
+          coloring[id] = ColoredPoints<unsigned>();
+          printf("Assigning points %d..%d to block %d x %d x %d (id %d)\n",
+                 next_index, next_index + block_size, bx, by, bz, id);
+          coloring[id].ranges.insert(
             std::pair<unsigned, unsigned>(next_index, next_index + block_size));
           next_index += block_size;
         }
+
+        // Color point at z == nz + 1 boundary.
+        printf("Assigning point %d to z == nz + 1 point\n",
+               next_index);
+        coloring[border].ranges.insert(
+          std::pair<unsigned, unsigned>(next_index, next_index + 1));
+        next_index++;
       }
+
+      // Color points for line of points at y == nz + 1 boundary.
+      printf("Assigning points %d..%d to y == 0 line\n",
+             next_index, next_index + y_line_size);
+      coloring[border].ranges.insert(
+        std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
+      next_index += y_line_size;
     }
+
+    // Color points for plane of points at x == nx + 1 boundary.
+    printf("Assigning points %d..%d to x == nx + 1 plane\n",
+           next_index, next_index + x_plane_size);
+    coloring[border].ranges.insert(
+      std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
+    next_index += x_plane_size;
+
+    printf("Colored %d of %d points.\n", next_index, (nx + 2)*(ny + 2)*(nz + 2));
+    assert(next_index == (nx + 2)*(ny + 2)*(nz + 2));
   }
 
 private:
@@ -187,7 +245,7 @@ void top_level_task(const void *, size_t,
   nz = (unsigned)(sz*a + 0.5);
 
   // Create index and field spaces and logical region for cells.
-  ispace = runtime->create_index_space(ctx, nx*ny*nz);
+  ispace = runtime->create_index_space(ctx, (nx + 2)*(ny + 2)*(nz + 2));
   fspace = runtime->create_field_space(ctx);
   cells = runtime->create_logical_region(ctx, ispace, fspace);
 
@@ -230,7 +288,7 @@ void main_task(const void *input_args, size_t input_arglen,
   printf("  bounding volume size: %.1f x %.1f x %.1f\n", sx, sy, sz);
   printf("  cells per unit dist : %.1f\n",               a);
   printf("  number of blocks    : %d x %d x %d\n",       nbx, nby, nbz);
-  printf("  number of cells     : %d x %d x %d\n",       nx, ny, nz);
+  printf("  number of cells     : %d (+ 2) x %d (+ 2) x %d (+ 2)\n",       nx, ny, nz);
 
   // Allocate fields and indices.
   FieldAllocator field_alloc = runtime->create_field_allocator(ctx, fspace);
@@ -242,14 +300,14 @@ void main_task(const void *input_args, size_t input_arglen,
   FieldID field_hz = field_alloc.allocate_field(sizeof(double));
 
   IndexAllocator alloc = runtime->create_index_allocator(ctx, ispace);
-  unsigned initial_index = alloc.alloc(nx*ny*nz);
+  unsigned initial_index = alloc.alloc((nx + 2)*(ny + 2)*(nz + 2));
 
   // Decide how many cells to allocate to each block.
   std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
   unsigned x_cells_per_block = nx/nbx, x_cells_extra = nx%nbx;
   unsigned y_cells_per_block = ny/nby, y_cells_extra = ny%nby;
   unsigned z_cells_per_block = nz/nbz, z_cells_extra = nz%nbz;
-  for (unsigned bx = 0, x = 0; bx < nbx; bx++) {
+  for (unsigned bx = 0, x = 1; bx < nbx; bx++) {
     unsigned size = x_cells_per_block;
     if (bx < x_cells_extra) {
       size++;
@@ -257,7 +315,7 @@ void main_task(const void *input_args, size_t input_arglen,
     x_divs.push_back(std::pair<unsigned, unsigned>(x, x + size));
     x += size;
   }
-  for (unsigned by = 0, y = 0; by < nby; by++) {
+  for (unsigned by = 0, y = 1; by < nby; by++) {
     unsigned size = y_cells_per_block;
     if (by < y_cells_extra) {
       size++;
@@ -265,7 +323,7 @@ void main_task(const void *input_args, size_t input_arglen,
     y_divs.push_back(std::pair<unsigned, unsigned>(y, y + size));
     y += size;
   }
-  for (unsigned bz = 0, z = 0; bz < nbz; bz++) {
+  for (unsigned bz = 0, z = 1; bz < nbz; bz++) {
     unsigned size = z_cells_per_block;
     if (bz < z_cells_extra) {
       size++;
