@@ -1658,8 +1658,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    size_t RegionTreeForest::compute_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
-                                                              bool overwrite, SendingMode mode)
+    size_t RegionTreeForest::compute_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
+                                                              ContextID ctx, bool overwrite, SendingMode mode)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1682,8 +1682,13 @@ namespace RegionRuntime {
       }
       else
       {
-        diff_regions.clear();
-        diff_partitions.clear();
+        if (diff_region_maps.find(idx) == diff_region_maps.end())
+          diff_region_maps[idx] = std::vector<RegionNode*>();
+        if (diff_part_maps.find(idx) == diff_part_maps.end())
+          diff_part_maps[idx] = std::vector<PartitionNode*>();
+        std::vector<RegionNode*> &diff_regions = diff_region_maps[idx];
+        std::vector<PartitionNode*> &diff_partitions = diff_part_maps[idx];
+        
         if (req.handle_type == SINGULAR)
         {
           RegionNode *top_node = get_node(req.region);
@@ -1812,8 +1817,8 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
-                                                          bool overwrite, SendingMode mode, Serializer &rez)
+    void RegionTreeForest::pack_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
+                                                          ContextID ctx, bool overwrite, SendingMode mode, Serializer &rez)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1837,6 +1842,12 @@ namespace RegionRuntime {
       }
       else
       {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(diff_region_maps.find(idx) != diff_region_maps.end());
+        assert(diff_part_maps.find(idx) != diff_part_maps.end());
+#endif
+        std::vector<RegionNode*> &diff_regions = diff_region_maps[idx];
+        std::vector<PartitionNode*> &diff_partitions = diff_part_maps[idx];
         rez.serialize(diff_regions.size());
         for (std::vector<RegionNode*>::const_iterator it = diff_regions.begin();
               it != diff_regions.end(); it++)
@@ -5619,9 +5630,9 @@ namespace RegionRuntime {
     void RegionNode::unpack_diff_state(ContextID ctx, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(physical_states.find(ctx) != physical_states.end());
-#endif
+      // Check to see if the physical state exists
+      if (physical_states.find(ctx) == physical_states.end())
+        physical_states[ctx] = PhysicalState();
       PhysicalState &state = physical_states[ctx];
       size_t num_added_views;
       derez.deserialize(num_added_views);
@@ -6262,9 +6273,8 @@ namespace RegionRuntime {
     void PartitionNode::unpack_diff_state(ContextID ctx, Deserializer &derez)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(physical_states.find(ctx) != physical_states.end());
-#endif
+      if (physical_states.find(ctx) == physical_states.end())
+        physical_states[ctx] = PhysicalState();
       PhysicalState &state = physical_states[ctx];
       size_t num_added_states;
       derez.deserialize(num_added_states);
@@ -6617,6 +6627,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(instance.exists());
 #endif
+#ifndef DISABLE_GC
       if (!remote && !clone && (references == 0) && local_frac.is_whole())
       {
         instance.destroy();
@@ -6624,6 +6635,7 @@ namespace RegionRuntime {
         instance = PhysicalInstance::NO_INST;
         lock = Lock::NO_LOCK;
       }
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -7709,9 +7721,31 @@ namespace RegionRuntime {
         result += sizeof(logical_region->handle);
       }
       result += sizeof(size_t); // number of added users
-      result += (added_users.size() * (sizeof(UniqueID) + sizeof(TaskUser)));
+      packing_sizes[5] = added_users.size();
+      if (already_returning)
+      {
+        // Find the set of added users not in the epoch users
+        for (std::map<UniqueID,TaskUser>::const_iterator it = added_users.begin();
+              it != added_users.end(); it++)
+        {
+          if (epoch_users.find(it->first) != epoch_users.end())
+            packing_sizes[5]--;
+        }
+      }
+      result += (packing_sizes[5] * (sizeof(UniqueID) + sizeof(TaskUser)));
       result += sizeof(size_t); // number of added copy users
-      result += (added_copy_users.size() * (sizeof(Event) + sizeof(ReductionOpID)));
+      packing_sizes[6] = added_copy_users.size();
+      if (already_returning)
+      {
+        // Find the set of added copy users not in the epoch users
+        for (std::map<Event,ReductionOpID>::const_iterator it = added_copy_users.begin();
+              it != added_copy_users.end(); it++)
+        {
+          if (epoch_copy_users.find(it->first) != epoch_copy_users.end())
+            packing_sizes[6]--;
+        }
+      }
+      result += (packing_sizes[6] * (sizeof(Event) + sizeof(ReductionOpID)));
       // Update the esacped references
       for (std::map<UniqueID,TaskUser>::const_iterator it = added_users.begin();
             it != added_users.end(); it++)
@@ -7838,6 +7872,9 @@ namespace RegionRuntime {
         rez.serialize(manager->unique_id);
         rez.serialize(logical_region->handle);
       }    
+#ifdef DEBUG_HIGH_LEVEL
+      assert(added_users.size() == packing_sizes[5]);
+#endif
       rez.serialize(added_users.size());
       for (std::map<UniqueID,TaskUser>::const_iterator it = added_users.begin();
             it != added_users.end(); it++)
@@ -7845,6 +7882,9 @@ namespace RegionRuntime {
         rez.serialize(it->first);
         rez.serialize(it->second);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      assert(added_copy_users.size() == packing_sizes[6]);
+#endif
       rez.serialize(added_copy_users.size());
       for (std::map<Event,ReductionOpID>::const_iterator it = added_copy_users.begin();
             it != added_copy_users.end(); it++)

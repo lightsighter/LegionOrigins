@@ -3435,7 +3435,7 @@ namespace RegionRuntime {
           {
             if (non_virtual_mapped_region[idx])
             {
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
                                               IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL);
             }
           }
@@ -3454,7 +3454,7 @@ namespace RegionRuntime {
           {
             if (non_virtual_mapped_region[idx])
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+              forest_ctx->pack_region_tree_state_return(regions[idx], idx, ctx_id, 
                                               IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL, rez);
             }
           }
@@ -3854,13 +3854,13 @@ namespace RegionRuntime {
           {
             if (!non_virtual_mapped_region[idx])
             {
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
                                                 IS_WRITE(regions[idx]), RegionTreeForest::PRIVILEGE);
             }
             else
             {
               // Physical was already sent back, send back the other fields
-              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+              buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
                                                 IS_WRITE(regions[idx]), RegionTreeForest::DIFF);
             }
           }
@@ -3877,12 +3877,12 @@ namespace RegionRuntime {
           {
             if (!non_virtual_mapped_region[idx])
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+              forest_ctx->pack_region_tree_state_return(regions[idx], idx, ctx_id, 
                                                 IS_WRITE(regions[idx]), RegionTreeForest::PRIVILEGE, rez);
             }
             else
             {
-              forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+              forest_ctx->pack_region_tree_state_return(regions[idx], idx, ctx_id, 
                                                 IS_WRITE(regions[idx]), RegionTreeForest::DIFF, rez);
             }
           }
@@ -6956,7 +6956,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!IS_WRITE(regions[idx])); // if this was the case it should have been premapped
 #endif
-        result += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id, 
+        result += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
                                                     false/*overwrite*/, mode);
       }
       else
@@ -6975,7 +6975,7 @@ namespace RegionRuntime {
               assert((*it)->regions[idx].handle_type == SINGULAR);
 #endif
               sending_set.insert((*it)->regions[idx].region);
-              result += forest_ctx->compute_region_tree_state_return((*it)->regions[idx], ctx_id,
+              result += forest_ctx->compute_region_tree_state_return((*it)->regions[idx], idx, ctx_id,
                                                       true/*overwrite*/, mode);
             }
           }
@@ -6985,7 +6985,7 @@ namespace RegionRuntime {
         {
           // We this was a read-only or reduce requirement so we
           // only need to send back the diff
-          result += forest_ctx->compute_region_tree_state_return(regions[idx], ctx_id,
+          result += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id,
                                                       false/*overwrite*/, mode);
         }
       }
@@ -7014,7 +7014,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!IS_WRITE(regions[idx])); // if this was the case it should have been premapped
 #endif
-        forest_ctx->pack_region_tree_state_return(regions[idx], ctx, false/*overwrite*/, mode, rez);
+        forest_ctx->pack_region_tree_state_return(regions[idx], idx, ctx, false/*overwrite*/, mode, rez);
       }
       else
       {
@@ -7031,13 +7031,13 @@ namespace RegionRuntime {
                 it != sending_set.end(); it++)
           {
             rez.serialize(it->first);
-            forest_ctx->pack_region_tree_state_return(it->second->regions[idx], ctx_id,
+            forest_ctx->pack_region_tree_state_return(it->second->regions[idx], idx, ctx_id,
                                                         true/*overwrite*/, mode, rez);
           }
         }
         else
         {
-          forest_ctx->pack_region_tree_state_return(regions[idx], ctx_id, 
+          forest_ctx->pack_region_tree_state_return(regions[idx], idx, ctx_id, 
                                                         false/*overwrite*/, mode, rez);
         }
       }
