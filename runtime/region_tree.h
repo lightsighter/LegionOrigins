@@ -108,13 +108,16 @@ namespace RegionRuntime {
       void unpack_region_tree_updates_return(Deserializer &derez);
     public:
       // Packing and unpacking state return
-      size_t compute_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode);
+      size_t compute_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
+                                              ContextID ctx, bool overwrite, SendingMode mode);
       size_t post_compute_region_tree_state_return(void);
       void begin_pack_region_tree_state_return(Serializer &rez);
-      void pack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode, Serializer &rez);
+      void pack_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
+                              ContextID ctx, bool overwrite, SendingMode mode, Serializer &rez);
       void end_pack_region_tree_state_return(Serializer &rez);
       void begin_unpack_region_tree_state_return(Deserializer &derez);
-      void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, bool all, SendingMode mode, Deserializer &derez);
+      void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
+                                            bool overwrite, SendingMode mode, Deserializer &derez);
       void end_unpack_region_tree_state_return(Deserializer &derez);
     public:
       size_t compute_created_state_return(ContextID ctx);
@@ -207,8 +210,8 @@ namespace RegionRuntime {
       std::map<InstanceView*,FieldMask> unique_views; // points to the top instance view
       std::vector<InstanceView*>        ordered_views;
       std::vector<bool>                 overwrite_views; // for knowing when to overwrite views when returning 
-      std::vector<RegionNode*>          diff_regions;
-      std::vector<PartitionNode*>       diff_partitions;
+      std::map<unsigned,std::vector<RegionNode*> >  diff_region_maps;
+      std::map<unsigned,std::vector<PartitionNode*> > diff_part_maps;
       std::vector<InstanceManager*>     returning_managers;
       std::vector<InstanceView*>        returning_views;
       std::map<EscapedUser,unsigned>    escaped_users;
@@ -908,7 +911,7 @@ namespace RegionRuntime {
       std::map<UniqueID,FieldMask> epoch_users;
       std::map<Event,FieldMask> epoch_copy_users;
       std::map<Event,FieldMask> valid_events;
-      size_t packing_sizes[5]; // storage for packing instances
+      size_t packing_sizes[7]; // storage for packing instances
       bool filtered; // for knowing if we only packed a subset of open children
       bool to_be_invalidated; // about to be invalidated
     };
