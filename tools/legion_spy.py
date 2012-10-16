@@ -1,15 +1,58 @@
 #!/usr/bin/python
 
 import subprocess
-import pygame, sys, os, shutil
+#import pygame, sys, os, shutil
+import sys, os, shutil
 import string
-from pygame.locals import *
+#from pygame.locals import *
 from getopt import getopt
+from spy_parser import parse_log_file
+from spy_state import *
 
-from parser import parse_log_file 
+#from parser import parse_log_file 
 
 temp_dir = ".spy/"
 
+
+def usage():
+    print "Usage: "+ sys.argv[0] +" [-c (check dependences)] file_name"
+    sys.exit(1)
+
+def main():
+    if len(sys.argv) < 2:
+        usage()
+
+    opts, args = getopt(sys.argv[1:],'l')
+    opts = dict(opts)
+    if len(args) <> 1:
+        usage()
+
+    logical_checks = False
+    if '-l' in opts:
+        logical_checks = True 
+
+    file_name = args[0]
+
+    tree_state = TreeState()
+    ops_state  = OpState()
+
+    print 'Loading log file '+file_name+'...'
+    total_matches = parse_log_file(file_name, tree_state, ops_state)
+    print 'Matched '+str(total_matches)+' lines'
+    if total_matches == 0:
+        print "No matches. Exiting..."
+        return
+
+    if logical_checks:
+        print "Checking all mapping dependences..."
+        ops_state.check_logical(tree_state)
+
+    print "Legion Spy analysis complete.  Exiting..."
+
+
+# Everything below here is the old version of legion spy except
+# for the if-statement at the end that calls main
+'''
 class ImageWrapper(object):
     def __init__(self,name,file_name,fontObj=None,blackColor=None,scale=10):
         self.name = name
@@ -274,11 +317,11 @@ def main():
 
         pygame.display.update()
         fpsClock.tick(30)
-
+'''
 
 if __name__ == "__main__":
     try:
-        assert pygame.image.get_extended()
+        #assert pygame.image.get_extended()
         os.mkdir(temp_dir)
         main()
         shutil.rmtree(temp_dir)
