@@ -1,6 +1,7 @@
 
 #include "legion_ops.h"
 #include "region_tree.h"
+#include "legion_logging.h"
 #include <algorithm>
 
 #define PRINT_REG(reg) (reg).index_space.id,(reg).field_space.id, (reg).tree_id
@@ -300,11 +301,11 @@ namespace RegionRuntime {
       tag = t;
       // Check privileges for the region requirement
       check_privilege();
-#ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
-              parent_ctx->get_unique_id(),unique_id,0,req.region.index_space.id,req.region.field_space.id,req.region.tree_id,
-              PRINT_REG(req.parent),req.privilege,req.prop);
+#ifdef LEGION_SPY
+      LegionSpy::log_mapping_operation(unique_id, parent_ctx->get_unique_id(), parent_ctx->ctx_id);
+      LegionSpy::log_logical_requirement(unique_id,0,true,req.region.index_space.id, req.region.field_space.id,
+                                        req.region.tree_id, req.privilege, req.prop, req.redop);
+      LegionSpy::log_requirement_fields(unique_id, 0, req.privilege_fields);
 #endif
       parent_ctx->register_child_map(this);
     }
@@ -327,11 +328,11 @@ namespace RegionRuntime {
       tag = t;
       // Check privileges for the region requirement
       check_privilege();
-#ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Map %d Parent %d",unique_id,parent_ctx->get_unique_id());
-      log_spy(LEVEL_INFO,"Context %d Task %d Region %d Handle (%x,%x,%x) Parent (%x,%x,%x) Privilege %d Coherence %d",
-              parent_ctx->get_unique_id(),unique_id,0,requirement.region.index_space.id,requirement.region.field_space.id,
-              requirement.region.tree_id,PRINT_REG(requirement.parent),requirement.privilege,requirement.prop);
+#ifdef LEGION_SPY
+      LegionSpy::log_mapping_operation(unique_id, parent_ctx->get_unique_id(), parent_ctx->ctx_id);
+      LegionSpy::log_logical_requirement(unique_id,0,true,requirement.region.index_space.id, requirement.region.field_space.id,
+                                        requirement.region.tree_id, requirement.privilege, requirement.prop, requirement.redop);
+      LegionSpy::log_requirement_fields(unique_id, 0, requirement.privilege_fields);
 #endif
       parent_ctx->register_child_map(this, idx);
     }
@@ -453,9 +454,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(idx == 0);
 #endif
-#ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d", parent_ctx->get_unique_id(), prev.op->get_unique_id(),
-                                                                  prev.idx, get_unique_id(), idx, dtype);
+#ifdef LEGION_SPY
+      LegionSpy::log_mapping_dependence(parent_ctx->get_unique_id(), parent_ctx->ctx_id, prev.op->get_unique_id(),
+                                        prev.idx, get_unique_id(), idx, dtype);
 #endif
       if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
       {
@@ -710,6 +711,9 @@ namespace RegionRuntime {
       handle_tag = DESTROY_INDEX_SPACE;
       performed = false;
       parent->register_child_deletion(this);
+#ifdef LEGION_SPY
+      LegionSpy::log_deletion_operation(get_unique_id(), parent->get_unique_id(), parent->ctx_id);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -724,6 +728,9 @@ namespace RegionRuntime {
       handle_tag = DESTROY_INDEX_PARTITION;
       performed = false;
       parent->register_child_deletion(this);
+#ifdef LEGION_SPY
+      LegionSpy::log_deletion_operation(get_unique_id(), parent->get_unique_id(), parent->ctx_id);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -738,6 +745,9 @@ namespace RegionRuntime {
       handle_tag = DESTROY_FIELD_SPACE;
       performed = false;
       parent->register_child_deletion(this);
+#ifdef LEGION_SPY
+      LegionSpy::log_deletion_operation(get_unique_id(), parent->get_unique_id(), parent->ctx_id);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -753,6 +763,9 @@ namespace RegionRuntime {
       free_fields = to_free;
       performed = false;
       parent->register_child_deletion(this);
+#ifdef LEGION_SPY
+      LegionSpy::log_deletion_operation(get_unique_id(), parent->get_unique_id(), parent->ctx_id);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -767,6 +780,9 @@ namespace RegionRuntime {
       handle_tag = DESTROY_REGION;
       performed = false;
       parent->register_child_deletion(this);
+#ifdef LEGION_SPY
+      LegionSpy::log_deletion_operation(get_unique_id(), parent->get_unique_id(), parent->ctx_id);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -781,6 +797,9 @@ namespace RegionRuntime {
       handle_tag = DESTROY_PARTITION;
       performed = false;
       parent->register_child_deletion(this);
+#ifdef LEGION_SPY
+      LegionSpy::log_deletion_operation(get_unique_id(), parent->get_unique_id(), parent->ctx_id);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -1062,6 +1081,10 @@ namespace RegionRuntime {
       // Register with the parent task, only NULL if initializing top-level task
       if (parent != NULL)
         parent->register_child_task(this);
+#ifdef LEGION_SPY
+      if (parent_ctx != NULL)
+        LegionSpy::log_task_operation(get_unique_id(), tid, parent_ctx->get_unique_id(), parent_ctx->ctx_id);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -1073,6 +1096,17 @@ namespace RegionRuntime {
       indexes = index_reqs;
       fields  = field_reqs;
       regions = region_reqs;
+#ifdef LEGION_SPY
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        LegionSpy::log_logical_requirement(get_unique_id(), idx, (regions[idx].handle_type == SINGULAR),
+              (regions[idx].handle_type == SINGULAR) ? regions[idx].region.index_space.id : regions[idx].partition.index_partition,
+              (regions[idx].handle_type == SINGULAR) ? regions[idx].region.field_space.id : regions[idx].partition.field_space.id,
+              (regions[idx].handle_type == SINGULAR) ? regions[idx].region.tree_id : regions[idx].partition.tree_id,
+              regions[idx].privilege, regions[idx].prop, regions[idx].redop);
+        LegionSpy::log_requirement_fields(get_unique_id(), idx, regions[idx].privilege_fields);
+      }
+#endif
       map_dependent_waiters.resize(regions.size());
       if (perform_checks)
       {
@@ -1277,9 +1311,9 @@ namespace RegionRuntime {
         exit(ERROR_ALIASED_INTRA_TASK_REGIONS);
       }
 #endif
-#ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d",parent_ctx->get_unique_id(),prev.op->get_unique_id(),
-                                                              prev.idx, get_unique_id(), idx, dtype);
+#ifdef LEGION_SPY
+      LegionSpy::log_mapping_dependence(parent_ctx->get_unique_id(), parent_ctx->ctx_id, prev.op->get_unique_id(),
+                                        prev.idx, get_unique_id(), idx, dtype);
 #endif
       if (prev.op->add_waiting_dependence(this, prev.idx, prev.gen))
       {
@@ -1882,7 +1916,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::create_index_partition(IndexPartition pid, IndexSpace parent, 
+    Color SingleTask::create_index_partition(IndexPartition pid, IndexSpace parent, 
                                             bool disjoint, int color,
                                             const std::map<Color,IndexSpace> &coloring) 
     //--------------------------------------------------------------------------
@@ -1896,8 +1930,9 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->create_index_partition(pid, parent, disjoint, color, coloring);
+      Color result = forest_ctx->create_index_partition(pid, parent, disjoint, color, coloring);
       unlock_context();
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -2776,9 +2811,8 @@ namespace RegionRuntime {
         start_condition = new_start;
       }
 #endif
-#ifdef DEBUG_HIGH_LEVEL
-      // Debug printing for legion spy
-      log_spy(LEVEL_INFO,"Task ID %d %s",this->get_unique_id(),this->variants->name);
+#ifdef LEGION_SPY
+      LegionSpy::log_task_name(this->get_unique_id(), this->variants->name);
 #endif
       // Now we need to select the variant to run
       const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
@@ -5469,9 +5503,6 @@ namespace RegionRuntime {
       // Check to see if this index space has been fully enumerated
       if (frac_index_space.first == frac_index_space.second)
       {
-#ifndef LOG_EVENT_ONLY
-        log_spy(LEVEL_INFO,"Index Space %d Context %d Size %ld",get_unique_id(),parent_ctx->get_unique_id(),num_total_points);
-#endif
         // If we've fully enumerated, let's see if we've mapped regions for all the points
         unmapped = 0;
 #ifdef DEBUG_HIGH_LEVEL

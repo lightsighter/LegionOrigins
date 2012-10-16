@@ -1,6 +1,7 @@
 
 #include "legion.h"
 #include "legion_utilities.h"
+#include "legion_logging.h"
 #include "legion_ops.h"
 #include "region_tree.h"
 
@@ -20,10 +21,14 @@ namespace RegionRuntime {
     Logger::Category log_field("field_spaces");
     Logger::Category log_region("regions");
     Logger::Category log_inst("instances");
-    Logger::Category log_spy("legion_spy");
     Logger::Category log_garbage("gc");
     Logger::Category log_leak("leaks");
     Logger::Category log_variant("variants");
+#ifdef LEGION_SPY
+    namespace LegionSpy {
+      Logger::Category log_spy("legion_spy");
+    };
+#endif
 
     const LogicalRegion LogicalRegion::NO_REGION = LogicalRegion();
     const LogicalPartition LogicalPartition::NO_PART = LogicalPartition();
@@ -2853,9 +2858,9 @@ namespace RegionRuntime {
         top->initialize_task(NULL/*no parent*/, HighLevelRuntime::legion_main_id,
                               &HighLevelRuntime::get_input_args(), sizeof(InputArgs),
                               Predicate::TRUE_PRED, 0/*map id*/, 0/*mapping tag*/, get_mapper(0), get_mapper_lock(0));
-#ifndef LOG_EVENT_ONLY
-        log_spy(LEVEL_INFO,"Top Task %d %d",top->get_unique_id(),HighLevelRuntime::legion_main_id);
-#endif 
+#ifdef LEGION_SPY
+        LegionSpy::log_top_level_task(top->get_unique_id(), top->ctx_id, HighLevelRuntime::legion_main_id);
+#endif
         // Pack up the future and a pointer to the context so we can deactivate the task
         // context when we're done.  This will make sure that everything gets
         // cleanedup and will help capture any leaks.
@@ -3476,8 +3481,8 @@ namespace RegionRuntime {
       log_index(LEVEL_DEBUG, "Creating index space %x in task %s (ID %d) with %ld maximum elements", space.id,
                               ctx->variants->name,ctx->get_unique_id(), max_num_elmts);
 #endif
-#ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Index Space %x",space.id);
+#ifdef LEGION_SPY
+      LegionSpy::log_top_index_space(space.id);
 #endif
       ctx->create_index_space(space);
       return space;
@@ -3539,13 +3544,20 @@ namespace RegionRuntime {
         new_index_spaces[cit->first] = child_space;
       }
       bool disjoint = coloring_functor.is_disjoint();
- #ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Index Partition %d Parent %x Disjoint %d",pid,parent.id,disjoint);
-#endif
-      
+     
       // Create the new partition
+#ifdef LEGION_SPY
+      Color part_color = 
+#endif
       ctx->create_index_partition(pid, parent, disjoint, coloring_functor.get_partition_color(), new_index_spaces);
-
+#ifdef LEGION_SPY
+      LegionSpy::log_index_partition(parent.id, pid, disjoint, part_color);
+      for (std::map<Color,IndexSpace>::const_iterator it = new_index_spaces.begin();
+            it != new_index_spaces.end(); it++)
+      {
+        LegionSpy::log_index_subspace(pid, it->second.id, it->first);
+      }
+#endif
       return pid;
     }
 
@@ -3597,8 +3609,8 @@ namespace RegionRuntime {
       log_field(LEVEL_DEBUG, "Creating field space %x in task %s (ID %d)", space.id,
                               ctx->variants->name,ctx->get_unique_id());
 #endif
-#ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Field Space %x",space.id);
+#ifdef LEGION_SPY
+      LegionSpy::log_field_space(space.id);
 #endif
       ctx->create_field_space(space);
       return space;
@@ -3635,6 +3647,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       log_field(LEVEL_DEBUG,"Allocating new field %d of size %ld for field space %d in task %s (ID %d)",
                               new_field, field_size, space.id, ctx->variants->name, ctx->get_unique_id());
+#endif
+#ifdef LEGION_SPY
+      LegionSpy::log_field_creation(space.id, new_field);
 #endif
       {
         std::map<FieldID,size_t> field_allocations;
@@ -3685,6 +3700,9 @@ namespace RegionRuntime {
         log_field(LEVEL_DEBUG,"Allocating new field %d of size %ld for field space %d in task %s (ID %d)",
                               new_field, *it, space.id, ctx->variants->name, ctx->get_unique_id());
 #endif
+#ifdef LEGION_SPY
+        LegionSpy::log_field_creation(space.id, new_field);
+#endif
         field_allocations[new_field] = *it; 
         resulting_fields.push_back(new_field);
       }
@@ -3727,8 +3745,8 @@ namespace RegionRuntime {
       log_region(LEVEL_DEBUG, "Creating logical region in task %s (ID %d) with index space %x and field space %x in new tree %d",
                               ctx->variants->name,ctx->get_unique_id(), index_space.id, field_space.id, tid);
 #endif
-#ifndef LOG_EVENT_ONLY
-      log_spy(LEVEL_INFO,"Region %x %x %x",index_space.id, field_space.id, tid);
+#ifdef LEGION_SPY
+      LegionSpy::log_top_region(index_space.id, field_space.id, tid);
 #endif
       ctx->create_region(region);
 

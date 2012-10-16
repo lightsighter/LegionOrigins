@@ -396,7 +396,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint,
+    Color RegionTreeForest::create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint,
                                 int color, const std::map<Color,IndexSpace> &coloring)
     //--------------------------------------------------------------------------
     {
@@ -416,6 +416,7 @@ namespace RegionRuntime {
       {
         create_node(it->second, new_part, it->first, true/*add*/);
       }
+      return part_color;
     }
 
     //--------------------------------------------------------------------------
@@ -3770,11 +3771,11 @@ namespace RegionRuntime {
               it++; // Not empty so keep going
           }
         }
-        // Add ourselves to the current epoch
-        state.curr_epoch_users.push_back(user);
         // Close up any partitions which we might have dependences on below
         LogicalCloser closer(user, az.ctx, state.prev_epoch_users, are_closing_partition());
         siphon_open_children(closer, state, user, user.field_mask);
+        // Add ourselves to the current epoch
+        state.curr_epoch_users.push_back(user);
       }
       else
       {
