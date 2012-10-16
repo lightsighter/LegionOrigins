@@ -1,0 +1,33 @@
+We would like to thank the reviewers for the detailed feedback.  Below we will...
+
+Reviewers 1, 2, and 4 requested clarification of which components of the the API are
+novel and which are similar to prior work.  Although events, locks, barriers, and reductions
+have appeared in many forms, we believe the following contributions to be novel:
+  a) the use of generational events to efficiently describe the very large number of dependencies
+that exist in a distributed application
+  b) the deferred lock construct in which access to a critical resource can be mediated without
+blocking operations that can waste execution resources
+  c) the ability to modify a barrier's expected arrival count which allows nested task subdivision
+without requiring a parent task to explicitly wait for subtasks to finish
+  d) a general treatment of reductions that allows arbitrary reduction operations and improved
+efficiency through specialized reduction instances that allow individual reduction operations to be
+deferred and applied in bulk
+  e) the ability to asychronously compose all of these constructs
+
+Reviewers 1 and 5 had several questions about our handling of reductions.  One source of confusion
+was the use of "commutativity".  The traditional use of these terms is limited to binary operations
+in which both the left and right operands are of the same type.  Our implementation allows reductions
+that have different left and right operand types (e.g. scaling of a vector by a scalar) and treats
+each reduction operation as a unary function applied (atomically) to the current value (e.g. V *= 3
+becomes (*3)(V) ).  When multiple reductions are applied to the same value, these unary functions
+are essentially composed, and it's the commutativity of that composition
+(e.g. [(*3) o (*2)](X) = [(*2) o (*3)](X) for all X) that allows the deferred application of these
+reduction operations.  Nearly all "reasonable" reduction operations
+that one might propose satisfy this form of commutativity.  Most also satisfy our criterion of foldability
+(e.g. [(*3) o (*2)](X) = (*6)(X) for all X), allowing the use of our reduction fold instances to further
+improve performance in most cases.
+
+Reviewer 1 noted that use "Distributed Architectures" in our title might be confusing.  Our goal was
+to distinguish our implementation from those that are limited to shared-memory systems.  A more
+accurate description would be "Distributed Memory Architectures", and we'd be happy to change the 
+title should our submission be accepted.
