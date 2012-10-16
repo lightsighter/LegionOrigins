@@ -160,6 +160,7 @@ namespace RegionRuntime {
     {
       log_mapper(LEVEL_SPEW,"Select initial processor for task %s (ID %d) in default mapper on processor %x",
                  task->variants->name, task->task_id, local_proc.id);
+      return local_proc; // FIXME (Elliott): Debugging crash when launching index space.
       // For the default mapper place it on our local processor, we'll let the load 
       // balancing figure out how to move things around
       // Check to see if there is a variant for our processor
@@ -351,9 +352,11 @@ namespace RegionRuntime {
       }
 
       for (unsigned chunk = 0; chunk < num_chunks; chunk++) {
-        // TODO: For better perf, don't run everything on the local processor.
+        //slice.push_back(IndexSplit(IndexSpace::create_index_space(index_space, chunks[chunk]),
+        //                           proc_group[(chunk % proc_group.size())], false, false));
+        // FIMXE (Elliott): Debugging crash in index space launch. Trying to avoid running on multiple processors.
         slice.push_back(IndexSplit(IndexSpace::create_index_space(index_space, chunks[chunk]),
-                                   proc_group[(chunk % proc_group.size())], false, false));
+                                   local_proc, false, false));
       }
     }
 
@@ -403,6 +406,7 @@ namespace RegionRuntime {
     {
       log_mapper(LEVEL_SPEW,"Notify failed mapping for task %s (ID %d) in default mapper on processor %x",
                  task->variants->name, task->task_id, local_proc.id);
+      assert(false);
     }
 
     //--------------------------------------------------------------------------------------------
