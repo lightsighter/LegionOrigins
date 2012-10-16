@@ -73,6 +73,7 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 #include <cstdio>
 
 #include "legion.h"
+#include "lowlevel.h"
 
 using namespace RegionRuntime::HighLevel;
 
@@ -148,7 +149,7 @@ public:
     log_app.debug("Assigning points %d..%d to x == 0 plane",
                   next_index, next_index + x_plane_size);
     coloring[border].ranges.insert(
-      std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
+      std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size - 1));
     next_index += x_plane_size;
 
     // Color rest of points in xyz cube.
@@ -160,7 +161,7 @@ public:
       log_app.debug("Assigning points %d..%d to y == 0 line",
                     next_index, next_index + y_line_size);
       coloring[border].ranges.insert(
-        std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
+        std::pair<unsigned, unsigned>(next_index, next_index + y_line_size - 1));
       next_index += y_line_size;
 
       // Color rest of points in yz plane.
@@ -179,7 +180,7 @@ public:
           log_app.debug("Assigning points %d..%d to block %d x %d x %d (id %d)",
                         next_index, next_index + block_size, bx, by, bz, id);
           coloring[id].ranges.insert(
-            std::pair<unsigned, unsigned>(next_index, next_index + block_size));
+            std::pair<unsigned, unsigned>(next_index, next_index + block_size - 1));
           next_index += block_size;
         }
 
@@ -194,7 +195,7 @@ public:
       log_app.debug("Assigning points %d..%d to y == 0 line",
                     next_index, next_index + y_line_size);
       coloring[border].ranges.insert(
-        std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
+        std::pair<unsigned, unsigned>(next_index, next_index + y_line_size - 1));
       next_index += y_line_size;
     }
 
@@ -202,7 +203,7 @@ public:
     log_app.debug("Assigning points %d..%d to x == nx + 1 plane",
                   next_index, next_index + x_plane_size);
     coloring[border].ranges.insert(
-      std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
+      std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size - 1));
     next_index += x_plane_size;
 
     log_app.debug("Colored %d of %d points",
@@ -652,14 +653,23 @@ void main_task(const void *input_args, size_t input_arglen,
 
 void init_task(const void *, size_t,
                const void *, size_t,
-               const unsigned [1],
+               const unsigned point[1],
                const std::vector<RegionRequirement> &,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
   PhysicalRegion cells = regions[0];
-  IndexSpace ispace = cells.get_logical_region().get_index_space();
 
-  // TODO: Iterate and initialize points.
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> accessor = cells.get_accessor<AccessorGeneric>();
+
+  RegionRuntime::LowLevel::ElementMask mask = cells.get_logical_region().get_index_space().get_valid_mask();
+  RegionRuntime::LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
+  int position = 0, length = 0;
+  while (enabled->get_next(position, length)) {
+    for (int index = position; index < position + length; index++) {
+      // FIXME (Elliott): How do I access specific fields here?
+      accessor.write(ptr_t<double>(index), 0.0);
+    }
+  }
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
