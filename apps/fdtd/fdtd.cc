@@ -278,6 +278,16 @@ private:
   const std::pair<unsigned, unsigned> x_span, y_span, z_span;
 };
 
+static inline unsigned find_block_containing(unsigned x, const std::vector<std::pair<unsigned, unsigned> > &divs) {
+  unsigned nb = divs.size();
+  for (unsigned b = 0; b < nb; b++) {
+    if (divs[b].first <= x && x < divs[b].second) {
+      return b;
+    }
+  }
+  return -1;
+}
+
 // Colors the outer border of padding cells used to avoid special
 // logic in the math kernels.
 class BorderColoring : public ColoringFunctor {
@@ -296,6 +306,27 @@ public:
 
     for (unsigned id = 0; id < nbx*nby*nbz*NUM_DIMENSIONS; id++) {
       coloring[id] = ColoredPoints<unsigned>();
+    }
+
+    for (unsigned x = 0; x < nx + 2; x++) {
+      for (unsigned y = 0; y < ny + 2; y++) {
+        for (unsigned z = 0; z < nz + 2; z++) {
+          bool x0 = x == 0, xn = x == nx + 1;
+          bool y0 = y == 0, yn = y == ny + 1;
+          bool z0 = z == 0, zn = z == nz + 1;
+          if (!x0 && !xn && !y0 && !yn && !z0 && !zn) {
+            continue;
+          }
+
+          dimension_t direction = (x0 || xn ? DIM_X : (y0 || yn ? DIM_Y : (z0 || zn ? DIM_Z : (assert(0), DIM_X))));
+          unsigned bx = (x0 ? 0 : (xn ? nbx - 1 : find_block_containing(x, x_divs)));
+          unsigned by = (y0 ? 0 : (yn ? nby - 1 : find_block_containing(y, y_divs)));
+          unsigned bz = (z0 ? 0 : (zn ? nbz - 1 : find_block_containing(z, z_divs)));
+          unsigned color = block_id(bx, by, bz, nbx, nby, nbz)*NUM_DIMENSIONS + direction;
+
+          coloring[color].points.insert(cell_id(x, y, z, nx, ny, nz));
+        }
+      }
     }
   }
 
@@ -470,11 +501,14 @@ void main_task(const void *input_args, size_t input_arglen,
   IndexPartition owned_indices = runtime->create_index_partition(ctx, ispace, owned_colors, owned_coloring);
   LogicalPartition owned_partition = runtime->get_logical_partition(ctx, args.cells, owned_indices);
 
-  // Partition into sub-blocks.
+  // Partition blocks into sub-blocks.
   IndexSpace ghost_colors = runtime->create_index_space(ctx, NUM_GHOST_COLORS);
   runtime->create_index_allocator(ctx, ghost_colors).alloc(NUM_GHOST_COLORS);
 
   std::vector<LogicalRegion> owned_blocks(nbx*nby*nbz);
+  // FIXME (Elliott): The kernels will need to know the order of the
+  // logical regions here, otherwise they won't be able to derefernce
+  // properly.
   std::vector<std::vector<LogicalRegion> > ghost_blocks(nbx*nby*nbz);
   for (unsigned bx = 0; bx < nbx; bx++) {
     for (unsigned by = 0; by < nby; by++) {
@@ -527,6 +561,7 @@ void main_task(const void *input_args, size_t input_arglen,
     }
   }
 
+  // Partition border cells.
   IndexSpace border_colors = runtime->create_index_space(ctx, nbx*nby*nbz*NUM_DIMENSIONS);
   runtime->create_index_allocator(ctx, border_colors).alloc(nbx*nby*nbz*NUM_DIMENSIONS);
   unsigned border_id = border_block_id(nbx, nby, nbz);
@@ -535,6 +570,30 @@ void main_task(const void *input_args, size_t input_arglen,
   BorderColoring border_coloring(nx, ny, nz, x_divs, y_divs, z_divs);
   IndexPartition border_indices = runtime->create_index_partition(ctx, ispace, border_colors, border_coloring);
   LogicalPartition border_partition = runtime->get_logical_partition(ctx, border_region, border_indices);
+
+  for (unsigned bx = 0; bx < nbx; bx++) {
+    for (unsigned by = 0; by < nby; by++) {
+      for (unsigned bz = 0; bz < nbz; bz++) {
+        bool bx0 = bx == 0, bxn = bx == nbx + 1;
+        bool by0 = by == 0, byn = by == nby + 1;
+        bool bz0 = bz == 0, bzn = bz == nbz + 1;
+        if (!bx0 && !bxn && !by0 && !byn && !bz0 && !bzn) {
+          continue;
+        }
+
+        unsigned id = block_id(bx, by, bz, nbx, nby, nbz);
+        if (bx0 || bxn) {
+          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NUM_DIMENSIONS + DIM_X));
+        }
+        if (by0 || byn) {
+          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NUM_DIMENSIONS + DIM_Y));
+        }
+        if (bz0 || bzn) {
+          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NUM_DIMENSIONS + DIM_Z));
+        }
+      }
+    }
+  }
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
