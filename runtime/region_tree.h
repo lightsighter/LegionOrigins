@@ -453,13 +453,13 @@ namespace RegionRuntime {
       // Generic operations on the region tree
       bool siphon_open_children(TreeCloser &closer, GenericState &state, 
             const GenericUser &user, const FieldMask &current_mask, int next_child = -1);
-      FieldState perform_close_operations(TreeCloser &closer, const GenericUser &user, 
+      FieldMask perform_close_operations(TreeCloser &closer,  
                     const FieldMask &closing_mask, FieldState &state, 
-                    bool allow_same_child, bool &close_successful, int next_child=-1);
+                    bool allow_same_child, bool upgrade, bool &close_successful, int next_child=-1);
     protected:
       // Logical region helper functions
       FieldMask perform_dependence_checks(const LogicalUser &user, 
-                    const std::list<LogicalUser> &users, const FieldMask &user_mask);
+                    const std::list<LogicalUser> &users, const FieldMask &user_mask, bool closing_partition = false);
       void merge_new_field_states(GenericState &gstate, std::vector<FieldState> &new_states, bool add_states);
       virtual bool are_children_disjoint(Color c1, Color c2) = 0;
       virtual bool are_closing_partition(void) const = 0;

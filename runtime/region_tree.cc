@@ -3838,33 +3838,21 @@ namespace RegionRuntime {
 #endif
       LogicalState &state = logical_states[closer.ctx];
       // Register any dependences we have here
+      FieldMask dominator_mask = perform_dependence_checks(closer.user, state.curr_epoch_users, 
+                                                            closing_mask, closer.closing_partition);
+      FieldMask non_dominator_mask = closing_mask - dominator_mask;
+      if (!!non_dominator_mask)
+        perform_dependence_checks(closer.user, state.prev_epoch_users, non_dominator_mask, closer.closing_partition);
+      // Now get the epoch users that we need to send back
       for (std::list<LogicalUser>::iterator it = state.curr_epoch_users.begin();
             it != state.curr_epoch_users.end(); /*nothing*/)
       {
-        // Special case for closing partition, if we already have a user then we can ignore
-        // it because we have over-approximated our set of regions by saying we're using a
-        // partition.  This occurs whenever an index space task says its using a partition,
-        // but might only use a subset of the regions in the partition, and then also has
-        // a region requirement for another one of the regions in the partition.
-        if (closer.closing_partition && (it->op == closer.user.op))
-        {
-          it++;
-          continue;
-        }
         // Now check for field disjointness
         if (closing_mask * it->field_mask)
         {
           it++;
           continue;
         }
-        // Otherwise not disjoint
-#ifdef DEBUG_HIGH_LEVEL
-        bool result = 
-#endif
-        perform_dependence_check(*it, closer.user);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(result); // These should all be dependences
-#endif
         // Now figure out how to split this user to send the part
         // corresponding to the closing mask back to the parent
         closer.epoch_users.push_back(*it);
@@ -3881,6 +3869,17 @@ namespace RegionRuntime {
       for (std::list<LogicalUser>::iterator it = state.prev_epoch_users.begin();
             it != state.prev_epoch_users.end(); /*nothing*/)
       {
+        if (closing_mask * it->field_mask)
+        {
+          it++;
+          continue;
+        }
+        // If this has one of the fields that wasn't dominated, include it
+        if (!!non_dominator_mask && !(non_dominator_mask * it->field_mask))
+        {
+          closer.epoch_users.push_back(*it);
+          closer.epoch_users.back().field_mask &= non_dominator_mask;
+        }
         it->field_mask -= closing_mask;
         if (!it->field_mask)
           it = state.prev_epoch_users.erase(it);
@@ -3893,13 +3892,20 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     FieldMask RegionTreeNode::perform_dependence_checks(const LogicalUser &user, 
-                          const std::list<LogicalUser> &users, const FieldMask &user_mask)
+        const std::list<LogicalUser> &users, const FieldMask &user_mask, bool closing_partition/*= false*/)
     //--------------------------------------------------------------------------
     {
       FieldMask dominator_mask = user_mask;
       for (std::list<LogicalUser>::const_iterator it = users.begin();
             it != users.end(); it++)
       {
+        // Special case for closing partition, if we already have a user then we can ignore
+        // it because we have over-approximated our set of regions by saying we're using a
+        // partition.  This occurs whenever an index space task says its using a partition,
+        // but might only use a subset of the regions in the partition, and then also has
+        // a region requirement for another one of the regions in the partition.
+        if (closing_partition && (it->op == user.op))
+          continue;
         // Check to see if things are disjoint
         if (user_mask * it->field_mask)
           continue;
@@ -3962,13 +3968,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    RegionTreeNode::FieldState RegionTreeNode::perform_close_operations(TreeCloser &closer,
-        const GenericUser &user, const FieldMask &closing_mask, FieldState &state, 
-        bool allow_same_child, bool &close_successful, int next_child/*= -1*/)
+    FieldMask RegionTreeNode::perform_close_operations(TreeCloser &closer,
+        const FieldMask &closing_mask, FieldState &state, 
+        bool allow_same_child, bool upgrade, bool &close_successful, int next_child/*= -1*/)
     //--------------------------------------------------------------------------
     {
       std::vector<Color> to_delete;
-      FieldState result(user);
+      FieldMask already_open;
       // Go through and close all the children which we overlap with
       // and aren't the next child that we're going to use
       for (std::map<Color,FieldMask>::iterator it = state.open_children.begin();
@@ -3983,10 +3989,13 @@ namespace RegionRuntime {
         if (allow_same_child && (next_child >= 0) && (next_child == int(it->first)))
         {
           FieldMask open_users = it->second & closing_mask;
-          result.open_children[it->first] = open_users;
-          result.valid_fields = open_users;
-          // Remove the open users from the current mask
-          it->second -= open_users;
+          already_open |= open_users;
+          if (upgrade)
+          {
+            it->second -= open_users;
+            if (!it->second)
+              to_delete.push_back(it->first);
+          }
           continue;
         }
         // Check for child disjointness 
@@ -4006,11 +4015,6 @@ namespace RegionRuntime {
         it->second -= close_mask;
         if (!it->second)
           to_delete.push_back(it->first);
-        // If we had to close another child because we're about to start
-        // a reduction and the closed child had the same reduciton mode
-        // update the result to open in reduce mode
-        if (IS_REDUCE(user.usage) && (state.redop == user.usage.redop))
-          result.open_state = OPEN_REDUCE;
       }
       // Remove the children that can be deleted
       for (std::vector<Color>::const_iterator it = to_delete.begin();
@@ -4029,7 +4033,7 @@ namespace RegionRuntime {
 
       // Return a FieldState with the new children and its field mask
       close_successful = true;
-      return result;
+      return already_open;
     }
 
     //--------------------------------------------------------------------------
@@ -4078,16 +4082,17 @@ namespace RegionRuntime {
                 // we want to go down, make a new state to be added
                 // containing the fields that are still open
                 bool success = true;
-                FieldState exclusive_open = perform_close_operations(closer, user, 
+                // We need an upgrade if we're transitioning from read-only to some kind of write
+                bool needs_upgrade = HAS_WRITE(user.usage);
+                FieldMask already_open = perform_close_operations(closer, 
                                                   current_mask, *it, true/*allow same child*/,
-                                                  success, next_child);
+                                                  needs_upgrade, success, next_child);
                 if (!success) // make sure the close worked
                   return false;
-                if (exclusive_open.still_valid())
-                {
-                  open_mask -= exclusive_open.valid_fields;
-                  new_states.push_back(exclusive_open);
-                }
+                // Update the open mask
+                open_mask -= already_open;
+                if (needs_upgrade)
+                  new_states.push_back(FieldState(user, already_open, next_child));
                 // See if there are still any valid fields open
                 if (!(it->still_valid()))
                   it = state.field_states.erase(it);
@@ -4100,15 +4105,39 @@ namespace RegionRuntime {
             {
               // Close up any open partitions that conflict with ours
               bool success = true;
-              FieldState exclusive_open = perform_close_operations(closer, user, 
-                                                current_mask, *it, IS_WRITE(user.usage),
-                                                success, next_child);
+              bool needs_upgrade = false;
+              // The only kind of upgrade here is if we were open in exclusive with a reduction
+              // below and we have to close a child in this state despite having the same reduction
+              if (IS_REDUCE(user.usage) && (next_child >= 0) && (it->redop == user.usage.redop))
+              {
+                // Check to see if there is a child we're going to need to close
+                for (std::map<Color,FieldMask>::const_iterator cit = it->open_children.begin();
+                      cit != it->open_children.end(); cit++)
+                {
+                  if (cit->second * current_mask)
+                    continue;
+                  if (next_child != int(cit->first))
+                  {
+                    needs_upgrade = true;
+                    break;
+                  }
+                }
+              }
+              FieldMask already_open = perform_close_operations(closer, 
+                                                current_mask, *it, true/*allow same child*/,
+                                                needs_upgrade, success, next_child);
               if (!success)
                 return false;
-              if (exclusive_open.still_valid())
+              open_mask -= already_open;
+              if (needs_upgrade)
               {
-                open_mask -= exclusive_open.valid_fields;
-                new_states.push_back(exclusive_open);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(IS_REDUCE(user.usage));
+                assert(next_child >= 0);
+#endif
+                FieldState new_state(user, already_open, unsigned(next_child));
+                new_state.open_state = OPEN_REDUCE;
+                new_states.push_back(new_state);
               }
               // See if this entry is still valid
               if (!(it->still_valid()))
@@ -4137,8 +4166,8 @@ namespace RegionRuntime {
                 // Need to close up the open fields since we're going to have to do
                 // an open anyway
                 bool success = true;
-                perform_close_operations(closer, user, current_mask, *it, 
-                                          false/*allow same child*/, success, next_child);
+                perform_close_operations(closer, current_mask, *it, 
+                      false/*allow same child*/, false/*needs upgrade*/, success, next_child);
                 if (!success)
                   return false;
                 if (!(it->still_valid()))
