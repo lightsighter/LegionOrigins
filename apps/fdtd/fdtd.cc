@@ -104,6 +104,16 @@ struct MainArgs {
   LogicalRegion cells;
 };
 
+static inline unsigned block_id(unsigned bx, unsigned by, unsigned bz,
+                                unsigned nbx, unsigned nby, unsigned nbz) {
+  return (bx*nby + by)*nbz + bz;
+}
+
+static inline unsigned cell_id(unsigned x, unsigned y, unsigned z,
+                               unsigned nx, unsigned ny, unsigned nz) {
+  return (x*(ny + 2) + y)*(nz + 2) + z;
+}
+
 // Colors the cells owned by each block. The grid is surrounded by a
 // one cell wide border owned by no blocks, but which is necessary for
 // ghost cells. Each block will then be further sub-divided; see
@@ -156,8 +166,7 @@ public:
         next_index++;
 
         for (unsigned bz = 0; bz < nbz; bz++) {
-          // FIXME(Elliott): Should this be zyx or xyz?
-          unsigned id = (bz*nby + by)*nbx + bx;
+          unsigned id = block_id(bx, by, bz, nbx, nby, nbz);
           unsigned block_size = z_divs[bz].second - z_divs[bz].first;
           coloring[id] = ColoredPoints<unsigned>();
           log_app.debug("Assigning points %d..%d to block %d x %d x %d (id %d)",
@@ -205,6 +214,12 @@ enum dim_t {
   DIM_Z,
 };
 
+enum ghost_t {
+  COLOR_NEGATIVE,
+  COLOR_POSITIVE,
+  COLOR_UNSHARED,
+};
+
 // Colors each block into three pieces, one of which is not shared any
 // other blocks (along this axis), one is shared with the block in the
 // positive direction (along this axis), and one is shared with the
@@ -222,31 +237,28 @@ public:
 
   virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
                                 std::map<Color,ColoredPoints<unsigned> > &coloring) {
-    unsigned color_negative = 0, color_positive = 1, color_unshared = 2;
-
-    coloring[color_negative] = ColoredPoints<unsigned>();
-    coloring[color_positive] = ColoredPoints<unsigned>();
-    coloring[color_unshared] = ColoredPoints<unsigned>();
+    coloring[COLOR_NEGATIVE] = ColoredPoints<unsigned>();
+    coloring[COLOR_POSITIVE] = ColoredPoints<unsigned>();
+    coloring[COLOR_UNSHARED] = ColoredPoints<unsigned>();
 
     for (unsigned x = x_span.first; x < x_span.second; x++) {
       for (unsigned y = y_span.first; y < y_span.second; y++) {
         for (unsigned z = z_span.first; z < z_span.second; z++) {
-          // FIXME(Elliott): Should this be xyz or zyx?
-          unsigned cell_id = (x*(ny + 2) + y)*(nz + 2) + z;
+          unsigned id = cell_id(x, y, z, nx, ny, nz);
 
-          unsigned color = color_unshared;
+          unsigned color = COLOR_UNSHARED;
           if ((dim == DIM_X && x == x_span.first) ||
               (dim == DIM_Y && y == y_span.first) ||
               (dim == DIM_Z && z == z_span.first)) {
-            color = color_negative;
+            color = COLOR_NEGATIVE;
           }
           if ((dim == DIM_X && x == x_span.second - 1) ||
               (dim == DIM_Y && y == y_span.second - 1) ||
               (dim == DIM_Z && z == z_span.second - 1)) {
-            color = color_positive;
+            color = COLOR_POSITIVE;
           }
 
-          coloring[color].points.insert(cell_id);
+          coloring[color].points.insert(id);
         }
       }
     }
@@ -417,21 +429,68 @@ void main_task(const void *input_args, size_t input_arglen,
   printf("\n\n");
   printf("+---------------------------------------------+\n");
 
-  // Partion in blocks and sub-blocks.
+  // Partion into blocks.
   IndexSpace owned_colors = runtime->create_index_space(ctx, nbx*nby*nbz + 1);
   runtime->create_index_allocator(ctx, owned_colors).alloc(nbx*nby*nbz + 1);
   OwnedBlockColoring owned_coloring(nx, ny, nz, x_divs, y_divs, z_divs);
   IndexPartition owned_indices = runtime->create_index_partition(ctx, ispace, owned_colors, owned_coloring);
   LogicalPartition owned_partition = runtime->get_logical_partition(ctx, args.cells, owned_indices);
 
+  // Partition into sub-blocks.
+  IndexSpace ghost_colors = runtime->create_index_space(ctx, 3);
+  runtime->create_index_allocator(ctx, ghost_colors).alloc(3);
+
   std::vector<LogicalRegion> owned_blocks(nbx*nby*nbz);
   std::vector<std::vector<LogicalRegion> > ghost_blocks(nbx*nby*nbz);
   for (unsigned bx = 0; bx < nbx; bx++) {
     for (unsigned by = 0; by < nby; by++) {
       for (unsigned bz = 0; bz < nbz; bz++) {
-        unsigned id = (bz*nby + by)*nbx + bx;
+        unsigned id = block_id(bx, by, bz, nbx, nby, nbz);
         owned_blocks[id] = runtime->get_logical_subregion_by_color(ctx, owned_partition, id);
 
+        GhostBlockColoring x_ghost_coloring(DIM_X, nx, ny, nz, x_divs[bx], y_divs[by], z_divs[bz]);
+        GhostBlockColoring y_ghost_coloring(DIM_Y, nx, ny, nz, x_divs[bx], y_divs[by], z_divs[bz]);
+        GhostBlockColoring z_ghost_coloring(DIM_Z, nx, ny, nz, x_divs[bx], y_divs[by], z_divs[bz]);
+        IndexPartition x_ghost_indices =
+          runtime->create_index_partition(ctx, ispace, ghost_colors, x_ghost_coloring);
+        IndexPartition y_ghost_indices =
+          runtime->create_index_partition(ctx, ispace, ghost_colors, y_ghost_coloring);
+        IndexPartition z_ghost_indices =
+          runtime->create_index_partition(ctx, ispace, ghost_colors, z_ghost_coloring);
+        LogicalPartition x_ghost_partition = runtime->get_logical_partition(ctx, args.cells, x_ghost_indices);
+        LogicalPartition y_ghost_partition = runtime->get_logical_partition(ctx, args.cells, y_ghost_indices);
+        LogicalPartition z_ghost_partition = runtime->get_logical_partition(ctx, args.cells, z_ghost_indices);
+
+        unsigned id_x_negative = block_id(bx - 1, by, bz, nbx, nby, nbz);
+        unsigned id_x_positive = block_id(bx + 1, by, bz, nbx, nby, nbz);
+        unsigned id_y_negative = block_id(bx, by - 1, bz, nbx, nby, nbz);
+        unsigned id_y_positive = block_id(bx, by + 1, bz, nbx, nby, nbz);
+        unsigned id_z_negative = block_id(bx, by, bz - 1, nbx, nby, nbz);
+        unsigned id_z_positive = block_id(bx, by, bz + 1, nbx, nby, nbz);
+        if (bx > 0) {
+          ghost_blocks[id_x_negative].push_back(
+            runtime->get_logical_subregion_by_color(ctx, owned_partition, COLOR_NEGATIVE));
+        }
+        if (bx < nbx - 1) {
+          ghost_blocks[id_x_positive].push_back(
+            runtime->get_logical_subregion_by_color(ctx, owned_partition, COLOR_POSITIVE));
+        }
+        if (by > 0) {
+          ghost_blocks[id_y_negative].push_back(
+            runtime->get_logical_subregion_by_color(ctx, owned_partition, COLOR_NEGATIVE));
+        }
+        if (by < nby - 1) {
+          ghost_blocks[id_y_positive].push_back(
+            runtime->get_logical_subregion_by_color(ctx, owned_partition, COLOR_POSITIVE));
+        }
+        if (bz > 0) {
+          ghost_blocks[id_z_negative].push_back(
+            runtime->get_logical_subregion_by_color(ctx, owned_partition, COLOR_NEGATIVE));
+        }
+        if (bz < nbz - 1) {
+          ghost_blocks[id_z_positive].push_back(
+            runtime->get_logical_subregion_by_color(ctx, owned_partition, COLOR_POSITIVE));
+        }
       }
     }
   }
