@@ -81,6 +81,7 @@ RegionRuntime::Logger::Category log_app("app");
 enum {
   TOP_LEVEL_TASK,
   MAIN_TASK,
+  INIT_TASK,
 };
 
 const double DEFAULT_S = 1.0, DEFAULT_A = 10.0;
@@ -420,9 +421,9 @@ void main_task(const void *input_args, size_t input_arglen,
   IndexSpace &ispace = args.ispace;
   FieldSpace &fspace = args.fspace;
 
-  PhysicalRegion cells = regions[0];
+  // Don't actually read or write any data in this task.
+  runtime->unmap_region(ctx, regions[0]);
 
-  printf("\n");
   printf("+---------------------------------------------+\n");
   printf("| FDTD simulation parameters                  |\n");
   printf("+---------------------------------------------+\n");
@@ -442,7 +443,7 @@ void main_task(const void *input_args, size_t input_arglen,
   FieldID field_hz = field_alloc.allocate_field(sizeof(double));
 
   IndexAllocator alloc = runtime->create_index_allocator(ctx, ispace);
-  unsigned initial_index = alloc.alloc((nx + 2)*(ny + 2)*(nz + 2));
+  alloc.alloc((nx + 2)*(ny + 2)*(nz + 2));
 
   // Decide how many cells to allocate to each block.
   std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
@@ -594,6 +595,71 @@ void main_task(const void *input_args, size_t input_arglen,
       }
     }
   }
+
+  // Initialize cells
+  {
+    std::vector<IndexSpaceRequirement> indexes;
+    indexes.push_back(IndexSpaceRequirement(ispace, NO_MEMORY, ispace));
+
+    std::vector<FieldSpaceRequirement> fields;
+    fields.push_back(FieldSpaceRequirement(fspace, NO_MEMORY));
+
+    std::set<FieldID> priveledge_fields;
+    priveledge_fields.insert(field_ex);
+    priveledge_fields.insert(field_ey);
+    priveledge_fields.insert(field_ez);
+    priveledge_fields.insert(field_hx);
+    priveledge_fields.insert(field_hy);
+    priveledge_fields.insert(field_hz);
+    std::vector<FieldID> instance_fields;
+    priveledge_fields.insert(field_ex);
+    priveledge_fields.insert(field_ey);
+    priveledge_fields.insert(field_ez);
+    priveledge_fields.insert(field_hx);
+    priveledge_fields.insert(field_hy);
+    priveledge_fields.insert(field_hz);
+
+    std::vector<RegionRequirement> regions;
+    regions.push_back(RegionRequirement(owned_partition, 0, priveledge_fields, instance_fields,
+                                        WRITE_ONLY, EXCLUSIVE, args.cells));
+
+
+    ArgumentMap arg_map = runtime->create_argument_map(ctx);
+    for (unsigned i = 0; i < nbx*nby*nbz + 1; i++) {
+      unsigned point[1] = {i};
+      arg_map.set_point_arg<unsigned, 1>(point, TaskArgument(NULL, 0));
+    }
+    FutureMap f =
+      runtime->execute_index_space(ctx, INIT_TASK, owned_colors, indexes, fields, regions,
+                                   TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false);
+    f.wait_all_results();
+  }
+
+  printf("\nSTARTING MAIN SIMULATION LOOP\n");
+  struct timespec ts_start, ts_end;
+  clock_gettime(CLOCK_MONOTONIC, &ts_start);
+  RegionRuntime::DetailedTimer::clear_timers();
+
+  // TODO (Elliott): Main loop
+
+  clock_gettime(CLOCK_MONOTONIC, &ts_end);
+  double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
+		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
+  printf("ELAPSED TIME = %7.3f s\n", sim_time);
+  RegionRuntime::DetailedTimer::report_timers();
+
+}
+
+void init_task(const void *, size_t,
+               const void *, size_t,
+               const unsigned [1],
+               const std::vector<RegionRequirement> &,
+               const std::vector<PhysicalRegion> &regions,
+               Context ctx, HighLevelRuntime *runtime) {
+  PhysicalRegion cells = regions[0];
+  IndexSpace ispace = cells.get_logical_region().get_index_space();
+
+  // TODO: Iterate and initialize points.
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
@@ -606,6 +672,7 @@ int main(int argc, char **argv) {
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK);
   HighLevelRuntime::register_single_task<top_level_task>(TOP_LEVEL_TASK, Processor::LOC_PROC, false, "top_level_task");
   HighLevelRuntime::register_single_task<main_task>(MAIN_TASK, Processor::LOC_PROC, false, "main_task");
+  HighLevelRuntime::register_index_task<unsigned, 1, init_task>(INIT_TASK, Processor::LOC_PROC, false, "init_task");
 
   return HighLevelRuntime::start(argc, argv);
 }
