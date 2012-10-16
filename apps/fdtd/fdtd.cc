@@ -76,6 +76,8 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 
 using namespace RegionRuntime::HighLevel;
 
+RegionRuntime::Logger::Category log_app("app");
+
 enum {
   TOP_LEVEL_TASK,
   MAIN_TASK,
@@ -121,8 +123,8 @@ public:
     unsigned border = 0;
     coloring[border] = ColoredPoints<unsigned>();
     unsigned x_plane_size = (ny + 2)*(nz + 2);
-    printf("Assigning points %d..%d to x == 0 plane\n",
-           next_index, next_index + x_plane_size);
+    log_app.debug("Assigning points %d..%d to x == 0 plane",
+                  next_index, next_index + x_plane_size);
     coloring[border].ranges.insert(
       std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
     next_index += x_plane_size;
@@ -133,8 +135,8 @@ public:
 
       // Color points for line of points at y == 0 boundary.
       unsigned y_line_size = nz + 2;
-      printf("Assigning points %d..%d to y == 0 line\n",
-             next_index, next_index + y_line_size);
+      log_app.debug("Assigning points %d..%d to y == 0 line",
+                    next_index, next_index + y_line_size);
       coloring[border].ranges.insert(
         std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
       next_index += y_line_size;
@@ -144,8 +146,8 @@ public:
         if (by + 1 < nby && y >= y_divs[by + 1].first) by++;
 
         // Color point at z == 0 boundary.
-        printf("Assigning point %d to z == 0 point\n",
-               next_index);
+        log_app.debug("Assigning point  %d to z == 0 point",
+                      next_index);
         coloring[border].ranges.insert(
           std::pair<unsigned, unsigned>(next_index, next_index + 1));
         next_index++;
@@ -154,15 +156,15 @@ public:
           unsigned id = (bz*nby + by)*nbx + bx + 1;
           unsigned block_size = z_divs[bz].second - z_divs[bz].first;
           coloring[id] = ColoredPoints<unsigned>();
-          printf("Assigning points %d..%d to block %d x %d x %d (id %d)\n",
-                 next_index, next_index + block_size, bx, by, bz, id);
+          log_app.debug("Assigning points %d..%d to block %d x %d x %d (id %d)",
+                        next_index, next_index + block_size, bx, by, bz, id);
           coloring[id].ranges.insert(
             std::pair<unsigned, unsigned>(next_index, next_index + block_size));
           next_index += block_size;
         }
 
         // Color point at z == nz + 1 boundary.
-        printf("Assigning point %d to z == nz + 1 point\n",
+        log_app.debug("Assigning point  %d to z == nz + 1 point",
                next_index);
         coloring[border].ranges.insert(
           std::pair<unsigned, unsigned>(next_index, next_index + 1));
@@ -170,21 +172,22 @@ public:
       }
 
       // Color points for line of points at y == nz + 1 boundary.
-      printf("Assigning points %d..%d to y == 0 line\n",
-             next_index, next_index + y_line_size);
+      log_app.debug("Assigning points %d..%d to y == 0 line",
+                    next_index, next_index + y_line_size);
       coloring[border].ranges.insert(
         std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
       next_index += y_line_size;
     }
 
     // Color points for plane of points at x == nx + 1 boundary.
-    printf("Assigning points %d..%d to x == nx + 1 plane\n",
-           next_index, next_index + x_plane_size);
+    log_app.debug("Assigning points %d..%d to x == nx + 1 plane",
+                  next_index, next_index + x_plane_size);
     coloring[border].ranges.insert(
       std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
     next_index += x_plane_size;
 
-    printf("Colored %d of %d points.\n", next_index, (nx + 2)*(ny + 2)*(nz + 2));
+    log_app.debug("Colored %d of %d points",
+                  next_index, (nx + 2)*(ny + 2)*(nz + 2));
     assert(next_index == (nx + 2)*(ny + 2)*(nz + 2));
   }
 
