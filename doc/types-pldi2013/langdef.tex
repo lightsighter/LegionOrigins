@@ -901,15 +901,16 @@ Our goal is to show $\privconsist{E}{\Phi}$ holds for any execution of an expres
 As usual, even stating such a claim requires that corresponding parts of the initial static and dynamic environments be consistent.
 For our results, three consistency properties are needed:
 \begin{itemize}
-\item $\mapconsist{\Omega}$, a region mapping satisfies the region constraints under which the expression was typed
-\item $\localconsist{L}{\Gamma}$, local values have types consistent with the environment under which the expression was typed
-\item $\storeconsist{S}{H}$, the initial state of the store contains values whose types are consistent with the heap typing
+\item mapping consistency, written $\mapconsist{\Omega}$, guarantees a region mapping $M$ satisfies the region constraints $\Omega$ under
+which an expression was typed
+\item local value consistency, written $\localconsist{L}{\Gamma}$, guarantees local values in $L$ have types consistent with the environment under which the expression was typed
+\item store consistency, written $\storeconsist{S}{H}$, guarantees every location in the store $S$ contains a value consistent with the location's type in the heap typing $H$
 \end{itemize}
 
 \noindent Two additional properties are proven for each subexpression:
 \begin{itemize}
-\item $\valueconsist{v}{T}$, the expression yields a value of the right type
-\item $\traceconsist{E}$, values written to the store match the heap types of their locations
+\item result value consistency, written $\valueconsist{v}{T}$, guarantees any evaluation of an expression yields a value of the right type
+\item memory trace consistency, written $\traceconsist{E}$, guarantees that all writes and reductions use values of the right types
 \end{itemize}
 Figure~\ref{fig:constprop} gives the precise definition of these properties.
 
@@ -960,6 +961,15 @@ then
 $\valueconsist{v}{T}$, $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
 \end{thm}
 
+The proof, which can be found in \cite{LegionTypes12}, is lengthy but
+straightforward due to the way in which the operational semantics were
+constructed.  It proceeds by standard induction on the structure of the
+derivation in the operational semantics, at each step showing that
+subexpressions have consistent starting environments and that the
+value and trace consistency of the subexpressions is sufficient to prove
+the consistency of the parent expression.
+
+\texcomment{
 We spare the reader the lengthy proof, which can be found in
 \cite{LegionTypes12}, and merely outline the general strategy.  The
 proof is a standard induction on the structure of the derivation in
@@ -1083,42 +1093,7 @@ $\privconsist{E}{\Phi}$ -  The proof of the crucial property of containment of h
 is similar in outline to the previous step.  The easy cases are covered by a lemma combining the corresponding results
 for subexpressions: if $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $any\_interleave(E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
 Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
-
-%% \begin{table*}
-%% \centering
-%% {\small
-%% \begin{tabular}{l|p{5cm}|p{5cm}|p{5cm}}
-%% {\bf Rule} & 
-%% \multicolumn{1}{|c|}{$\mathbf{v \sim_H M \llbracket T \rrbracket}$} &
-%% \multicolumn{1}{|c|}{$\mathbf{E \sim H}$} &
-%% \multicolumn{1}{|c|}{$\mathbf{E : \Phi}$} \\
-%% \hline
-%% BoolConst & & & \\
-%% IntConst & & & \\
-%% TupleBuild & & & \\
-%% TupleField & & & \\
-%% LocalVar & & & \\
-%% NullPtr & & & \\
-%% NewPtr & & & \\
-%% IsNull & & & \\
-%% UpRegion & & & \\
-%% DownRegion & & & \\
-%% Read & & & \\
-%% Write & & & \\
-%% Reduce & & & \\
-%% Newcolor & & & \\
-%% Color & & & \\
-%% IntMath & & & \\
-%% IntCmp & & & \\
-%% Let & & & \\
-%% IfElse & & & \\
-%% TaskCall & & & \\
-%% Partition & & & \\
-%% Pack & & & \\
-%% Unpack & & &
-%% \end{tabular}}
-%% \caption{Proof pieces}
-%% \end{table*}
+}
 
 
 \section{Coherence}

@@ -76,6 +76,8 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 
 using namespace RegionRuntime::HighLevel;
 
+RegionRuntime::Logger::Category log_app("app");
+
 enum {
   TOP_LEVEL_TASK,
   MAIN_TASK,
@@ -102,12 +104,16 @@ struct MainArgs {
   LogicalRegion cells;
 };
 
-class BlockColoring : public ColoringFunctor {
+// Colors the cells owned by each block. The grid is surrounded by a
+// one cell wide border owned by no blocks, but which is necessary for
+// ghost cells. Each block will then be further sub-divided; see
+// below.
+class OwnedBlockColoring : public ColoringFunctor {
 public:
-  BlockColoring(unsigned nx, unsigned ny, unsigned nz,
-                std::vector<std::pair<unsigned, unsigned> > x_divs,
-                std::vector<std::pair<unsigned, unsigned> > y_divs,
-                std::vector<std::pair<unsigned, unsigned> > z_divs)
+  OwnedBlockColoring(unsigned nx, unsigned ny, unsigned nz,
+                     std::vector<std::pair<unsigned, unsigned> > x_divs,
+                     std::vector<std::pair<unsigned, unsigned> > y_divs,
+                     std::vector<std::pair<unsigned, unsigned> > z_divs)
     : nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
 
   virtual bool is_disjoint(void) { return true; }
@@ -118,11 +124,11 @@ public:
     unsigned nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
     // Color points for plane of points at x == 0 boundary.
-    unsigned border = 0;
+    unsigned border = nbx*nby*nbz;
     coloring[border] = ColoredPoints<unsigned>();
     unsigned x_plane_size = (ny + 2)*(nz + 2);
-    printf("Assigning points %d..%d to x == 0 plane\n",
-           next_index, next_index + x_plane_size);
+    log_app.debug("Assigning points %d..%d to x == 0 plane",
+                  next_index, next_index + x_plane_size);
     coloring[border].ranges.insert(
       std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
     next_index += x_plane_size;
@@ -133,8 +139,8 @@ public:
 
       // Color points for line of points at y == 0 boundary.
       unsigned y_line_size = nz + 2;
-      printf("Assigning points %d..%d to y == 0 line\n",
-             next_index, next_index + y_line_size);
+      log_app.debug("Assigning points %d..%d to y == 0 line",
+                    next_index, next_index + y_line_size);
       coloring[border].ranges.insert(
         std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
       next_index += y_line_size;
@@ -144,53 +150,112 @@ public:
         if (by + 1 < nby && y >= y_divs[by + 1].first) by++;
 
         // Color point at z == 0 boundary.
-        printf("Assigning point %d to z == 0 point\n",
-               next_index);
-        coloring[border].ranges.insert(
-          std::pair<unsigned, unsigned>(next_index, next_index + 1));
+        log_app.debug("Assigning point  %d to z == 0 point",
+                      next_index);
+        coloring[border].points.insert(next_index);
         next_index++;
 
         for (unsigned bz = 0; bz < nbz; bz++) {
-          unsigned id = (bz*nby + by)*nbx + bx + 1;
+          // FIXME(Elliott): Should this be zyx or xyz?
+          unsigned id = (bz*nby + by)*nbx + bx;
           unsigned block_size = z_divs[bz].second - z_divs[bz].first;
           coloring[id] = ColoredPoints<unsigned>();
-          printf("Assigning points %d..%d to block %d x %d x %d (id %d)\n",
-                 next_index, next_index + block_size, bx, by, bz, id);
+          log_app.debug("Assigning points %d..%d to block %d x %d x %d (id %d)",
+                        next_index, next_index + block_size, bx, by, bz, id);
           coloring[id].ranges.insert(
             std::pair<unsigned, unsigned>(next_index, next_index + block_size));
           next_index += block_size;
         }
 
         // Color point at z == nz + 1 boundary.
-        printf("Assigning point %d to z == nz + 1 point\n",
+        log_app.debug("Assigning point  %d to z == nz + 1 point",
                next_index);
-        coloring[border].ranges.insert(
-          std::pair<unsigned, unsigned>(next_index, next_index + 1));
+        coloring[border].points.insert(next_index);
         next_index++;
       }
 
       // Color points for line of points at y == nz + 1 boundary.
-      printf("Assigning points %d..%d to y == 0 line\n",
-             next_index, next_index + y_line_size);
+      log_app.debug("Assigning points %d..%d to y == 0 line",
+                    next_index, next_index + y_line_size);
       coloring[border].ranges.insert(
         std::pair<unsigned, unsigned>(next_index, next_index + y_line_size));
       next_index += y_line_size;
     }
 
     // Color points for plane of points at x == nx + 1 boundary.
-    printf("Assigning points %d..%d to x == nx + 1 plane\n",
-           next_index, next_index + x_plane_size);
+    log_app.debug("Assigning points %d..%d to x == nx + 1 plane",
+                  next_index, next_index + x_plane_size);
     coloring[border].ranges.insert(
       std::pair<unsigned, unsigned>(next_index, next_index + x_plane_size));
     next_index += x_plane_size;
 
-    printf("Colored %d of %d points.\n", next_index, (nx + 2)*(ny + 2)*(nz + 2));
+    log_app.debug("Colored %d of %d points",
+                  next_index, (nx + 2)*(ny + 2)*(nz + 2));
     assert(next_index == (nx + 2)*(ny + 2)*(nz + 2));
   }
 
 private:
   const unsigned nx, ny, nz;
   const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
+};
+
+enum dim_t {
+  DIM_X,
+  DIM_Y,
+  DIM_Z,
+};
+
+// Colors each block into three pieces, one of which is not shared any
+// other blocks (along this axis), one is shared with the block in the
+// positive direction (along this axis), and one is shared with the
+// negative direction. Each block will be split this way three times
+// to contruct the ghost cells needed in the computation.
+class GhostBlockColoring : public ColoringFunctor {
+public:
+  GhostBlockColoring(dim_t dim, unsigned nx, unsigned ny, unsigned nz,
+                     std::pair<unsigned, unsigned> x_span,
+                     std::pair<unsigned, unsigned> y_span,
+                     std::pair<unsigned, unsigned> z_span)
+    : dim(dim), nx(nx), ny(ny), nz(nz), x_span(x_span), y_span(y_span), z_span(z_span) {}
+
+  virtual bool is_disjoint(void) { return true; }
+
+  virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
+                                std::map<Color,ColoredPoints<unsigned> > &coloring) {
+    unsigned color_negative = 0, color_positive = 1, color_unshared = 2;
+
+    coloring[color_negative] = ColoredPoints<unsigned>();
+    coloring[color_positive] = ColoredPoints<unsigned>();
+    coloring[color_unshared] = ColoredPoints<unsigned>();
+
+    for (unsigned x = x_span.first; x < x_span.second; x++) {
+      for (unsigned y = y_span.first; y < y_span.second; y++) {
+        for (unsigned z = z_span.first; z < z_span.second; z++) {
+          // FIXME(Elliott): Should this be xyz or zyx?
+          unsigned cell_id = (x*(ny + 2) + y)*(nz + 2) + z;
+
+          unsigned color = color_unshared;
+          if ((dim == DIM_X && x == x_span.first) ||
+              (dim == DIM_Y && y == y_span.first) ||
+              (dim == DIM_Z && z == z_span.first)) {
+            color = color_negative;
+          }
+          if ((dim == DIM_X && x == x_span.second - 1) ||
+              (dim == DIM_Y && y == y_span.second - 1) ||
+              (dim == DIM_Z && z == z_span.second - 1)) {
+            color = color_positive;
+          }
+
+          coloring[color].points.insert(cell_id);
+        }
+      }
+    }
+  }
+
+private:
+  const dim_t dim;
+  const unsigned nx, ny, nz;
+  const std::pair<unsigned, unsigned> x_span, y_span, z_span;
 };
 
 void top_level_task(const void *, size_t,
@@ -353,11 +418,23 @@ void main_task(const void *input_args, size_t input_arglen,
   printf("+---------------------------------------------+\n");
 
   // Partion in blocks and sub-blocks.
-  IndexSpace colors = runtime->create_index_space(ctx, nbx*nby*nbz);
-  runtime->create_index_allocator(ctx, colors).alloc(nbx*nby*nbz);
-  BlockColoring coloring(nx, ny, nz, x_divs, y_divs, z_divs);
-  IndexPartition partition = runtime->create_index_partition(ctx, ispace, colors, coloring);
-  LogicalPartition p_cells = runtime->get_logical_partition(ctx, args.cells, partition);
+  IndexSpace owned_colors = runtime->create_index_space(ctx, nbx*nby*nbz + 1);
+  runtime->create_index_allocator(ctx, owned_colors).alloc(nbx*nby*nbz + 1);
+  OwnedBlockColoring owned_coloring(nx, ny, nz, x_divs, y_divs, z_divs);
+  IndexPartition owned_indices = runtime->create_index_partition(ctx, ispace, owned_colors, owned_coloring);
+  LogicalPartition owned_partition = runtime->get_logical_partition(ctx, args.cells, owned_indices);
+
+  std::vector<LogicalRegion> owned_blocks(nbx*nby*nbz);
+  std::vector<std::vector<LogicalRegion> > ghost_blocks(nbx*nby*nbz);
+  for (unsigned bx = 0; bx < nbx; bx++) {
+    for (unsigned by = 0; by < nby; by++) {
+      for (unsigned bz = 0; bz < nbz; bz++) {
+        unsigned id = (bz*nby + by)*nbx + bx;
+        owned_blocks[id] = runtime->get_logical_subregion_by_color(ctx, owned_partition, id);
+
+      }
+    }
+  }
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
