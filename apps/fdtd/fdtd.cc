@@ -613,12 +613,12 @@ void main_task(const void *input_args, size_t input_arglen,
     priveledge_fields.insert(field_hy);
     priveledge_fields.insert(field_hz);
     std::vector<FieldID> instance_fields;
-    priveledge_fields.insert(field_ex);
-    priveledge_fields.insert(field_ey);
-    priveledge_fields.insert(field_ez);
-    priveledge_fields.insert(field_hx);
-    priveledge_fields.insert(field_hy);
-    priveledge_fields.insert(field_hz);
+    instance_fields.push_back(field_ex);
+    instance_fields.push_back(field_ey);
+    instance_fields.push_back(field_ez);
+    instance_fields.push_back(field_hx);
+    instance_fields.push_back(field_hy);
+    instance_fields.push_back(field_hz);
 
     std::vector<RegionRequirement> regions;
     regions.push_back(RegionRequirement(owned_partition, 0, priveledge_fields, instance_fields,
