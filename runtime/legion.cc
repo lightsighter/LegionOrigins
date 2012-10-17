@@ -2763,7 +2763,7 @@ namespace RegionRuntime {
       log_run(LEVEL_DEBUG,"Initializing high-level runtime on processor %x",local_proc.id);
       {
         // Compute our location in the list of processors
-        unsigned idx = 0;
+        unsigned idx = 1;
         bool found = false;
         const std::set<Processor>& all_procs = m->get_all_processors();
         for (std::set<Processor>::const_iterator it = all_procs.begin();
@@ -2787,6 +2787,7 @@ namespace RegionRuntime {
         next_field_space_id     = idx;
         next_field_id           = idx;
         next_manager_id         = idx;
+        start_color             = idx;
       }
 
       // Set up default mapper and locks
@@ -3518,6 +3519,7 @@ namespace RegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_INDEX_PARTITION);
       IndexPartition pid = get_unique_partition_id();
 #ifdef DEBUG_HIGH_LEVEL
+      assert(pid > 0);
       log_region(LEVEL_DEBUG, "Creating index partition %d with parent index space %x in task %s (ID %d)",
                               pid, parent.id, ctx->variants->name, ctx->get_unique_id());
 #endif
@@ -4512,6 +4514,20 @@ namespace RegionRuntime {
       UniqueManagerID result = next_manager_id;
       next_manager_id += unique_stride;
       return result;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    Color HighLevelRuntime::get_start_color(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return start_color;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    unsigned HighLevelRuntime::get_color_modulus(void) const
+    //--------------------------------------------------------------------------------------------
+    {
+      return unique_stride;
     }
 
     //--------------------------------------------------------------------------------------------

@@ -1115,7 +1115,7 @@ namespace RegionRuntime {
         // Pack the parent state without recursing
         result += top_node->parent->compute_state_size(ctx, packing_mask, 
                         unique_managers, unique_views, ordered_views,
-                        false/*recurse*/, top_node->row_source->color);
+                        false/*mark invalid views*/, false/*recurse*/, top_node->row_source->color);
         result += top_node->compute_state_size(ctx, packing_mask,
                         unique_managers, unique_views, ordered_views, false/*mark invalid views*/, true/*recurse*/);
       }
@@ -2665,6 +2665,20 @@ namespace RegionRuntime {
       return (views.find(key) != views.end());
     }
 
+    //--------------------------------------------------------------------------
+    template<typename T>
+    Color RegionTreeForest::generate_unique_color(const std::map<Color,T> &current_map)
+    //--------------------------------------------------------------------------
+    {
+      Color result = runtime->get_start_color();
+      unsigned stride = runtime->get_color_modulus();
+      while (current_map.find(result) != current_map.end())
+      {
+        result += stride;
+      }
+      return result;
+    }
+
     /////////////////////////////////////////////////////////////
     // Index Space Node 
     /////////////////////////////////////////////////////////////
@@ -2767,18 +2781,7 @@ namespace RegionRuntime {
     Color IndexSpaceNode::generate_color(void)
     //--------------------------------------------------------------------------
     {
-      if (!color_map.empty())
-      {
-        Color result = (color_map.rbegin())->first+1;
-#ifdef DEBUG_HIGH_LEVEL
-        assert(color_map.find(result) == color_map.end());
-#endif
-        return result;
-      }
-      else
-      {
-        return 0;
-      }
+      return context->generate_unique_color<IndexPartNode*>(color_map);
     }
 
     //--------------------------------------------------------------------------
@@ -2835,9 +2838,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       size_t result = 0; 
+      result += sizeof(bool);
+      result += sizeof(handle);
       if (returning || marked)
       {
-        result += sizeof(handle);
         result += sizeof(color);
         result += sizeof(size_t); // number of children
         result += sizeof(size_t); // number disjoint subsets
@@ -2856,6 +2860,7 @@ namespace RegionRuntime {
     {
       if (returning || marked)
       {
+        rez.serialize(true);
         rez.serialize(handle);
         rez.serialize(color);
         rez.serialize(color_map.size());
@@ -2873,6 +2878,11 @@ namespace RegionRuntime {
         }
         marked = false;
       }
+      else
+      {
+        rez.serialize(false);
+        rez.serialize(handle);
+      }
       if (returning)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -2887,27 +2897,36 @@ namespace RegionRuntime {
                                   RegionTreeForest *context, bool returning)
     //--------------------------------------------------------------------------
     {
+      bool need_unpack;
+      derez.deserialize(need_unpack);
       IndexSpace handle;
       derez.deserialize(handle);
-      Color color;
-      derez.deserialize(color);
-      IndexSpaceNode *result_node = context->create_node(handle, parent, color, returning);
-      size_t num_children;
-      derez.deserialize(num_children);
-      for (unsigned idx = 0; idx < num_children; idx++)
+      if (need_unpack)
       {
-        IndexPartNode::deserialize_tree(derez, result_node, context, returning);
+        Color color;
+        derez.deserialize(color);
+        IndexSpaceNode *result_node = context->create_node(handle, parent, color, returning);
+        size_t num_children;
+        derez.deserialize(num_children);
+        for (unsigned idx = 0; idx < num_children; idx++)
+        {
+          IndexPartNode::deserialize_tree(derez, result_node, context, returning);
+        }
+        size_t num_disjoint;
+        derez.deserialize(num_disjoint);
+        for (unsigned idx = 0; idx < num_disjoint; idx++)
+        {
+          Color c1, c2;
+          derez.deserialize(c1);
+          derez.deserialize(c2);
+          result_node->add_disjoint(c1, c2);
+        }
+        return result_node;
       }
-      size_t num_disjoint;
-      derez.deserialize(num_disjoint);
-      for (unsigned idx = 0; idx < num_disjoint; idx++)
+      else
       {
-        Color c1, c2;
-        derez.deserialize(c1);
-        derez.deserialize(c2);
-        result_node->add_disjoint(c1, c2);
+        return context->get_node(handle);
       }
-      return result_node;
     }
 
     //--------------------------------------------------------------------------
@@ -3095,6 +3114,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       size_t result = 0;
+      result += sizeof(bool);
       if (returning || marked)
       {
         result += sizeof(handle);
@@ -3114,8 +3134,12 @@ namespace RegionRuntime {
     void IndexPartNode::serialize_tree(Serializer &rez, bool returning)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(handle > 0);
+#endif
       if (returning || marked)
       {
+        rez.serialize(true);
         rez.serialize(handle);
         rez.serialize(color);
         rez.serialize(disjoint);
@@ -3132,6 +3156,10 @@ namespace RegionRuntime {
         }
         marked = false;
       }
+      else
+      {
+        rez.serialize(false);
+      }
       if (returning)
       {
 #ifdef DEBUG_HIGH_LEVEL
@@ -3146,27 +3174,35 @@ namespace RegionRuntime {
                                 RegionTreeForest *context, bool returning)
     //--------------------------------------------------------------------------
     {
-      IndexPartition handle;
-      derez.deserialize(handle);
-      Color color;
-      derez.deserialize(color);
-      bool disjoint;
-      derez.deserialize(disjoint);
-      IndexPartNode *result = context->create_node(handle, parent, color, disjoint, returning);
-      size_t num_children;
-      derez.deserialize(num_children);
-      for (unsigned idx = 0; idx < num_children; idx++)
+      bool needs_unpack;
+      derez.deserialize(needs_unpack);
+      if (needs_unpack)
       {
-        IndexSpaceNode::deserialize_tree(derez, result, context, returning);
-      }
-      size_t num_disjoint;
-      derez.deserialize(num_disjoint);
-      for (unsigned idx = 0; idx < num_disjoint; idx++)
-      {
-        Color c1, c2;
-        derez.deserialize(c1);
-        derez.deserialize(c2);
-        result->add_disjoint(c1,c2);
+        IndexPartition handle;
+        derez.deserialize(handle);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(handle > 0);
+#endif
+        Color color;
+        derez.deserialize(color);
+        bool disjoint;
+        derez.deserialize(disjoint);
+        IndexPartNode *result = context->create_node(handle, parent, color, disjoint, returning);
+        size_t num_children;
+        derez.deserialize(num_children);
+        for (unsigned idx = 0; idx < num_children; idx++)
+        {
+          IndexSpaceNode::deserialize_tree(derez, result, context, returning);
+        }
+        size_t num_disjoint;
+        derez.deserialize(num_disjoint);
+        for (unsigned idx = 0; idx < num_disjoint; idx++)
+        {
+          Color c1, c2;
+          derez.deserialize(c1);
+          derez.deserialize(c2);
+          result->add_disjoint(c1,c2);
+        }
       }
     }
 
@@ -5266,9 +5302,10 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       size_t result = 0;
+      result += sizeof(bool);
+      result += sizeof(handle);
       if (returning || marked)
       {
-        result += sizeof(handle);
         result += sizeof(size_t); // number of children
         for (std::map<Color,PartitionNode*>::const_iterator it = 
               color_map.begin(); it != color_map.end(); it++)
@@ -5285,6 +5322,7 @@ namespace RegionRuntime {
     {
       if (returning || marked)
       {
+        rez.serialize(true);
         rez.serialize(handle);
         rez.serialize(color_map.size());
         for (std::map<Color,PartitionNode*>::const_iterator it =
@@ -5293,6 +5331,11 @@ namespace RegionRuntime {
           it->second->serialize_tree(rez, returning);
         }
         marked = false;
+      }
+      else
+      {
+        rez.serialize(false);
+        rez.serialize(handle);
       }
       if (returning)
       {
@@ -5308,16 +5351,25 @@ namespace RegionRuntime {
                                         RegionTreeForest *context, bool returning)
     //--------------------------------------------------------------------------
     {
+      bool needs_unpack;
+      derez.deserialize(needs_unpack);
       LogicalRegion handle;
       derez.deserialize(handle);
-      RegionNode *result = context->create_node(handle, parent, returning);
-      size_t num_children;
-      derez.deserialize(num_children);
-      for (unsigned idx = 0; idx < num_children; idx++)
+      if (needs_unpack)
       {
-        PartitionNode::deserialize_tree(derez, result, context, returning); 
+        RegionNode *result = context->create_node(handle, parent, returning);
+        size_t num_children;
+        derez.deserialize(num_children);
+        for (unsigned idx = 0; idx < num_children; idx++)
+        {
+          PartitionNode::deserialize_tree(derez, result, context, returning); 
+        }
+        return result;
       }
-      return result;
+      else
+      {
+        return context->get_node(handle);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -5369,9 +5421,8 @@ namespace RegionRuntime {
                                           bool mark_invalid_views, bool recurse, int sub /*= -1*/) 
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(physical_states.find(ctx) != physical_states.end());
-#endif
+      if (physical_states.find(ctx) == physical_states.end())
+        physical_states[ctx] = PhysicalState();
       PhysicalState &state = physical_states[ctx];
       size_t result = 0;
       result += sizeof(state.dirty_mask);
@@ -6022,6 +6073,7 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       size_t result = 0;
+      result += sizeof(bool);
       if (returning || marked)
       {
         result += sizeof(handle);
@@ -6041,6 +6093,7 @@ namespace RegionRuntime {
     {
       if (returning || marked)
       {
+        rez.serialize(true);
         rez.serialize(handle);
         rez.serialize(color_map.size());
         for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
@@ -6049,6 +6102,10 @@ namespace RegionRuntime {
           it->second->serialize_tree(rez, returning);
         }
         marked = false;
+      }
+      else
+      {
+        rez.serialize(false);
       }
       if (returning)
       {
@@ -6064,14 +6121,19 @@ namespace RegionRuntime {
                       RegionNode *parent, RegionTreeForest *context, bool returning)
     //--------------------------------------------------------------------------
     {
-      LogicalPartition handle;
-      derez.deserialize(handle);
-      PartitionNode *result = context->create_node(handle, parent, returning);
-      size_t num_children;
-      derez.deserialize(num_children);
-      for (unsigned idx = 0; idx < num_children; idx++)
+      bool needs_unpack;
+      derez.deserialize(needs_unpack);
+      if (needs_unpack)
       {
-        RegionNode::deserialize_tree(derez, result, context, returning);
+        LogicalPartition handle;
+        derez.deserialize(handle);
+        PartitionNode *result = context->create_node(handle, parent, returning);
+        size_t num_children;
+        derez.deserialize(num_children);
+        for (unsigned idx = 0; idx < num_children; idx++)
+        {
+          RegionNode::deserialize_tree(derez, result, context, returning);
+        }
       }
     }
 
@@ -6127,9 +6189,8 @@ namespace RegionRuntime {
                                               bool mark_invalid_views, bool recurse)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(physical_states.find(ctx) != physical_states.end());
-#endif
+      if (physical_states.find(ctx) == physical_states.end())
+        physical_states[ctx] = PhysicalState();
       PhysicalState &state = physical_states[ctx];
       size_t result = 0;
       result += sizeof(size_t); // number of field states

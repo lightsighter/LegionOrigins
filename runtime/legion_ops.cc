@@ -6352,7 +6352,6 @@ namespace RegionRuntime {
                               get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
             }
           }
-          
           // Now we need to pack the argument map
           bool has_arg_map = (arg_map_impl != NULL);
           rez.serialize<bool>(has_arg_map);
