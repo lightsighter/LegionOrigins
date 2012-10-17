@@ -74,13 +74,11 @@ Reviewer 1 commented that blocking APIs do not necessarily stall processors if t
 runnable threads to keep the processor busy.  While this is true, the overhead of having many threads
 to support this kind of computation is high due to the cost of software threads on CPUs.  (On GPUs, threads
 are much lighter-weight, but current programming models do not allow these threads to be suspended.)
-Instead our system provides lighter-weight tasks which the programmer
-can launch at a much finer granularity without incurring the overhead of a thread.  Due to the minimal
-overhead of tasks, programmers can express a much finer granularity of parallelism which our runtime
-can then efficiently map onto available hardware resources.  Existing programming systems like MPI, OpenMP,
-and P-threads entail too much overhead to leverage this finer-grained task parallelism.
+This cost is magnified by a programmer's need to conservatively create new threads whenever an API
+call _might_ block or risk performance loss from the serialization of independent subtasks that are
+launched from the same parent task.
 
-Reviewer 1 and reviewer 5 asked for clarification regarding barriers and the need for a dynamic change
+Reviewers 1 and 5 asked for clarification regarding barriers and the need for a dynamic change
 in arrival count.  In our experience, we've found that
 the number of expected arrivals at a barrier is often not known at barrier creation-time (intuitively this
 is necessary to support nested parallelism in Legion).  To support this paradigm, we added the ability to 
@@ -88,7 +86,7 @@ dynamically alter the arrival count.  To implement this feature on the distribut
 machines we're targetting, we use the well-studied vector clock algorithm from the distributed systems
 literature (see citation [16] for additional details on the semantics and implementation of vector clocks).
 
-Reviewer 1 and reviwer 5 both inquired about how the runtime works with GPUs.  Our runtime uses CUDA to 
+Reviewers 1 and 5 both inquired about how the runtime works with GPUs.  Our runtime uses CUDA to 
 control the GPUs in the cluster.  A GPU is exposed as another kind of processor in our system, and each task
 launched on a GPU processor results in an asyncrhonous CUDA grid launch.  GPU memories (framebuffer and zero-copy) 
 are exposed in the same way as CPU main memory and the globally accessible "GASNet" memory.  Copies of 
