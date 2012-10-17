@@ -2,7 +2,7 @@ We would like to thank the reviewers for the detailed feedback.  Below we will..
 
 Reviewers 1, 2, and 4 requested clarification of which components of the the API are
 novel and which are similar to prior work.  Although events, locks, barriers, and reductions
-have appeared in many forms, we believe the following contributions to be novel:
+have appeared in many forms, we believe the following contributions are novel:
   a) the use of generational events to efficiently describe the very large number of dependencies
 that exist in a distributed application
   b) the deferred lock construct in which access to a critical resource can be mediated without
@@ -20,7 +20,7 @@ in which both the left and right operands are of the same type.  Our implementat
 that have different left and right operand types (e.g. scaling of a vector by a scalar) and treats
 each reduction operation as a unary function applied (atomically) to the current value (e.g. V *= 3
 becomes (*3)(V) ).  When multiple reductions are applied to the same value, these unary functions
-are essentially composed, and it's the commutativity of that composition
+can be composed, and it's the commutativity of that composition
 (e.g. [(*3) o (*2)](X) = [(*2) o (*3)](X) for all X) that allows the deferred application of these
 reduction operations.  Nearly all "reasonable" reduction operations
 that one might propose satisfy this form of commutativity.  Most also satisfy our criterion of foldability
@@ -29,7 +29,7 @@ improve performance in most cases.
 
 Reviewer 1 noted that use "Distributed Architectures" in our title might be confusing.  Our goal was
 to distinguish our implementation from those that are limited to shared-memory systems.  A more
-accurate description would be "Distributed Memory Architectures."  We would be willing to change our
+accurate description would be "Distributed Memory Architectures."  We would be willing to change the 
 title to clarify our meaning if the submission is accepted.
 
 Reviewer 2 noted that OpenCL supports events for asynchronously launching tasks and moving data. 
@@ -54,4 +54,38 @@ for dataflow models would be the Legion programming system which is beyond the s
 Instead, we view the runtime presented in this paper as orthogonal work to dataflow programming models.   
 The runtime presented here provides a lower-level layer of abstraction that could serve as the 
 foundation for many different dataflow programming systems. 
+
+Reviewer 4 described deferred locks as having the same semantics as I-structures from the dataflow
+literature.  This is incorrect.  I-structures support a producer-consumer semantics which is isomorphic
+to the functionality provided by events in our runtime (we do not claim the semantics of events to
+be novel).  Unlike the producer-consumer semantics supported by I-structures, deferred locks support
+unordered atomic semantics, which allows programmers to describe properties like serializability
+without the requirement of ordering.  We are unaware of any feature of dataflow implementations
+that support a similar semantics to deferred locks.
+
+Reviewer 1 commented that blocking APIs do not necessarily stall processors if there are enough 
+runnable threads to keep the processor busy.  While this is true, the overhead of having many threads
+to support this kind of computation is high due to the cost of software threads (except on GPUs where 
+threads are lightweight).  Instead our system provides lighter-weight tasks which the programmer
+can launch at a much finer granularity with incurring the overhead of a thread.  Due to the minimal
+overhead of tasks, programmers can express a much finer granularity of parallelism which the runtime
+can then leverage if there are available hardware resources.  Existing programming systems like MPI
+and P-threads entail too much overhead to leverage this granularity of task-parallelism.
+
+Reviewer 1 and reviewer 5 asked for clarification regarding barriers and the need for a dynamic change
+in arrival count.  In our experiencing writing programs to our runtime system, we've found that
+the number of expected arrivals at a barrier is not known at barrier creation-time (intuitively this
+is necessary to support nested parallelism in Legion).  To support this paradigm, we added the feature of
+being able to dynamically alter the arrival count.  To implement this feature on the distributed 
+machines we're targetting, we use the well-studied vector clock algorithm from the distributed systems
+literature (see citation [16] for additional details on the semantics and implementation of vector clocks).
+
+Reviewer 1 and reviwer 5 both inquired about how the runtime works with GPUs.  GPUs are just another kind
+of processor in our system and GPU memories (global, zero-copy, etc) are just another kind of memory with
+regards to the runtime.  Copies of data between GPU and CPU memories are no different than copies between
+any other pair of memories and must be explicitly made by the programmer.  Tasks launched on a GPU processor
+invoked a kernel on the GPU but otherwise have the same semantics as CPU task.  One restriction is 
+runtime calls are not currently available inside of tasks running on the GPU.  We left this aspect of 
+the implementation for future work and owing to this asymmetry opted not claim heterogeneity as one
+of our primary contributions.  
 
