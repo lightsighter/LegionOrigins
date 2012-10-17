@@ -29,5 +29,29 @@ improve performance in most cases.
 
 Reviewer 1 noted that use "Distributed Architectures" in our title might be confusing.  Our goal was
 to distinguish our implementation from those that are limited to shared-memory systems.  A more
-accurate description would be "Distributed Memory Architectures", and we'd be happy to change the 
-title should our submission be accepted.
+accurate description would be "Distributed Memory Architectures."  We would be willing to change our
+title to clarify our meaning if the submission is accepted.
+
+Reviewer 2 noted that OpenCL supports events for asynchronously launching tasks and moving data. 
+As we noted in our related work, OpenCL events are only valid in a single address space (e.g. node) unlike our 
+events which are valid in every address space on distributed memory machines.  Furthermore, the
+synchronization primitives in OpenCL do not use events and cannot compose with other operations.
+
+Reviewer 3 expressed doubts about the performance of the Legion version of the applications 
+relative to hand-coded applications and whether the applications fit well into the bulk-synchronous model.  
+The fourth citation in our paper [4] (which has been accepted and will appear at Supercomputing 2012) 
+reports speedups over hand-coded versions of the applications.  In this paper, we aimed to quantify 
+exactly what fraction of the speedup from [4] results from the composable, asynchronous nature of our 
+runtime system.  To eliminate any performance benefits achieved by the Legion programming model 
+independent from our runtime, we compared against bulk-synchronous version of the applications from [4] 
+written in Legion instead of hand-coded implementations.  The Fluid and AMR applications had hand-coded 
+reference implementations written by others.  In both cases, the architects of those programs chose to 
+express their computation in a bulk-synchronous model indicating that the programs are a good fit
+for bulk-synchronous execution.  
+
+Reviewer 4 requested a comparison to existing dataflow programming models.  A more apt comparison
+for dataflow models would be the Legion programming system which is beyond the scope of this paper.  
+Instead, we view the runtime presented in this paper as orthogonal work to dataflow programming models.   
+The runtime presented here provides a lower-level layer of abstraction that could serve as the 
+foundation for many different dataflow programming systems. 
+
