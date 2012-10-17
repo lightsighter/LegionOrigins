@@ -168,6 +168,9 @@ namespace RegionRuntime {
       InstanceView* find_view(InstanceKey key) const;
       InstanceManager* find_manager(UniqueManagerID mid) const;
       bool has_view(InstanceKey key) const;
+    public:
+      template<typename T>
+      Color generate_unique_color(const std::map<Color,T> &current_map);
     private:
       HighLevelRuntime *const runtime;
 #ifdef LOW_LEVEL_LOCKS

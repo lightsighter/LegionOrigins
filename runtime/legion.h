@@ -1022,6 +1022,9 @@ namespace RegionRuntime {
       FieldSpaceID     get_unique_field_space_id(void);
       FieldID          get_unique_field_id(void);
       UniqueManagerID  get_unique_manager_id(void);
+      // Helper methods for generating unique colors
+      Color get_start_color(void) const;
+      unsigned get_color_modulus(void) const;
     protected: 
       void add_to_dependence_queue(GeneralizedOperation *op);
       void add_to_ready_queue(IndividualTask *task, bool remote);
@@ -1170,6 +1173,7 @@ namespace RegionRuntime {
       FieldSpaceID next_field_space_id;
       FieldID next_field_id;
       UniqueManagerID next_manager_id;
+      Color start_color;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
       const unsigned int max_outstanding_steals;
