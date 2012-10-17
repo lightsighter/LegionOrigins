@@ -37,7 +37,7 @@ Reviewer 2 noted that APIs like OpenCL supports events for asynchronously launch
 As we noted in our related work, OpenCL events (and similar constructs in other APIs) are only valid in a 
 single address space (e.g. node), whereas our events which are valid in every address space on 
 distributed memory machines.  Furthermore, the synchronization primitives in APIs like OpenCL do not use 
-events and cannot compose with other operations the way the synchronization mechanisms in our runtime can.
+events and consequently cannot compose with other operations the way the synchronization mechanisms in our runtime can.
 
 Reviewer 3 expressed doubts about the performance of the Legion versions of the applications 
 relative to hand-coded applications and whether the applications fit well into the bulk-synchronous model.  
@@ -56,12 +56,12 @@ Instead, we view the runtime presented in this paper as orthogonal work to dataf
 The runtime presented here provides a lower-level layer of abstraction that could serve as the 
 foundation for many different dataflow programming systems. 
 
-Reviewer 4 was curious about the difference between our deferred locks and I-structures from the dataflow
+Reviewer 4 was unsure about the difference between our deferred locks and I-structures from the dataflow
 literature.  I-structures support a producer-consumer, write-once semantics which is much closer
 to the functionality provided by events in our runtime.  In contrast, deferred locks provide
 unordered atomic semantics, permitting multiple writes to an object and allowing programmers to describe
 properties like serializability without the requirement of ordering.  We are unaware of any feature of
-dataflow implementations that support a similar semantics to deferred locks.
+dataflow language implementations that support a similar semantics to deferred locks.
 
 Reviewer 1 commented that blocking APIs do not necessarily stall processors if there are enough 
 runnable threads to keep the processor busy.  While this is true, the overhead of having many threads
@@ -75,7 +75,7 @@ and P-threads entail too much overhead to leverage this finer-grained task paral
 
 Reviewer 1 and reviewer 5 asked for clarification regarding barriers and the need for a dynamic change
 in arrival count.  In our experiencing writing programs to our runtime system, we've found that
-the number of expected arrivals at a barrier is not known at barrier creation-time (intuitively this
+the number of expected arrivals at a barrier is often not known at barrier creation-time (intuitively this
 is necessary to support nested parallelism in Legion).  To support this paradigm, we added the feature of
 being able to dynamically alter the arrival count.  To implement this feature on the distributed 
 machines we're targetting, we use the well-studied vector clock algorithm from the distributed systems
