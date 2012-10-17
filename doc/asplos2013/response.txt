@@ -1,4 +1,5 @@
-We would like to thank the reviewers for the detailed feedback.  Below we will...
+We would like to thank the reviewers for the detailed feedback.  Below we address
+the comments and questions most frequently raised by the reviewers.
 
 Reviewers 1, 2, and 4 requested clarification of which components of the the API are
 novel and which are similar to prior work.  Although events, locks, barriers, and reductions
@@ -23,21 +24,22 @@ becomes (*3)(V) ).  When multiple reductions are applied to the same value, thes
 can be composed, and it's the commutativity of that composition
 (e.g. [(*3) o (*2)](X) = [(*2) o (*3)](X) for all X) that allows the application of these
 reduction operations to be deferred and reordered.  Nearly all "reasonable" reduction operations
-that one might propose satisfy this form of commutativity.  Most also satisfy our criterion of foldability
+that one might propose satisfy this form of commutativity.  Most reductions also satisfy our criterion of "foldability"
 (e.g. [(*3) o (*2)](X) = (*6)(X) for all X), allowing the use of our reduction fold instances to further
 improve performance in most cases.
 
 Reviewer 1 noted that use "Distributed Architectures" in our title might be confusing.  Our goal was
 to distinguish our implementation from those that are limited to shared-memory systems.  A more
 accurate description would be "Distributed Memory Architectures."  We would be willing to change the 
-title to clarify our meaning if the submission is accepted.
+title to clarify our meaning.
 
-Reviewer 2 noted that OpenCL supports events for asynchronously launching tasks and moving data. 
-As we noted in our related work, OpenCL events are only valid in a single address space (e.g. node),
-whereas our events which are valid in every address space on distributed memory machines.  Furthermore, the
-synchronization primitives in OpenCL do not use events and cannot compose with other operations.
+Reviewer 2 noted that APIs like OpenCL supports events for asynchronously launching tasks and moving data. 
+As we noted in our related work, OpenCL events (and similar constructs in other APIs) are only valid in a 
+single address space (e.g. node), whereas our events which are valid in every address space on 
+distributed memory machines.  Furthermore, the synchronization primitives in APIs like OpenCL do not use 
+events and cannot compose with other operations the way the synchronization mechanisms in our runtime can.
 
-Reviewer 3 expressed doubts about the performance of the Legion version of the applications 
+Reviewer 3 expressed doubts about the performance of the Legion versions of the applications 
 relative to hand-coded applications and whether the applications fit well into the bulk-synchronous model.  
 The fourth citation in our paper [4] (which will appear at Supercomputing 2012) compares these same 
 applications written in Legion to hand-coded reference implementations, and shows the Legion versions outperforming
@@ -66,10 +68,10 @@ runnable threads to keep the processor busy.  While this is true, the overhead o
 to support this kind of computation is high due to the cost of software threads on CPUs.  (On GPUs, threads
 are much lighter-weight, but current programming models do not allow these threads to be suspended.)
 Instead our system provides lighter-weight tasks which the programmer
-can launch at a much finer granularity with incurring the overhead of a thread.  Due to the minimal
-overhead of tasks, programmers can express a much finer granularity of parallelism which the runtime
-can then leverage if there are available hardware resources.  Existing programming systems like MPI
-and P-threads entail too much overhead to leverage this granularity of task-parallelism.
+can launch at a much finer granularity without incurring the overhead of a thread.  Due to the minimal
+overhead of tasks, programmers can express a much finer granularity of parallelism which our runtime
+can then efficiently map onto available hardware resources.  Existing programming systems like MPI, OpenMP,
+and P-threads entail too much overhead to leverage this finer-grained task parallelism.
 
 Reviewer 1 and reviewer 5 asked for clarification regarding barriers and the need for a dynamic change
 in arrival count.  In our experiencing writing programs to our runtime system, we've found that
@@ -80,10 +82,10 @@ machines we're targetting, we use the well-studied vector clock algorithm from t
 literature (see citation [16] for additional details on the semantics and implementation of vector clocks).
 
 Reviewer 1 and reviwer 5 both inquired about how the runtime works with GPUs.  Our runtime uses CUDA to 
-control the GPUs in the cluster.  A GPU is exposed as another kind of processor in our system, and launches
-asynchronous CUDA grids for each task.  GPU memories (framebuffer and zero-copy) are exposed in the same way
-as CPU main memory and the globally accessible "GASNet" memory.  Copies of data between GPU and other
-memories are explicitly requested by the programmer (like all other copies), and are performed with
-asynchronous DMA requests to the CUDA driver.  The CUDA driver provides device events, which are exposed
-in our runtime as general events that allow GPU operations to be composeable as well.
+control the GPUs in the cluster.  A GPU is exposed as another kind of processor in our system, and each task
+launched on a GPU processor results in an asyncrhonous CUDA grid launch.  GPU memories (framebuffer and zero-copy) 
+are exposed in the same way as CPU main memory and the globally accessible "GASNet" memory.  Copies of 
+data between GPU and other memories are explicitly requested by the programmer (like all other copies), 
+and are performed with asynchronous DMA requests to the CUDA driver.  The CUDA driver provides device events, 
+which are exposed in our runtime as general events that allow GPU operations to be composeable as well.
 
