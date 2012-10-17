@@ -5,7 +5,7 @@ Reviewers 1, 2, and 4 requested clarification of which components of the the API
 novel and which are similar to prior work.  Although events, locks, barriers, and reductions
 have appeared in many forms, we believe the following contributions are novel:
   a) the use of generational events to efficiently describe the very large number of dependencies
-that exist in a distributed application
+that exist in a distributed memory application
   b) the deferred lock construct in which access to a critical resource can be mediated without
 blocking operations that can waste execution resources
   c) the ability to modify a barrier's expected arrival count which allows nested task subdivision
@@ -16,7 +16,7 @@ deferred and applied in bulk
   e) the ability to asychronously compose all of these constructs
 
 Reviewers 1 and 5 had several questions about our handling of reductions.  One source of confusion
-was the use of "commutativity".  The traditional use of these terms is limited to binary operations
+was use of the term "commutativity".  One traditional use of this term is limited to binary operations
 in which both the left and right operands are of the same type.  Our implementation allows reductions
 that have different left and right operand types (e.g. scaling of a vector by a scalar) and treats
 each reduction operation as a unary function applied (atomically) to the current value (e.g. V *= 3
@@ -30,7 +30,7 @@ improve performance in most cases.
 
 Reviewer 1 noted that use "Distributed Architectures" in our title might be confusing.  Our goal was
 to distinguish our implementation from those that are limited to shared-memory systems.  A more
-accurate description would be "Distributed Memory Architectures."  We would be willing to change the 
+accurate description would be "Distributed Memory Architectures."  We would be happy to change the 
 title to clarify our meaning.
 
 Reviewer 2 noted that APIs like OpenCL supports events for asynchronously launching tasks and moving data. 
@@ -47,18 +47,25 @@ the existing implementations on larger machine sizes.  All three reference imple
 were written by third parties, were coded in a bulk-synchronous style.  In this paper, we aimed to quantify 
 what portion of that speedup results from the composable, asynchronous nature of our 
 runtime system.  To factor out any performance benefits gained by the Legion programming model 
-independent from our runtime, we compared against bulk-synchronous version of the applications from [4] 
+independent from our runtime, we compared against bulk-synchronous versions of the applications from [4] 
 written in Legion instead of the reference implementations.
+
+Reviewer 3 commented that the experimental sections of the paper failed to evaluate the composability claim
+of the runtime API.  It is unclear to us what kind of experiments would be useful to quantify the composability
+of the API, but we would be open to suggests from the reviewers.  Our argument for compsability is a qualitative
+one, centered around the ability of events to express dependences between all operations supported by the
+runtime: computation, data movement, and synchronization.  As far as we are aware, no other API currently used
+for parallel programming shares this property.
 
 Reviewer 4 requested a comparison to existing dataflow programming models.  A more apt comparison
 for dataflow models would be the Legion programming system which is beyond the scope of this paper.  
-Instead, we view the runtime presented in this paper as orthogonal work to dataflow programming models.   
+Instead, we view the runtime presented in this paper as orthogonal to work on dataflow programming models.   
 The runtime presented here provides a lower-level layer of abstraction that could serve as the 
 foundation for many different dataflow programming systems. 
 
 Reviewer 4 was unsure about the difference between our deferred locks and I-structures from the dataflow
-literature.  I-structures support a producer-consumer, write-once semantics which is much closer
-to the functionality provided by events in our runtime.  In contrast, deferred locks provide
+literature.  I-structures support a producer-consumer, write-once semantics that has some of the
+properties of events in our runtime.  In contrast, deferred locks provide
 unordered atomic semantics, permitting multiple writes to an object and allowing programmers to describe
 properties like serializability without the requirement of ordering.  We are unaware of any feature of
 dataflow language implementations that support a similar semantics to deferred locks.
@@ -74,10 +81,10 @@ can then efficiently map onto available hardware resources.  Existing programmin
 and P-threads entail too much overhead to leverage this finer-grained task parallelism.
 
 Reviewer 1 and reviewer 5 asked for clarification regarding barriers and the need for a dynamic change
-in arrival count.  In our experiencing writing programs to our runtime system, we've found that
+in arrival count.  In our experience, we've found that
 the number of expected arrivals at a barrier is often not known at barrier creation-time (intuitively this
-is necessary to support nested parallelism in Legion).  To support this paradigm, we added the feature of
-being able to dynamically alter the arrival count.  To implement this feature on the distributed 
+is necessary to support nested parallelism in Legion).  To support this paradigm, we added the ability to 
+dynamically alter the arrival count.  To implement this feature on the distributed 
 machines we're targetting, we use the well-studied vector clock algorithm from the distributed systems
 literature (see citation [16] for additional details on the semantics and implementation of vector clocks).
 
