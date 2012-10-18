@@ -33,25 +33,18 @@ unordered atomic semantics, permitting multiple writes to an object and allowing
 properties like serializability without the requirement of ordering.  We are unaware of any feature of
 dataflow language implementations that support a similar semantics to deferred locks.
 
-@@@ Version 1
-Reviewer 3 commented that the experimental sections of the paper failed to evaluate the composability claim
-of the runtime API.  It is unclear to us what kind of experiments would be useful to quantify the composability
-of the API, but we would be open to suggests from the reviewers.  Our argument for composability is a qualitative
-one, centered around the ability of events to express dependences between all operations supported by the
-runtime: computation, data movement, and synchronization.  As far as we are aware, no other API currently used
-for parallel programming shares this property.
-
-@@@ Version 2
 Reviewer 3 had concerns related to the composability of the constructs and the performance benefits of that
-composability.  They key to the composability of our constructs is the event object.  Every operation in
-our API (task launch, barrier arrival, lock request/release, data copy) accepts an event as a 'wait_for'
-parameter, allowing that action to be deferred until some the provided event has occurred.  Every operation
-provides, either directly or indirectly, an event that indicates when that operation has been completed.  By
-linking operations together with events, a task can create an arbitrary dependency graph of operations to be
-executed by the runtime, all asynchronously to the execution of the original task.  As clarified above, our results
-section demonstrates that this decoupling of the dependency graph from the original requesting thread provides
-significant speedup for applications written in Legion, especially for larger cluster sizes where the number of 
-tasks and the latency of communication grow.
+composability.  They key to the composability of our constructs is the event object.  Unlike other 
+parallel programming APIs, every operation in
+our API (task launch, barrier arrival, lock/unlock, data copy) accepts an event as a 'wait_for'
+parameter, causing that action to be deferred until the specified event has occurred.  With the exception of
+'unlock' which completes immediately, every operation provides an event that indicates when that operation has been completed.  By
+linking operations together with events, an arbitrary dependency graph of operations can be created and executed by the runtime
+with no further interaction with the requesting task.  Without the composability of operations provided by events this would 
+not be possible.  As our experimental results
+demonstrate, this decoupling of the dependency graph from the original requesting task provides
+significant speedup for applications written in Legion, especially when scaling to larger cluster sizes 
+with increased communication latency.
 
 Reviewer 2 noted that APIs like OpenCL supports events for asynchronously launching tasks and moving data. 
 As we noted in our related work, OpenCL events (and similar constructs in other APIs) are only valid in a 
