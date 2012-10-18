@@ -16,7 +16,8 @@ deferred and applied in bulk
   e) the ability to asynchronously compose all of these constructs
 
 Reviewer 3 expressed doubts about the performance of the Legion versions of the applications 
-relative to hand-coded applications and whether the applications fit well into the bulk-synchronous model.  
+relative to hand-coded applications and whether bulk-synchronous implementations were appropriate 
+for those applications.
 The fourth citation in our paper [4] (which will appear at Supercomputing 2012) compares these same 
 applications written in Legion to hand-coded reference implementations, and shows the Legion versions outperforming
 the existing implementations on larger machine sizes.  All three reference implementations, two of which
@@ -35,31 +36,30 @@ dataflow language implementations that support a similar semantics to deferred l
 
 Reviewer 3 had concerns related to the composability of the constructs and the performance benefits of that
 composability.  They key to the composability of our constructs is the event object.  Unlike other 
-parallel programming APIs, every operation in
-our API (task launch, barrier arrival, lock/unlock, data copy) accepts an event as a 'wait_for'
-parameter, causing that action to be deferred until the specified event has occurred.  With the exception of
-'unlock' which completes immediately, every operation provides an event that indicates when that operation has been completed.  By
-linking operations together with events, an arbitrary dependency graph of operations can be created and executed by the runtime
-with no further interaction with the requesting task.  Without the composability of operations provided by events this would 
-not be possible.  As our experimental results
-demonstrate, this decoupling of the dependency graph from the original requesting task provides
-significant speedup for applications written in Legion, especially when scaling to larger cluster sizes 
-with increased communication latency.
+parallel programming APIs, every operation in our API (task launch, barrier arrival, lock/unlock, data copy)
+accepts an event as a 'wait_for' parameter, causing that action to be deferred until the specified event has
+occurred.  With the exception of 'unlock' which completes immediately, every operation also provides an event
+that indicates when that operation has been completed.  By linking operations together with events, an arbitrary
+dependency graph of operations can be created and then executed by the runtime with no further interaction with
+the requesting task.  Without the composability of operations provided by events this would not be possible.
+As our experimental results demonstrate, this decoupling of the dependency graph from the original requesting
+task provides significant speedup for applications written in Legion, especially when scaling to larger cluster
+sizes with increased communication latency.
 
 Reviewer 2 noted that APIs like OpenCL supports events for asynchronously launching tasks and moving data. 
 As we noted in our related work, OpenCL events (and similar constructs in other APIs) are only valid in a 
 single address space (e.g. node), whereas our events are valid in every address space on 
 distributed memory machines.  Furthermore, the synchronization primitives in APIs like OpenCL do not use 
-events and consequently cannot compose with other operations the way the synchronization mechanisms in our runtime can.
+events and consequently cannot compose with other operations the way the synchronization mechanisms in
+our runtime can.
 
-Reviewers 1 and 5 asked for clarification regarding barriers and the need for a dynamic change
-in arrival count.  In programming models that support nested parallelism,
-the number of expected arrivals at a barrier is often not known at barrier creation-time.
-To allow tasks to be dynamically subdivided, we added the ability to 
-alter the arrival count after the barrier has been created.  We use the well-studied vector 
-clock algorithm from the distributed systems literature to
-ensure that every node has observed all barrier alterations before completing the barrier, 
-eliminating race conditions between alterations to and arrivals at the barrier.
+Reviewers 1 and 5 asked for clarification regarding barriers and the need for dynamic changes
+to a barrier's arrival count.  In programming models that support nested parallelism,
+the number of expected arrivals at a barrier is often not known at the time the barrier is created.
+To allow tasks to be dynamically subdivided, we added the ability to alter the arrival count after
+the barrier has been created.  We use the well-studied vector clock algorithm from the distributed
+systems literature to ensure that every node has observed all barrier alterations before completing
+the barrier, eliminating race conditions between alterations to and arrivals at the barrier.
 (See citation [16] for additional details on the semantics and implementation of vector clocks.)
 
 Reviewers 1 and 5 had several questions about our handling of reductions.  One source of confusion
@@ -71,9 +71,9 @@ becomes (*3)(V) ).  When multiple reductions are applied to the same value, thes
 can be composed, and it's the commutativity of that composition
 (e.g. [(*3) o (*2)](X) = [(*2) o (*3)](X) for all X) that allows the application of these
 reduction operations to be deferred and reordered.  Nearly all "reasonable" reduction operations
-that one might propose satisfy this form of commutativity.  Most reductions also satisfy our criterion of "foldability"
-(e.g. [(*3) o (*2)](X) = (*6)(X) for all X), allowing the use of our reduction fold instances to further
-improve performance in most cases.
+that one might propose satisfy this form of commutativity.  Most reductions also satisfy our criterion of
+"foldability" (e.g. [(*3) o (*2)](X) = (*6)(X) for all X), allowing the use of our reduction fold
+instances to further improve performance in most cases.
 
 Reviewer 1 commented that blocking APIs do not necessarily stall processors if there are enough 
 runnable threads to keep the processor busy.  While this is true, the overhead of having many threads
