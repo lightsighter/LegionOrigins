@@ -722,8 +722,8 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
   RegionRuntime::LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
   int position = 0, length = 0;
   while (enabled->get_next(position, length)) {
-    for (unsigned field = 0; field < NDIMS*2; field++) {
-      for (int index = position; index < position + length; index++) {
+    for (int index = position; index < position + length; index++) {
+      for (unsigned field = 0; field < NDIMS*2; field++) {
         accessor[field].write(ptr_t<double>(index), 0.0);
       }
     }
