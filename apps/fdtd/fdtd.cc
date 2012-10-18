@@ -83,6 +83,7 @@ enum {
   TOP_LEVEL_TASK,
   MAIN_TASK,
   INIT_TASK,
+  STEP_TASK,
 };
 
 const double DEFAULT_S = 1.0, DEFAULT_A = 10.0;
@@ -99,11 +100,6 @@ struct MainArgs {
   unsigned nbx, nby, nbz;
   // Number of cells.
   unsigned nx, ny, nz;
-  // Index and field spaces.
-  IndexSpace ispace;
-  FieldSpace fspace;
-  // Region containing data for each cell.
-  LogicalRegion cells;
 };
 
 static inline unsigned block_id(unsigned bx, unsigned by, unsigned bz,
@@ -337,17 +333,17 @@ private:
   const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
 };
 
-void top_level_task(const void *, size_t,
-		    const std::vector<RegionRequirement> &,
-		    const std::vector<PhysicalRegion> &,
+// Shell task creates top-level regions needed in the main
+// task. Needed because the Legion runtime currently can't create a
+// region and use it in the same task.
+void top_level_task(const void * /* input_args */, size_t /* input_arglen */,
+		    const std::vector<RegionRequirement> & /* reqs */,
+		    const std::vector<PhysicalRegion> & /* regions */,
 		    Context ctx, HighLevelRuntime *runtime) {
   MainArgs args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
   unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
   unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
-  IndexSpace &ispace = args.ispace;
-  FieldSpace &fspace = args.fspace;
-  LogicalRegion &cells = args.cells;
 
   InputArgs input_args = HighLevelRuntime::get_input_args();
   int argc = input_args.argc;
@@ -389,9 +385,9 @@ void top_level_task(const void *, size_t,
   nz = (unsigned)(sz*a + 0.5);
 
   // Create index and field spaces and logical region for cells.
-  ispace = runtime->create_index_space(ctx, (nx + 2)*(ny + 2)*(nz + 2));
-  fspace = runtime->create_field_space(ctx);
-  cells = runtime->create_logical_region(ctx, ispace, fspace);
+  IndexSpace ispace = runtime->create_index_space(ctx, (nx + 2)*(ny + 2)*(nz + 2));
+  FieldSpace fspace = runtime->create_field_space(ctx);
+  LogicalRegion cells = runtime->create_logical_region(ctx, ispace, fspace);
 
   std::vector<IndexSpaceRequirement> indexes;
   indexes.push_back(IndexSpaceRequirement(ispace, ALLOCABLE, ispace));
@@ -411,18 +407,20 @@ void top_level_task(const void *, size_t,
                         TaskArgument(&args, sizeof(MainArgs)));
 }
 
+// Simulation setup and main loop.
 void main_task(const void *input_args, size_t input_arglen,
-               const std::vector<RegionRequirement> &reqs,
+               const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
   MainArgs &args = *(MainArgs *)input_args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
   unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
   unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
-  IndexSpace &ispace = args.ispace;
-  FieldSpace &fspace = args.fspace;
 
   // Don't actually read or write any data in this task.
+  LogicalRegion cells = regions[0].get_logical_region();
+  IndexSpace ispace = cells.get_index_space();
+  FieldSpace fspace = cells.get_field_space();
   runtime->unmap_region(ctx, regions[0]);
 
   printf("+---------------------------------------------+\n");
@@ -501,7 +499,7 @@ void main_task(const void *input_args, size_t input_arglen,
   runtime->create_index_allocator(ctx, owned_colors).alloc(nbx*nby*nbz + 1);
   OwnedBlockColoring owned_coloring(nx, ny, nz, x_divs, y_divs, z_divs);
   IndexPartition owned_indices = runtime->create_index_partition(ctx, ispace, owned_colors, owned_coloring);
-  LogicalPartition owned_partition = runtime->get_logical_partition(ctx, args.cells, owned_indices);
+  LogicalPartition owned_partition = runtime->get_logical_partition(ctx, cells, owned_indices);
 
   // Partition blocks into sub-blocks.
   IndexSpace ghost_colors = runtime->create_index_space(ctx, NUM_GHOST_COLORS);
@@ -622,7 +620,7 @@ void main_task(const void *input_args, size_t input_arglen,
 
     std::vector<RegionRequirement> regions;
     regions.push_back(RegionRequirement(owned_partition, 0, priveledge_fields, instance_fields,
-                                        WRITE_ONLY, EXCLUSIVE, args.cells));
+                                        WRITE_ONLY, EXCLUSIVE, cells));
 
 
     ArgumentMap arg_map = runtime->create_argument_map(ctx);
@@ -651,12 +649,13 @@ void main_task(const void *input_args, size_t input_arglen,
 
 }
 
-void init_task(const void *, size_t,
-               const void *, size_t,
-               const unsigned point[1],
-               const std::vector<RegionRequirement> &,
+// Walks all cells in a given region and sets all components to zero.
+void init_task(const void * /* input_global_args */, size_t /* input_global_arglen */,
+               const void * /* input_local_args */, size_t /* input_local_arglen */,
+               const unsigned /* point */ [1],
+               const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
-               Context ctx, HighLevelRuntime *runtime) {
+               Context ctx, HighLevelRuntime * /* runtime */) {
   PhysicalRegion cells = regions[0];
 
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> accessor = cells.get_accessor<AccessorGeneric>();
@@ -672,6 +671,18 @@ void init_task(const void *, size_t,
   }
 }
 
+void step_task(const void *input_global_args, size_t input_global_arglen,
+               const void *input_local_args, size_t input_local_arglent,
+               const unsigned /* point */ [1],
+               const std::vector<RegionRequirement> & /* reqs */,
+               const std::vector<PhysicalRegion> &regions,
+               Context ctx, HighLevelRuntime *runtime) {
+  PhysicalRegion cells = regions[0];
+
+  unsigned x_min = 0, x_max = 0, y_min = 0, y_max = 0, z_min = 0, z_max = 0;
+  printf("Step for %d..%d x %d..%d x %d..%d\n", x_min, x_max, y_min, y_max, z_min, z_max);
+}
+
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     Processor local) {
   // TODO(Elliott): Customize mappers
@@ -683,6 +694,7 @@ int main(int argc, char **argv) {
   HighLevelRuntime::register_single_task<top_level_task>(TOP_LEVEL_TASK, Processor::LOC_PROC, false, "top_level_task");
   HighLevelRuntime::register_single_task<main_task>(MAIN_TASK, Processor::LOC_PROC, false, "main_task");
   HighLevelRuntime::register_index_task<unsigned, 1, init_task>(INIT_TASK, Processor::LOC_PROC, false, "init_task");
+  HighLevelRuntime::register_index_task<unsigned, 1, init_task>(STEP_TASK, Processor::LOC_PROC, false, "step_task");
 
   return HighLevelRuntime::start(argc, argv);
 }
