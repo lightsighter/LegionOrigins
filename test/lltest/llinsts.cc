@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stddef.h>
 
 #include <lowlevel.h>
 
@@ -66,6 +67,12 @@ void toplevel_task(const void * args, size_t arglen, Processor p)
   i.copy(r1, r2, sizeof(Vec4));
 
   dump_idx<Vec4>("v3", ra2, p0);
+
+  RegionAccessor<AccessorGeneric> raf2 = ra2.get_field_accessor(offsetof(Vec4, c), sizeof(Vec4::c));
+
+  dump_idx<int>("v3f", raf2, p0);
+  dump_idx<int>("v3f", raf2, p1);
+  dump_idx<int>("v3f", raf2, p2);
 
   RegionInstance r3 = i.create_instance(m, sizeof(int));
   RegionAccessor<AccessorGeneric> ra3 = r3.get_accessor();

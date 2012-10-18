@@ -2720,16 +2720,29 @@ namespace RegionRuntime {
       }
     }
 
-    void RegionAccessor<AccessorGeneric>::get_untyped(off_t byte_offset, void *dst, size_t size) const
+    void RegionAccessor<AccessorGeneric>::get_untyped(int index, off_t byte_offset, void *dst, size_t size) const
     {
-      const char *src = (const char*)(((RegionInstance::Impl *)internal_data)->get_base_ptr());
-      memcpy(dst, src+byte_offset, size);
+      RegionInstance::Impl *impl = (RegionInstance::Impl *) internal_data;
+      const char *src = (const char *)(impl->get_base_ptr());
+      src += index * impl->get_elmt_size();
+      src += field_offset;
+      src += byte_offset;
+      memcpy(dst, src, size);
     }
 
-    void RegionAccessor<AccessorGeneric>::put_untyped(off_t byte_offset, const void *src, size_t size) const
+    void RegionAccessor<AccessorGeneric>::put_untyped(int index, off_t byte_offset, const void *src, size_t size) const
     {
-      char *dst = (char*)(((RegionInstance::Impl *)internal_data)->get_base_ptr());
-      memcpy(dst+byte_offset, src, size);
+      RegionInstance::Impl *impl = (RegionInstance::Impl *) internal_data;
+      char *dst = (char *)(impl->get_base_ptr());
+      dst += index * impl->get_elmt_size();
+      dst += field_offset;
+      dst += byte_offset;
+      memcpy(dst, src, size);
+    }
+
+    RegionAccessor<AccessorGeneric> RegionAccessor<AccessorGeneric>::get_field_accessor(off_t offset, size_t size) const
+    {
+      return RegionAccessor<AccessorGeneric>(internal_data, field_offset + offset);
     }
 
     // Acessor Generic (can convert)

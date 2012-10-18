@@ -400,13 +400,13 @@ namespace RegionRuntime {
     template <> class RegionAccessor<AccessorGeneric> {
     public:
       explicit RegionAccessor(void)
-        : internal_data(NULL) {}
-      explicit RegionAccessor(void *_internal_data)
-	: internal_data(_internal_data) {}
+        : internal_data(NULL), field_offset(0) {}
+      explicit RegionAccessor(void *_internal_data, off_t _field_offset = 0)
+	: internal_data(_internal_data), field_offset(_field_offset) {}
 
       // Need copy constructors so we can move things around
       RegionAccessor(const RegionAccessor<AccessorGeneric> &old)
-      { internal_data = old.internal_data; }
+	: internal_data(old.internal_data), field_offset(old.field_offset) {}
 
       bool operator<(const RegionAccessor<AccessorGeneric> &rhs) const
       { return internal_data < rhs.internal_data; }
@@ -416,12 +416,13 @@ namespace RegionRuntime {
       { return internal_data != rhs.internal_data; }
 
       void *internal_data;
+      off_t field_offset;
 
 #ifdef POINTER_CHECKS
       void verify_access(unsigned ptr) const;
 #endif
-      void get_untyped(off_t byte_offset, void *dst, size_t size) const;
-      void put_untyped(off_t byte_offset, const void *src, size_t size) const;
+      void get_untyped(int index, off_t byte_offset, void *dst, size_t size) const;
+      void put_untyped(int index, off_t byte_offset, const void *src, size_t size) const;
 
       template <class T>
       T read(ptr_t<T> ptr) const
@@ -430,7 +431,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS
           verify_access(ptr.value);
 #endif
-	  T val; get_untyped(ptr.value*sizeof(T), &val, sizeof(T)); return val;
+	  T val; get_untyped(ptr.value, 0, &val, sizeof(T)); return val;
 	}
 
       template <class T>
@@ -439,7 +440,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS
           verify_access(ptr.value);
 #endif
-	  get_untyped(ptr.value*sizeof(T) + offset, dst, size);
+	  get_untyped(ptr.value, offset, dst, size);
 	}
 
       template <class T>
@@ -449,7 +450,7 @@ namespace RegionRuntime {
           verify_access(ptr.value);
 #endif
 	  assert(!is_reduction_only());
-	  put_untyped(ptr.value*sizeof(T), &newval, sizeof(T));
+	  put_untyped(ptr.value, 0, &newval, sizeof(T));
 	}
 
       template <class T>
@@ -458,7 +459,7 @@ namespace RegionRuntime {
 #ifdef POINTER_CHECKS
           verify_access(ptr.value);
 #endif
-	  put_untyped(ptr.value*sizeof(T) + offset, src, size);
+	  put_untyped(ptr.value, offset, src, size);
 	}
 
       template <class REDOP, class T, class RHS>
@@ -469,14 +470,14 @@ namespace RegionRuntime {
 #endif
   	  if(is_reduction_only()) {
 	    RHS val; 
-	    get_untyped(ptr.value*sizeof(RHS), &val, sizeof(RHS));
+	    get_untyped(ptr.value, 0, &val, sizeof(RHS));
 	    REDOP::template fold<true>(val, newval); // made our own copy, so 'exclusive'
-	    put_untyped(ptr.value*sizeof(RHS), &val, sizeof(RHS));
+	    put_untyped(ptr.value, 0, &val, sizeof(RHS));
 	  } else {
 	    T val; 
-	    get_untyped(ptr.value*sizeof(T), &val, sizeof(T));
+	    get_untyped(ptr.value, 0, &val, sizeof(T));
 	    REDOP::template apply<true>(val, newval); // made our own copy, so 'exclusive'
-	    put_untyped(ptr.value*sizeof(T), &val, sizeof(T));
+	    put_untyped(ptr.value, 0, &val, sizeof(T));
 	  }
 	}
 
@@ -485,6 +486,8 @@ namespace RegionRuntime {
 
       template <AccessorType AT2>
       RegionAccessor<AT2> convert(void) const;
+
+      RegionAccessor<AccessorGeneric> get_field_accessor(off_t offset, size_t size) const;
 
     protected:
       bool is_reduction_only(void) const;
