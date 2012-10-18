@@ -10,7 +10,7 @@ that exist in a distributed memory application
 blocking operations that can waste execution resources
   c) the ability to modify a barrier's expected arrival count which allows nested task subdivision
 without requiring a parent task to explicitly wait for subtasks to finish
-  d) a general treatment of reductions that allows arbitrary reduction operations and improved
+  d) a general treatment of reductions that permits arbitrary reduction operations and improved
 efficiency through specialized reduction instances that allow individual reduction operations to be
 deferred and applied in bulk
   e) the ability to asynchronously compose all of these constructs
@@ -46,7 +46,7 @@ As our experimental results demonstrate, this decoupling of the dependency graph
 task provides significant speedup for applications written in Legion, especially when scaling to larger cluster
 sizes with increased communication latency.
 
-Reviewer 2 noted that APIs like OpenCL supports events for asynchronously launching tasks and moving data. 
+Reviewer 2 noted that APIs like OpenCL support events for asynchronously launching tasks and moving data. 
 As we noted in our related work, OpenCL events (and similar constructs in other APIs) are only valid in a 
 single address space (e.g. node), whereas our events are valid in every address space on 
 distributed memory machines.  Furthermore, the synchronization primitives in APIs like OpenCL do not use 
@@ -83,11 +83,11 @@ This cost is magnified by a programmer's need to conservatively create new threa
 call might block.  Failing to do this can result in performance loss from the serialization of 
 independent subtasks that are launched from the same parent task.
 
-Reviewer 4 requested a comparison to existing dataflow programming models.  A more apt comparison
-for dataflow models would be the Legion programming system which is beyond the scope of this paper.  
+Reviewer 4 requested a comparison to existing dataflow programming models.  A more apt comparison for
+dataflow models would be the higher-level Legion programming system which is beyond the scope of this paper.  
 Instead, we view the runtime presented in this paper as orthogonal to work on dataflow programming models. 
-The runtime presented here provides a lower-level layer of abstraction that could serve as the 
-foundation for many different dataflow programming systems. 
+The runtime presented here provides a lower-level layer of abstraction that can serve as the basis for
+implementing systems with deferred execution, potentially including dataflow systems.
 
 Reviewer 1 noted that use "Distributed Architectures" in our title might be confusing.  Our goal was
 to distinguish our implementation from those that are limited to shared-memory systems.  A more
