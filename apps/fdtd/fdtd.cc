@@ -83,6 +83,7 @@ enum {
   TOP_LEVEL_TASK,
   MAIN_TASK,
   INIT_TASK,
+  STEP_TASK,
 };
 
 const double DEFAULT_S = 1.0, DEFAULT_A = 10.0;
@@ -99,11 +100,6 @@ struct MainArgs {
   unsigned nbx, nby, nbz;
   // Number of cells.
   unsigned nx, ny, nz;
-  // Index and field spaces.
-  IndexSpace ispace;
-  FieldSpace fspace;
-  // Region containing data for each cell.
-  LogicalRegion cells;
 };
 
 static inline unsigned block_id(unsigned bx, unsigned by, unsigned bz,
@@ -120,10 +116,12 @@ static inline unsigned cell_id(unsigned x, unsigned y, unsigned z,
   return (x*(ny + 2) + y)*(nz + 2) + z;
 }
 
+////////////////////////////////////////////////////////////////////////
 // Colors the cells owned by each block. The grid is surrounded by a
 // one cell wide border owned by no blocks, but which is necessary for
 // ghost cells. Each block will then be further sub-divided; see
 // below.
+////////////////////////////////////////////////////////////////////////
 class OwnedBlockColoring : public ColoringFunctor {
 public:
   OwnedBlockColoring(unsigned nx, unsigned ny, unsigned nz,
@@ -216,12 +214,12 @@ private:
   const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
 };
 
-enum dimension_t {
+enum dim_t {
   DIM_X,
   DIM_Y,
   DIM_Z,
 };
-const unsigned NUM_DIMENSIONS = 3; // Must equal number of entries in above enum.
+const unsigned NDIMS = 3; // Must equal number of entries in above enum.
 
 enum ghost_t {
   COLOR_NEGATIVE,
@@ -230,14 +228,16 @@ enum ghost_t {
 };
 const unsigned NUM_GHOST_COLORS = 3; // Must equal number of entries in above enum.
 
+////////////////////////////////////////////////////////////////////////
 // Colors each block into three pieces, one of which is not shared any
 // other blocks (along this axis), one is shared with the block in the
 // positive direction (along this axis), and one is shared with the
 // negative direction. Each block will be split this way three times
 // to contruct the ghost cells needed in the computation.
+////////////////////////////////////////////////////////////////////////
 class GhostBlockColoring : public ColoringFunctor {
 public:
-  GhostBlockColoring(dimension_t dim, unsigned nx, unsigned ny, unsigned nz,
+  GhostBlockColoring(dim_t dim, unsigned nx, unsigned ny, unsigned nz,
                      std::pair<unsigned, unsigned> x_span,
                      std::pair<unsigned, unsigned> y_span,
                      std::pair<unsigned, unsigned> z_span)
@@ -275,7 +275,7 @@ public:
   }
 
 private:
-  const dimension_t dim;
+  const dim_t dim;
   const unsigned nx, ny, nz;
   const std::pair<unsigned, unsigned> x_span, y_span, z_span;
 };
@@ -290,8 +290,10 @@ static inline unsigned find_block_containing(unsigned x, const std::vector<std::
   return -1;
 }
 
+////////////////////////////////////////////////////////////////////////
 // Colors the outer border of padding cells used to avoid special
 // logic in the math kernels.
+////////////////////////////////////////////////////////////////////////
 class BorderColoring : public ColoringFunctor {
 public:
   BorderColoring(unsigned nx, unsigned ny, unsigned nz,
@@ -306,7 +308,7 @@ public:
                                 std::map<Color,ColoredPoints<unsigned> > &coloring) {
     unsigned nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
-    for (unsigned id = 0; id < nbx*nby*nbz*NUM_DIMENSIONS; id++) {
+    for (unsigned id = 0; id < nbx*nby*nbz*NDIMS; id++) {
       coloring[id] = ColoredPoints<unsigned>();
     }
 
@@ -320,11 +322,11 @@ public:
             continue;
           }
 
-          dimension_t direction = (x0 || xn ? DIM_X : (y0 || yn ? DIM_Y : (z0 || zn ? DIM_Z : (assert(0), DIM_X))));
+          dim_t direction = (x0 || xn ? DIM_X : (y0 || yn ? DIM_Y : (z0 || zn ? DIM_Z : (assert(0), DIM_X))));
           unsigned bx = (x0 ? 0 : (xn ? nbx - 1 : find_block_containing(x, x_divs)));
           unsigned by = (y0 ? 0 : (yn ? nby - 1 : find_block_containing(y, y_divs)));
           unsigned bz = (z0 ? 0 : (zn ? nbz - 1 : find_block_containing(z, z_divs)));
-          unsigned color = block_id(bx, by, bz, nbx, nby, nbz)*NUM_DIMENSIONS + direction;
+          unsigned color = block_id(bx, by, bz, nbx, nby, nbz)*NDIMS + direction;
 
           coloring[color].points.insert(cell_id(x, y, z, nx, ny, nz));
         }
@@ -337,17 +339,19 @@ private:
   const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
 };
 
-void top_level_task(const void *, size_t,
-		    const std::vector<RegionRequirement> &,
-		    const std::vector<PhysicalRegion> &,
+////////////////////////////////////////////////////////////////////////
+// Shell task creates top-level regions needed in the main
+// task. Needed because the Legion runtime currently can't create a
+// region and use it in the same task.
+////////////////////////////////////////////////////////////////////////
+void top_level_task(const void * /* input_args */, size_t /* input_arglen */,
+		    const std::vector<RegionRequirement> & /* reqs */,
+		    const std::vector<PhysicalRegion> & /* regions */,
 		    Context ctx, HighLevelRuntime *runtime) {
   MainArgs args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
   unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
   unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
-  IndexSpace &ispace = args.ispace;
-  FieldSpace &fspace = args.fspace;
-  LogicalRegion &cells = args.cells;
 
   InputArgs input_args = HighLevelRuntime::get_input_args();
   int argc = input_args.argc;
@@ -389,9 +393,9 @@ void top_level_task(const void *, size_t,
   nz = (unsigned)(sz*a + 0.5);
 
   // Create index and field spaces and logical region for cells.
-  ispace = runtime->create_index_space(ctx, (nx + 2)*(ny + 2)*(nz + 2));
-  fspace = runtime->create_field_space(ctx);
-  cells = runtime->create_logical_region(ctx, ispace, fspace);
+  IndexSpace ispace = runtime->create_index_space(ctx, (nx + 2)*(ny + 2)*(nz + 2));
+  FieldSpace fspace = runtime->create_field_space(ctx);
+  LogicalRegion cells = runtime->create_logical_region(ctx, ispace, fspace);
 
   std::vector<IndexSpaceRequirement> indexes;
   indexes.push_back(IndexSpaceRequirement(ispace, ALLOCABLE, ispace));
@@ -411,18 +415,22 @@ void top_level_task(const void *, size_t,
                         TaskArgument(&args, sizeof(MainArgs)));
 }
 
+////////////////////////////////////////////////////////////////////////
+// Simulation setup and main loop.
+////////////////////////////////////////////////////////////////////////
 void main_task(const void *input_args, size_t input_arglen,
-               const std::vector<RegionRequirement> &reqs,
+               const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
   MainArgs &args = *(MainArgs *)input_args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
   unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
   unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
-  IndexSpace &ispace = args.ispace;
-  FieldSpace &fspace = args.fspace;
 
   // Don't actually read or write any data in this task.
+  LogicalRegion cells = regions[0].get_logical_region();
+  IndexSpace ispace = cells.get_index_space();
+  FieldSpace fspace = cells.get_field_space();
   runtime->unmap_region(ctx, regions[0]);
 
   printf("+---------------------------------------------+\n");
@@ -436,12 +444,13 @@ void main_task(const void *input_args, size_t input_arglen,
 
   // Allocate fields and indices.
   FieldAllocator field_alloc = runtime->create_field_allocator(ctx, fspace);
-  FieldID field_ex = field_alloc.allocate_field(sizeof(double));
-  FieldID field_ey = field_alloc.allocate_field(sizeof(double));
-  FieldID field_ez = field_alloc.allocate_field(sizeof(double));
-  FieldID field_hx = field_alloc.allocate_field(sizeof(double));
-  FieldID field_hy = field_alloc.allocate_field(sizeof(double));
-  FieldID field_hz = field_alloc.allocate_field(sizeof(double));
+  FieldID field_e[NDIMS], field_h[NDIMS];
+  field_e[DIM_X] = field_alloc.allocate_field(sizeof(double));
+  field_e[DIM_Y] = field_alloc.allocate_field(sizeof(double));
+  field_e[DIM_Z] = field_alloc.allocate_field(sizeof(double));
+  field_h[DIM_X] = field_alloc.allocate_field(sizeof(double));
+  field_h[DIM_Y] = field_alloc.allocate_field(sizeof(double));
+  field_h[DIM_Z] = field_alloc.allocate_field(sizeof(double));
 
   IndexAllocator alloc = runtime->create_index_allocator(ctx, ispace);
   alloc.alloc((nx + 2)*(ny + 2)*(nz + 2));
@@ -501,7 +510,7 @@ void main_task(const void *input_args, size_t input_arglen,
   runtime->create_index_allocator(ctx, owned_colors).alloc(nbx*nby*nbz + 1);
   OwnedBlockColoring owned_coloring(nx, ny, nz, x_divs, y_divs, z_divs);
   IndexPartition owned_indices = runtime->create_index_partition(ctx, ispace, owned_colors, owned_coloring);
-  LogicalPartition owned_partition = runtime->get_logical_partition(ctx, args.cells, owned_indices);
+  LogicalPartition owned_partition = runtime->get_logical_partition(ctx, cells, owned_indices);
 
   // Partition blocks into sub-blocks.
   IndexSpace ghost_colors = runtime->create_index_space(ctx, NUM_GHOST_COLORS);
@@ -564,8 +573,8 @@ void main_task(const void *input_args, size_t input_arglen,
   }
 
   // Partition border cells.
-  IndexSpace border_colors = runtime->create_index_space(ctx, nbx*nby*nbz*NUM_DIMENSIONS);
-  runtime->create_index_allocator(ctx, border_colors).alloc(nbx*nby*nbz*NUM_DIMENSIONS);
+  IndexSpace border_colors = runtime->create_index_space(ctx, nbx*nby*nbz*NDIMS);
+  runtime->create_index_allocator(ctx, border_colors).alloc(nbx*nby*nbz*NDIMS);
   unsigned border_id = border_block_id(nbx, nby, nbz);
   LogicalRegion border_region = runtime->get_logical_subregion_by_color(ctx, owned_partition, border_id);
   IndexSpace border_ispace = runtime->get_index_subspace(ctx, owned_indices, border_id);
@@ -585,13 +594,13 @@ void main_task(const void *input_args, size_t input_arglen,
 
         unsigned id = block_id(bx, by, bz, nbx, nby, nbz);
         if (bx0 || bxn) {
-          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NUM_DIMENSIONS + DIM_X));
+          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NDIMS + DIM_X));
         }
         if (by0 || byn) {
-          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NUM_DIMENSIONS + DIM_Y));
+          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NDIMS + DIM_Y));
         }
         if (bz0 || bzn) {
-          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NUM_DIMENSIONS + DIM_Z));
+          ghost_blocks[id].push_back(runtime->get_logical_subregion_by_color(ctx, border_partition, id*NDIMS + DIM_Z));
         }
       }
     }
@@ -605,31 +614,17 @@ void main_task(const void *input_args, size_t input_arglen,
     std::vector<FieldSpaceRequirement> fields;
     fields.push_back(FieldSpaceRequirement(fspace, NO_MEMORY));
 
-    std::set<FieldID> priveledge_fields;
-    priveledge_fields.insert(field_ex);
-    priveledge_fields.insert(field_ey);
-    priveledge_fields.insert(field_ez);
-    priveledge_fields.insert(field_hx);
-    priveledge_fields.insert(field_hy);
-    priveledge_fields.insert(field_hz);
     std::vector<FieldID> instance_fields;
-    instance_fields.push_back(field_ex);
-    instance_fields.push_back(field_ey);
-    instance_fields.push_back(field_ez);
-    instance_fields.push_back(field_hx);
-    instance_fields.push_back(field_hy);
-    instance_fields.push_back(field_hz);
+    instance_fields.insert(instance_fields.end(), field_e, field_e + NDIMS);
+    instance_fields.insert(instance_fields.end(), field_h, field_h + NDIMS);
+    std::set<FieldID> priveledge_fields (instance_fields.begin(), instance_fields.end());
 
     std::vector<RegionRequirement> regions;
     regions.push_back(RegionRequirement(owned_partition, 0, priveledge_fields, instance_fields,
-                                        WRITE_ONLY, EXCLUSIVE, args.cells));
+                                        WRITE_ONLY, EXCLUSIVE, cells));
 
 
     ArgumentMap arg_map = runtime->create_argument_map(ctx);
-    for (unsigned i = 0; i < nbx*nby*nbz + 1; i++) {
-      unsigned point[1] = {i};
-      arg_map.set_point_arg<unsigned, 1>(point, TaskArgument(NULL, 0));
-    }
     FutureMap f =
       runtime->execute_index_space(ctx, INIT_TASK, owned_colors, indexes, fields, regions,
                                    TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false);
@@ -642,6 +637,35 @@ void main_task(const void *input_args, size_t input_arglen,
   RegionRuntime::DetailedTimer::clear_timers();
 
   // TODO (Elliott): Main loop
+  // FIXME (Elliott): Figure out the real timestep here
+  unsigned timesteps = 10;
+  std::vector<FutureMap> fs;
+  for (unsigned ts = 0; ts < timesteps; ts++) {
+    std::vector<IndexSpaceRequirement> indexes;
+    indexes.push_back(IndexSpaceRequirement(ispace, NO_MEMORY, ispace));
+
+    std::vector<FieldSpaceRequirement> fields;
+    fields.push_back(FieldSpaceRequirement(fspace, NO_MEMORY));
+
+    for (unsigned dim = 0; dim < NDIMS; dim++) {
+      std::vector<FieldID> instance_fields;
+      instance_fields.push_back(field_e[dim]);
+      std::set<FieldID> priveledge_fields(instance_fields.begin(), instance_fields.end());
+
+      std::vector<RegionRequirement> regions;
+      regions.push_back(RegionRequirement(owned_partition, 0, priveledge_fields, instance_fields,
+                                          READ_WRITE, EXCLUSIVE, cells));
+
+      ArgumentMap arg_map = runtime->create_argument_map(ctx);
+      fs.push_back(runtime->execute_index_space(ctx, STEP_TASK, owned_colors, indexes, fields, regions,
+                                                TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false));
+    }
+  }
+
+  while(!fs.empty()) {
+    fs.back().wait_all_results();
+    fs.pop_back();
+  }
 
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
@@ -651,12 +675,16 @@ void main_task(const void *input_args, size_t input_arglen,
 
 }
 
-void init_task(const void *, size_t,
-               const void *, size_t,
-               const unsigned point[1],
-               const std::vector<RegionRequirement> &,
+////////////////////////////////////////////////////////////////////////
+// Walks cells in a given region and initializes all components to
+// zero.
+////////////////////////////////////////////////////////////////////////
+void init_task(const void * /* input_global_args */, size_t /* input_global_arglen */,
+               const void * /* input_local_args */, size_t /* input_local_arglen */,
+               const unsigned /* point */ [1],
+               const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
-               Context ctx, HighLevelRuntime *runtime) {
+               Context ctx, HighLevelRuntime * /* runtime */) {
   PhysicalRegion cells = regions[0];
 
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> accessor = cells.get_accessor<AccessorGeneric>();
@@ -672,6 +700,22 @@ void init_task(const void *, size_t,
   }
 }
 
+////////////////////////////////////////////////////////////////////////
+// Updates simulation by one timestep.
+////////////////////////////////////////////////////////////////////////
+void step_task(const void *input_global_args, size_t input_global_arglen,
+               const void *input_local_args, size_t input_local_arglent,
+               const unsigned /* point */ [1],
+               const std::vector<RegionRequirement> & /* reqs */,
+               const std::vector<PhysicalRegion> &regions,
+               Context ctx, HighLevelRuntime *runtime) {
+  // FIXME (Elliott): There are going to be more regions than this
+  PhysicalRegion cells = regions[0];
+
+  unsigned x_min = 0, x_max = 0, y_min = 0, y_max = 0, z_min = 0, z_max = 0;
+  printf("Step for %d..%d x %d..%d x %d..%d\n", x_min, x_max, y_min, y_max, z_min, z_max);
+}
+
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     Processor local) {
   // TODO(Elliott): Customize mappers
@@ -683,6 +727,7 @@ int main(int argc, char **argv) {
   HighLevelRuntime::register_single_task<top_level_task>(TOP_LEVEL_TASK, Processor::LOC_PROC, false, "top_level_task");
   HighLevelRuntime::register_single_task<main_task>(MAIN_TASK, Processor::LOC_PROC, false, "main_task");
   HighLevelRuntime::register_index_task<unsigned, 1, init_task>(INIT_TASK, Processor::LOC_PROC, false, "init_task");
+  HighLevelRuntime::register_index_task<unsigned, 1, step_task>(STEP_TASK, Processor::LOC_PROC, false, "step_task");
 
   return HighLevelRuntime::start(argc, argv);
 }

@@ -10,13 +10,14 @@ that exist in a distributed memory application
 blocking operations that can waste execution resources
   c) the ability to modify a barrier's expected arrival count which allows nested task subdivision
 without requiring a parent task to explicitly wait for subtasks to finish
-  d) a general treatment of reductions that allows arbitrary reduction operations and improved
+  d) a general treatment of reductions that permits arbitrary reduction operations and improved
 efficiency through specialized reduction instances that allow individual reduction operations to be
 deferred and applied in bulk
   e) the ability to asynchronously compose all of these constructs
 
 Reviewer 3 expressed doubts about the performance of the Legion versions of the applications 
-relative to hand-coded applications and whether the applications fit well into the bulk-synchronous model.  
+relative to hand-coded applications and whether bulk-synchronous implementations were appropriate 
+for those applications.
 The fourth citation in our paper [4] (which will appear at Supercomputing 2012) compares these same 
 applications written in Legion to hand-coded reference implementations, and shows the Legion versions outperforming
 the existing implementations on larger machine sizes.  All three reference implementations, two of which
@@ -30,43 +31,36 @@ Reviewer 4 was unsure about the difference between our deferred locks and I-stru
 literature.  I-structures support a producer-consumer, write-once semantics that has some of the
 properties of events in our runtime.  In contrast, deferred locks provide
 unordered atomic semantics, permitting multiple writes to an object and allowing programmers to describe
-properties like serializability without the requirement of ordering.  We are unaware of any feature of
+properties like serializability without the requirement of ordering.  We are unaware of any feature from 
 dataflow language implementations that support a similar semantics to deferred locks.
 
-@@@ Version 1
-Reviewer 3 commented that the experimental sections of the paper failed to evaluate the composability claim
-of the runtime API.  It is unclear to us what kind of experiments would be useful to quantify the composability
-of the API, but we would be open to suggests from the reviewers.  Our argument for composability is a qualitative
-one, centered around the ability of events to express dependences between all operations supported by the
-runtime: computation, data movement, and synchronization.  As far as we are aware, no other API currently used
-for parallel programming shares this property.
-
-@@@ Version 2
 Reviewer 3 had concerns related to the composability of the constructs and the performance benefits of that
-composability.  They key to the composability of our constructs is the event object.  Every operation in
-our API (task launch, barrier arrival, lock request/release, data copy) accepts an event as a 'wait_for'
-parameter, allowing that action to be deferred until some the provided event has occurred.  Every operation
-provides, either directly or indirectly, an event that indicates when that operation has been completed.  By
-linking operations together with events, a task can create an arbitrary dependency graph of operations to be
-executed by the runtime, all asynchronously to the execution of the original task.  As clarified above, our results
-section demonstrates that this decoupling of the dependency graph from the original requesting thread provides
-significant speedup for applications written in Legion, especially for larger cluster sizes where the number of 
-tasks and the latency of communication grow.
+composability.  They key to the composability of our constructs is the event object.  Unlike other 
+parallel programming APIs, every operation in our API (task launch, barrier arrival, lock/unlock, data copy)
+accepts an event as a 'wait_for' parameter, causing that action to be deferred until the specified event has
+occurred.  With the exception of 'unlock' which completes immediately, every operation also provides an event
+that indicates when that operation has been completed.  By linking operations together with events, an arbitrary
+dependency graph of operations can be created and then executed by the runtime with no further interaction with
+the requesting task.  Without the composability of operations provided by events this would not be possible.
+As our experimental results demonstrate, this decoupling of the dependency graph from the original requesting
+task provides significant speedup for applications written in Legion, especially when scaling to larger cluster
+sizes with increased communication latency.
 
-Reviewer 2 noted that APIs like OpenCL supports events for asynchronously launching tasks and moving data. 
+Reviewer 2 noted that APIs like OpenCL support events for asynchronously launching tasks and moving data. 
 As we noted in our related work, OpenCL events (and similar constructs in other APIs) are only valid in a 
 single address space (e.g. node), whereas our events are valid in every address space on 
 distributed memory machines.  Furthermore, the synchronization primitives in APIs like OpenCL do not use 
-events and consequently cannot compose with other operations the way the synchronization mechanisms in our runtime can.
+events and consequently cannot compose with other operations the way the synchronization mechanisms in
+our runtime can.
 
-Reviewers 1 and 5 asked for clarification regarding barriers and the need for a dynamic change
-in arrival count.  In programming models that support nested parallelism,
-the number of expected arrivals at a barrier is often not known at barrier creation-time.
-To allow tasks to be dynamically subdivided, we added the ability to 
-alter the arrival count after the barrier has been created.  We use the well-studied vector 
-clock algorithm from the distributed systems literature to
-ensure that every node has observed all barrier alterations before completing the barrier, 
-eliminating race conditions between alterations to and arrivals at the barrier.
+Reviewers 1 and 5 asked for clarification regarding barriers and the need for dynamic changes
+to a barrier's arrival count.  In programming models that support nested parallelism,
+the number of expected arrivals at a barrier is often not known at the time the barrier is created.
+To support this paradigm for higher-level programming models that target our runtime, 
+we added the ability to alter the arrival count after
+a barrier has been created.  We use the well-studied vector clock algorithm from the distributed
+systems literature to ensure that every node has observed all barrier alterations before completing
+the barrier, eliminating race conditions between alterations to and arrivals at the barrier.
 (See citation [16] for additional details on the semantics and implementation of vector clocks.)
 
 Reviewers 1 and 5 had several questions about our handling of reductions.  One source of confusion
@@ -78,9 +72,9 @@ becomes (*3)(V) ).  When multiple reductions are applied to the same value, thes
 can be composed, and it's the commutativity of that composition
 (e.g. [(*3) o (*2)](X) = [(*2) o (*3)](X) for all X) that allows the application of these
 reduction operations to be deferred and reordered.  Nearly all "reasonable" reduction operations
-that one might propose satisfy this form of commutativity.  Most reductions also satisfy our criterion of "foldability"
-(e.g. [(*3) o (*2)](X) = (*6)(X) for all X), allowing the use of our reduction fold instances to further
-improve performance in most cases.
+that one might propose satisfy this form of commutativity.  Most reductions also satisfy our criterion of
+"foldability" (e.g. [(*3) o (*2)](X) = (*6)(X) for all X), allowing the use of our reduction fold
+instances to further improve performance in most cases.
 
 Reviewer 1 commented that blocking APIs do not necessarily stall processors if there are enough 
 runnable threads to keep the processor busy.  While this is true, the overhead of having many threads
@@ -88,13 +82,13 @@ to support this kind of computation is high due to the cost of software threads 
 are much lighter-weight, but current programming models do not allow these threads to be suspended.)
 This cost is magnified by a programmer's need to conservatively create new threads whenever an API
 call might block.  Failing to do this can result in performance loss from the serialization of 
-independent subtasks that are launched from the same parent task.
+independent operations that are launched from the same parent task.
 
-Reviewer 4 requested a comparison to existing dataflow programming models.  A more apt comparison
-for dataflow models would be the Legion programming system which is beyond the scope of this paper.  
+Reviewer 4 requested a comparison to existing dataflow programming models.  A more apt comparison for
+dataflow models would be the higher-level Legion programming system which is beyond the scope of this paper.  
 Instead, we view the runtime presented in this paper as orthogonal to work on dataflow programming models. 
-The runtime presented here provides a lower-level layer of abstraction that could serve as the 
-foundation for many different dataflow programming systems. 
+The runtime presented here provides a lower-level layer of abstraction that can serve as the basis for
+implementing systems with deferred execution, potentially including dataflow systems.
 
 Reviewer 1 noted that use "Distributed Architectures" in our title might be confusing.  Our goal was
 to distinguish our implementation from those that are limited to shared-memory systems.  A more
