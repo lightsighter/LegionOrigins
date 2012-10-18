@@ -589,6 +589,8 @@ namespace RegionRuntime {
       bool has_accessor(AccessorType at);
       template<AccessorType AT>
       LowLevel::RegionAccessor<AT_CONV_DOWN(AT)> get_accessor(void);
+      template<AccessorType AT>
+      LowLevel::RegionAccessor<AT_CONV_DOWN(AT)> get_accessor(FieldID field);
     protected:
       union Operation_t {
         PhysicalRegionImpl *impl;
