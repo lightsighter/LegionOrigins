@@ -151,6 +151,21 @@ struct InitGlobalArgs {
 };
 
 ////////////////////////////////////////////////////////////////////////
+// Arguments to step_task.
+////////////////////////////////////////////////////////////////////////
+struct StepLocalArgs {
+  StepLocalArgs(std::pair<unsigned, unsigned> &x_span,
+                std::pair<unsigned, unsigned> &y_span,
+                std::pair<unsigned, unsigned> &z_span)
+    : x_min(x_span.first), x_max(x_span.second),
+      y_min(y_span.first), y_max(y_span.second),
+      z_min(z_span.first), z_max(z_span.second) {}
+  unsigned x_min /* inclusive */, x_max /* exclusive */;
+  unsigned y_min /* inclusive */, y_max /* exclusive */;
+  unsigned z_min /* inclusive */, z_max /* exclusive */;
+};
+
+////////////////////////////////////////////////////////////////////////
 // Addressing utility functions.
 ////////////////////////////////////////////////////////////////////////
 static inline unsigned block_id(unsigned bx, unsigned by, unsigned bz,
@@ -537,6 +552,18 @@ void main_task(const void *input_args, size_t input_arglen,
     f.wait_all_results();
   }
 
+  // Preload argument map for step task.
+  ArgumentMap position_arg_map = runtime->create_argument_map(ctx);
+  for (unsigned bx = 0; bx < nbx; bx++) {
+    for (unsigned by = 0; by < nby; by++) {
+      for (unsigned bz = 0; bz < nbz; bz++) {
+        unsigned point[1] = { block_id(bx, by, bz, nbx, nby, nbz) };
+        StepLocalArgs step_args(x_divs[bx], y_divs[by], z_divs[bz]);
+        position_arg_map.set_point_arg<unsigned, 1>(point, TaskArgument(&step_args, sizeof(step_args)));
+      }
+    }
+  }
+
   printf("\nSTARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
   clock_gettime(CLOCK_MONOTONIC, &ts_start);
@@ -575,10 +602,9 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
-      ArgumentMap arg_map = runtime->create_argument_map(ctx);
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
-                                     TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false));
+                                     TaskArgument(NULL, 0), position_arg_map, Predicate::TRUE_PRED, false));
     }
 
     // Update magnetic field.
@@ -604,10 +630,9 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
-      ArgumentMap arg_map = runtime->create_argument_map(ctx);
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
-                                     TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false));
+                                     TaskArgument(NULL, 0), position_arg_map, Predicate::TRUE_PRED, false));
     }
   }
 
@@ -662,18 +687,22 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
 ////////////////////////////////////////////////////////////////////////
 // Updates simulation by one timestep.
 ////////////////////////////////////////////////////////////////////////
-void step_task(const void *input_global_args, size_t input_global_arglen,
+void step_task(const void * /* input_global_args */, size_t /* input_global_arglen */,
                const void *input_local_args, size_t input_local_arglent,
                const unsigned /* point */ [1],
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
+  StepLocalArgs &args = *(StepLocalArgs *)input_local_args;
+  unsigned &x_min = args.x_min, &x_max = args.x_max;
+  unsigned &y_min = args.y_min, &y_max = args.y_max;
+  unsigned &z_min = args.z_min, &z_max = args.z_max;
+
   PhysicalRegion write_cells = regions[0];
   PhysicalRegion read_cells = regions[1];
   PhysicalRegion ghost1_cells = regions[2];
   PhysicalRegion ghost2_cells = regions[3];
 
-  unsigned x_min = 0, x_max = 0, y_min = 0, y_max = 0, z_min = 0, z_max = 0;
   printf("Step for %d..%d x %d..%d x %d..%d\n", x_min, x_max, y_min, y_max, z_min, z_max);
 }
 
