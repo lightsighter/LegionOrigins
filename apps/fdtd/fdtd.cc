@@ -79,6 +79,7 @@ using namespace RegionRuntime::HighLevel;
 
 RegionRuntime::Logger::Category log_app("app");
 
+// Task IDs
 enum {
   TOP_LEVEL_TASK,
   MAIN_TASK,
@@ -86,8 +87,20 @@ enum {
   STEP_TASK,
 };
 
+// Dimensions
+enum dim_t {
+  DIM_X = 0,
+  DIM_Y = 1,
+  DIM_Z = 2,
+};
+const unsigned NDIMS = 3; // Must equal number of entries in above enum.
+
+////////////////////////////////////////////////////////////////////////
+// Arguments to main_task.
+////////////////////////////////////////////////////////////////////////
 const double DEFAULT_S = 1.0, DEFAULT_A = 10.0;
 const unsigned DEFAULT_NB = 1;
+
 struct MainArgs {
   MainArgs()
     : sx(DEFAULT_S), sy(DEFAULT_S), sz(DEFAULT_S), a(DEFAULT_A),
@@ -100,6 +113,21 @@ struct MainArgs {
   unsigned nbx, nby, nbz;
   // Number of cells.
   unsigned nx, ny, nz;
+};
+
+////////////////////////////////////////////////////////////////////////
+// Arguments to init_task.
+////////////////////////////////////////////////////////////////////////
+struct InitGlobalArgs {
+  InitGlobalArgs(FieldID (&field_e)[NDIMS], FieldID (&field_h)[NDIMS]) {
+    for (unsigned dim = 0; dim < NDIMS; dim++) {
+      fields[dim] = field_e[dim];
+    }
+    for (unsigned dim = 0; dim < NDIMS; dim++) {
+      fields[NDIMS + dim] = field_h[dim];
+    }
+  }
+  FieldID fields[NDIMS*2];
 };
 
 static inline unsigned block_id(unsigned bx, unsigned by, unsigned bz,
@@ -214,17 +242,10 @@ private:
   const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
 };
 
-enum dim_t {
-  DIM_X,
-  DIM_Y,
-  DIM_Z,
-};
-const unsigned NDIMS = 3; // Must equal number of entries in above enum.
-
 enum ghost_t {
-  COLOR_NEGATIVE,
-  COLOR_POSITIVE,
-  COLOR_UNSHARED,
+  COLOR_NEGATIVE = 0,
+  COLOR_POSITIVE = 1,
+  COLOR_UNSHARED = 2,
 };
 const unsigned NUM_GHOST_COLORS = 3; // Must equal number of entries in above enum.
 
@@ -623,11 +644,12 @@ void main_task(const void *input_args, size_t input_arglen,
     regions.push_back(RegionRequirement(owned_partition, 0, priveledge_fields, instance_fields,
                                         WRITE_ONLY, EXCLUSIVE, cells));
 
-
-    ArgumentMap arg_map = runtime->create_argument_map(ctx);
+    InitGlobalArgs global_args(field_e, field_h);
+    ArgumentMap empty_local_args = runtime->create_argument_map(ctx);
     FutureMap f =
       runtime->execute_index_space(ctx, INIT_TASK, owned_colors, indexes, fields, regions,
-                                   TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false);
+                                   TaskArgument(&global_args, sizeof(global_args)), empty_local_args,
+                                   Predicate::TRUE_PRED, false);
     f.wait_all_results();
   }
 
@@ -657,8 +679,9 @@ void main_task(const void *input_args, size_t input_arglen,
                                           READ_WRITE, EXCLUSIVE, cells));
 
       ArgumentMap arg_map = runtime->create_argument_map(ctx);
-      fs.push_back(runtime->execute_index_space(ctx, STEP_TASK, owned_colors, indexes, fields, regions,
-                                                TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false));
+      fs.push_back(
+        runtime->execute_index_space(ctx, STEP_TASK, owned_colors, indexes, fields, regions,
+                                     TaskArgument(NULL, 0), arg_map, Predicate::TRUE_PRED, false));
     }
   }
 
@@ -679,23 +702,30 @@ void main_task(const void *input_args, size_t input_arglen,
 // Walks cells in a given region and initializes all components to
 // zero.
 ////////////////////////////////////////////////////////////////////////
-void init_task(const void * /* input_global_args */, size_t /* input_global_arglen */,
+void init_task(const void * input_global_args, size_t input_global_arglen,
                const void * /* input_local_args */, size_t /* input_local_arglen */,
                const unsigned /* point */ [1],
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime * /* runtime */) {
+  InitGlobalArgs &args = *(InitGlobalArgs *)input_global_args;
+  FieldID (&fields)[NDIMS*2] = args.fields;
+
   PhysicalRegion cells = regions[0];
 
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> accessor = cells.get_accessor<AccessorGeneric>();
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> accessor[NDIMS*2];
+  for (unsigned field = 0; field < NDIMS*2; field++) {
+    accessor[field] = cells.get_accessor<AccessorGeneric>(fields[field]);
+  }
 
   RegionRuntime::LowLevel::ElementMask mask = cells.get_logical_region().get_index_space().get_valid_mask();
   RegionRuntime::LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
   int position = 0, length = 0;
   while (enabled->get_next(position, length)) {
-    for (int index = position; index < position + length; index++) {
-      // FIXME (Elliott): How do I access specific fields here?
-      accessor.write(ptr_t<double>(index), 0.0);
+    for (unsigned field = 0; field < NDIMS*2; field++) {
+      for (int index = position; index < position + length; index++) {
+        accessor[field].write(ptr_t<double>(index), 0.0);
+      }
     }
   }
 }
