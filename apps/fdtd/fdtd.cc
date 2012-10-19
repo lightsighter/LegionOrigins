@@ -70,6 +70,7 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 */
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 
 #include "legion.h"
@@ -155,10 +156,17 @@ struct InitGlobalArgs {
 // Arguments to step_task.
 ////////////////////////////////////////////////////////////////////////
 struct StepGlobalArgs {
-  StepGlobalArgs(dim_t dim, dir_t dir, FieldID field_write, FieldID field_read1, FieldID field_read2)
-    : dim(dim), dir(dir), field_write(field_write), field_read1(field_read1), field_read2(field_read2) {}
+  StepGlobalArgs(unsigned nx, unsigned ny, unsigned nz, dim_t dim, dir_t dir,
+                 FieldID field_write, FieldID field_read1, FieldID field_read2)
+    : nx(nx), ny(ny), nz(nz), dim(dim), dir(dir),
+      field_write(field_write), field_read1(field_read1), field_read2(field_read2) {}
+  // Number of cells.
+  unsigned nx, ny, nz;
+  // Dimension to step.
   dim_t dim;
+  // Direction to look for ghost cells.
   dir_t dir;
+  // Fields to read and write.
   FieldID field_write, field_read1, field_read2;
 };
 
@@ -615,7 +623,8 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
-      StepGlobalArgs global_args((dim_t)dim, DIR_POS, field_e[dim], field_h[(dim + 1)%NDIMS], field_h[(dim + 2)%NDIMS]);
+      StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_POS,
+                                 field_e[dim], field_h[(dim + 1)%NDIMS], field_h[(dim + 2)%NDIMS]);
 
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
@@ -646,7 +655,8 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
-      StepGlobalArgs global_args((dim_t)dim, DIR_NEG, field_h[dim], field_e[(dim + 1)%NDIMS], field_e[(dim + 2)%NDIMS]);
+      StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_NEG,
+                                 field_h[dim], field_e[(dim + 1)%NDIMS], field_e[(dim + 2)%NDIMS]);
 
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
@@ -696,7 +706,7 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
   while (enabled->get_next(position, length)) {
     for (int index = position; index < position + length; index++) {
       for (unsigned field = 0; field < NDIMS*2; field++) {
-        accessor[field].write(ptr_t<double>(index), 0.0);
+        accessor[field].write(ptr_t<double>(index), 1.2345678*fields[field]); // FIXME (Elliott): Debugging
       }
     }
   }
@@ -713,6 +723,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
                Context ctx, HighLevelRuntime *runtime) {
   assert(input_global_args && input_global_arglen == sizeof(StepGlobalArgs));
   StepGlobalArgs &global_args = *(StepGlobalArgs *)input_global_args;
+  unsigned &nx = global_args.nx, &ny = global_args.ny, &nz = global_args.nz;
   dim_t &dim = global_args.dim;
   dir_t &dir = global_args.dir;
   FieldID &field_write = global_args.field_write;
@@ -743,10 +754,31 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   for (unsigned x = x_min; x < x_max; x++) {
     for (unsigned y = y_min; y < y_max; y++) {
       for (unsigned z = z_min; z < z_max; z++) {
-        // TODO (Elliott): Kernel math here
+        unsigned c = cell_id(x, y, z, nx, ny, nz);
+        assert(fabs(write.read(ptr_t<double>(c)) - 1.2345678*field_write) < 0.0000001);
+        assert(fabs(read1.read(ptr_t<double>(c)) - 1.2345678*field_read1) < 0.0000001);
+        assert(fabs(read2.read(ptr_t<double>(c)) - 1.2345678*field_read2) < 0.0000001);
       }
     }
   }
+
+  if (dim == DIM_X) {
+    for (unsigned x = x_min; x < x_max; x++) {
+      for (unsigned z = z_min; z < z_max; z++) {
+        unsigned y = dir == DIR_POS ? y_max : y_min - 1;
+        unsigned c = cell_id(x, y, z, nx, ny, nz);
+        assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*field_read1) < 0.0000001);
+      }
+    }
+    for (unsigned x = x_min; x < x_max; x++) {
+      for (unsigned y = y_min; y < y_max; y++) {
+        unsigned z = dir == DIR_POS ? z_max : z_min - 1;
+        unsigned c = cell_id(x, y, z, nx, ny, nz);
+        assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*field_read2) < 0.0000001);
+      }
+    }
+  }
+  // TODO (Elliott): Symmetric for other dimensions...
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
