@@ -650,7 +650,7 @@ void main_task(const void *input_args, size_t input_arglen,
 
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
-                                     TaskArgument(NULL, 0), position_arg_map, Predicate::TRUE_PRED, false));
+                                     TaskArgument(&global_args, sizeof(global_args)), position_arg_map, Predicate::TRUE_PRED, false));
     }
   }
 
@@ -679,8 +679,7 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
                Context ctx, HighLevelRuntime * /* runtime */) {
   log_app.info("In init_task...");
 
-  // FIXME (Elliott): Currently doesn't link because API doesn't exist yet.
-#if 0
+  assert(input_global_args && input_global_arglen == sizeof(InitGlobalArgs));
   InitGlobalArgs &args = *(InitGlobalArgs *)input_global_args;
   FieldID (&fields)[NDIMS*2] = args.fields;
 
@@ -701,20 +700,18 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
       }
     }
   }
-#endif
 }
 
 ////////////////////////////////////////////////////////////////////////
 // Updates simulation by one timestep.
 ////////////////////////////////////////////////////////////////////////
 void step_task(const void * input_global_args, size_t input_global_arglen,
-               const void *input_local_args, size_t input_local_arglent,
+               const void *input_local_args, size_t input_local_arglen,
                const unsigned /* point */ [1],
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
-  log_app.info("In step_task...");
-
+  assert(input_global_args && input_global_arglen == sizeof(StepGlobalArgs));
   StepGlobalArgs &global_args = *(StepGlobalArgs *)input_global_args;
   dim_t &dim = global_args.dim;
   dir_t &dir = global_args.dir;
@@ -722,22 +719,26 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   FieldID &field_read1 = global_args.field_read1;
   FieldID &field_read2 = global_args.field_read2;
 
+  assert(input_local_args && input_local_arglen == sizeof(StepLocalArgs));
   StepLocalArgs &local_args = *(StepLocalArgs *)input_local_args;
   unsigned &x_min = local_args.x_min, &x_max = local_args.x_max;
   unsigned &y_min = local_args.y_min, &y_max = local_args.y_max;
   unsigned &z_min = local_args.z_min, &z_max = local_args.z_max;
+
+  log_app.info("In step_task cells %d..%d x %d..%d x %d..%d writing field %d reading fields %d, %d ...",
+               x_min, x_max, y_min, y_max, z_min, z_max,
+               field_write, field_read1, field_read2);
 
   PhysicalRegion write_cells = regions[0];
   PhysicalRegion read_cells = regions[1];
   PhysicalRegion ghost1_cells = regions[2];
   PhysicalRegion ghost2_cells = regions[3];
 
-  // FIXME (Elliott): Currently doesn't link because API doesn't exist yet.
-#if 0
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> write = write_cells.get_accessor<AccessorGeneric>(field_write);
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read1 = read1_cells.get_accessor<AccessorGeneric>(field_read1);
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read2 = read2_cells.get_accessor<AccessorGeneric>(field_read2);
-#endif
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read1 = read_cells.get_accessor<AccessorGeneric>(field_read1);
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read2 = read_cells.get_accessor<AccessorGeneric>(field_read2);
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost1 = ghost1_cells.get_accessor<AccessorGeneric>(field_read1);
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost2 = ghost2_cells.get_accessor<AccessorGeneric>(field_read2);
 
   for (unsigned x = x_min; x < x_max; x++) {
     for (unsigned y = y_min; y < y_max; y++) {
