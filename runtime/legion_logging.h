@@ -5,6 +5,11 @@
 #include "lowlevel.h"
 #include "utilities.h"
 
+/**
+ * This file contains calls for logging that are consumed by the legion_spy tool in the tools directory.
+ * To see where these statements get consumed, look in spy_parser.py
+ */
+
 namespace RegionRuntime {
   namespace HighLevel {
     namespace LegionSpy {
@@ -92,6 +97,11 @@ namespace RegionRuntime {
       }
 
       // Logger calls for events
+      static inline void log_event_dependence(Event one, Event two)
+      {
+        log_spy(LEVEL_INFO,"Event Event %d %d %d %d", one.id, one.gen, two.id, two.gen);
+      }
+
       static inline void log_event_dependences(const std::set<Event> &preconditions, Event result)
       {
         for (std::set<Event>::const_iterator it = preconditions.begin();
@@ -101,9 +111,9 @@ namespace RegionRuntime {
         }
       }
 
-      static inline void log_task_events(unsigned unique_id, Event start_event, Event term_event)
+      static inline void log_task_events(unsigned unique_id, unsigned ctx_id, Event start_event, Event term_event)
       {
-        log_spy(LEVEL_INFO,"Task Events %d %d %d %d %d", unique_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
+        log_spy(LEVEL_INFO,"Task Events %d %d %d %d %d %d", unique_id, ctx_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
       }
 
       static inline void log_index_task_termination(unsigned unique_id, Event term_event)
@@ -117,6 +127,11 @@ namespace RegionRuntime {
       {
         log_spy(LEVEL_INFO,"Copy Events %d %d %d %d %d %d %d %d %d %d %d", src_id, dst_id, src_loc, dst_loc, 
           index_handle, field_handle, tree_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
+      }
+
+      static inline void log_map_events(unsigned unique_id, Event start_event, Event term_event)
+      {
+        log_spy(LEVEL_INFO, "Map Events %d %d %d %d %d", unique_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
       }
     };
   };

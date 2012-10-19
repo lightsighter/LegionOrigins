@@ -572,19 +572,40 @@ namespace RegionRuntime {
 
       if (!physical_instance.is_virtual_ref())
       {
+        Event start_event = physical_instance.get_ready_event();
+#ifdef LEGION_SPY
+        if (!start_event.exists())
+        {
+          UserEvent new_start = UserEvent::create_user_event();
+          new_start.trigger();
+          start_event = new_start;
+        }
+#endif
         // Mapping successful  
         // Set the ready event and the physical instance
         if (physical_instance.has_required_lock())
         {
           // Issue lock acquire on ready event, issue unlock on unmap event
           Lock required_lock = physical_instance.get_required_lock();
-          this->ready_event = required_lock.lock(0,true/*exclusive*/,physical_instance.get_ready_event());
+          this->ready_event = required_lock.lock(0,true/*exclusive*/,start_event);
+#ifdef LEGION_SPY
+          if (!ready_event.exists())
+          {
+            UserEvent new_ready = UserEvent::create_user_event();
+            new_ready.trigger();
+            this->ready_event = new_ready;
+          }
+          LegionSpy::log_event_dependence(start_event, this->ready_event);
+#endif
           required_lock.unlock(unmapped_event);
         }
         else
         {
-          this->ready_event = physical_instance.get_ready_event();
+          this->ready_event = start_event;
         }
+#ifdef LEGION_SPY
+        LegionSpy::log_map_events(get_unique_id(), ready_event, unmapped_event);
+#endif
         // finally we can trigger the event saying that we're mapped
         mapped_event.trigger();
         // Notify all our waiters that we're mapped
@@ -2812,7 +2833,9 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(regions.size() == physical_instances.size());
 #endif
-      bool has_atomics = false;
+      // Sort the lock order requests by instance manager id
+      // to remove any possibility of deadlock
+      std::map<UniqueManagerID,unsigned/*idx*/> needed_locks;
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         if (!physical_instances[idx].is_virtual_ref())
@@ -2821,10 +2844,10 @@ namespace RegionRuntime {
           // Do we need to acquire a lock for this region
           if (physical_instances[idx].has_required_lock())
           {
+            needed_locks[physical_instances[idx].get_manager()->get_unique_id()] = idx;
             Lock atomic_lock = physical_instances[idx].get_required_lock();
             Event atomic_pre = atomic_lock.lock(0,true/*exclusive*/,precondition);
             wait_on_events.insert(atomic_pre);
-            has_atomics = true;
           }
           else
           {
@@ -2834,15 +2857,32 @@ namespace RegionRuntime {
         }
       }
 
-      Event start_condition = Event::merge_events(wait_on_events);
-#ifdef TRACE_CAPTURE
-      if (!start_cond.exists())
+      if (needed_locks.empty())
       {
-        UserEvent new_start = UserEvent::create_user_event();
-        new_start.trigger();
-        start_condition = new_start;
-      }
+        for (std::map<UniqueManagerID,unsigned>::const_iterator it = needed_locks.begin();
+              it != needed_locks.end(); it++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(!physical_instances[it->second].is_virtual_ref());
+          assert(physical_instances[it->second].has_required_lock());
 #endif
+          Lock atomic_lock = physical_instances[it->second].get_required_lock();
+#ifdef DEBUG_HIGH_LEVEL
+          assert(atomic_lock.exists());
+#endif
+          Event precondition = physical_instances[it->second].get_ready_event();
+          Event atomic_pre = atomic_lock.lock(0,true/*exclusive*/,precondition);
+          wait_on_events.insert(atomic_pre);
+#ifdef LEGION_SPY
+          if (precondition.exists() && atomic_pre.exists())
+          {
+            LegionSpy::log_event_dependence(precondition, atomic_pre);
+          }
+#endif
+        }
+      }
+
+      Event start_condition = Event::merge_events(wait_on_events);
 #ifdef LEGION_SPY
       LegionSpy::log_task_name(this->get_unique_id(), this->variants->name);
       if (!start_condition.exists())
@@ -2853,7 +2893,7 @@ namespace RegionRuntime {
       }
       // Record the dependences
       LegionSpy::log_event_dependences(wait_on_events, start_condition);
-      LegionSpy::log_task_events(get_unique_id(), start_condition, get_termination_event());
+      LegionSpy::log_task_events(get_unique_id(), ctx_id, start_condition, get_termination_event());
 #endif
       // Now we need to select the variant to run
       const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
@@ -2862,16 +2902,14 @@ namespace RegionRuntime {
       Event task_launch_event = runtime->local_proc.spawn(variant.low_id,&this_ptr,sizeof(SingleTask*),start_condition);
 
       // After we launched the task, see if we had any atomic locks to release
-      if (has_atomics)
+      if (!needed_locks.empty())
       {
-        for (unsigned idx = 0; idx < regions.size(); idx++)
+        for (std::map<UniqueManagerID,unsigned>::const_iterator it = needed_locks.begin();
+              it != needed_locks.end(); it++)
         {
-          if (!physical_instances[idx].is_virtual_ref() && physical_instances[idx].has_required_lock())
-          {
-            Lock atomic_lock = physical_instances[idx].get_required_lock();
-            // Release the lock once that task is done
-            atomic_lock.unlock(task_launch_event);
-          }
+          Lock atomic_lock = physical_instances[it->second].get_required_lock();
+          // Release the lock once the task is done
+          atomic_lock.unlock(task_launch_event);
         }
       }
     }

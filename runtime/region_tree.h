@@ -722,6 +722,7 @@ namespace RegionRuntime {
       inline const FieldMask& get_allocated_fields(void) const { return allocated_fields; }
       inline bool is_remote(void) const { return remote; }
       inline Lock get_lock(void) const { return lock; }
+      inline UniqueManagerID get_unique_id(void) const { return unique_id; }
       inline LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_accessor(void) const
       {
 #ifdef DEBUG_HIGH_LEVEL
