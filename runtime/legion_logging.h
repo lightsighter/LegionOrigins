@@ -2,6 +2,7 @@
 #ifndef __LEGION_LOGGING_H__
 #define __LEGION_LOGGING_H__
 
+#include "lowlevel.h"
 #include "utilities.h"
 
 namespace RegionRuntime {
@@ -88,6 +89,34 @@ namespace RegionRuntime {
                                                 unsigned next_id, unsigned next_idx, unsigned dep_type)
       {
         log_spy(LEVEL_INFO,"Mapping Dependence %d %d %d %d %d %d %d", parent_id, parent_ctx, prev_id, prev_idx, next_id, next_idx, dep_type);
+      }
+
+      // Logger calls for events
+      static inline void log_event_dependences(const std::set<Event> &preconditions, Event result)
+      {
+        for (std::set<Event>::const_iterator it = preconditions.begin();
+              it != preconditions.end(); it++)
+        {
+          log_spy(LEVEL_INFO,"Event Event %d %d %d %d", it->id, it->gen, result.id, result.gen);
+        }
+      }
+
+      static inline void log_task_events(unsigned unique_id, Event start_event, Event term_event)
+      {
+        log_spy(LEVEL_INFO,"Task Events %d %d %d %d %d", unique_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
+      }
+
+      static inline void log_index_task_termination(unsigned unique_id, Event term_event)
+      {
+        log_spy(LEVEL_INFO,"Index Termination %d %d %d", unique_id, term_event.id, term_event.gen);
+      }
+
+      static inline void log_copy_operation(unsigned src_id, unsigned dst_id, unsigned src_loc, unsigned dst_loc, 
+                                            unsigned index_handle, unsigned field_handle, unsigned tree_id,
+                                            Event start_event, Event term_event)
+      {
+        log_spy(LEVEL_INFO,"Copy Events %d %d %d %d %d %d %d %d %d %d %d", src_id, dst_id, src_loc, dst_loc, 
+          index_handle, field_handle, tree_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
       }
     };
   };

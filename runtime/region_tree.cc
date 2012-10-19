@@ -3,6 +3,7 @@
 #include "legion_ops.h"
 #include "region_tree.h"
 #include "legion_utilities.h"
+#include "legion_logging.h"
 
 namespace RegionRuntime {
   namespace HighLevel {
@@ -1765,10 +1766,19 @@ namespace RegionRuntime {
       }
       result += sizeof(size_t); // number of unique views
       // Now pack up the instance views that need to be send back for the updated state
-      for (std::map<InstanceView*,FieldMask>::const_iterator it = unique_views.begin();
-            it != unique_views.end(); it++)
+#ifdef DEBUG_HIGH_LEVEL
+      assert(ordered_views.size() == unique_views.size());
+      assert(ordered_views.size() == overwrite_views.size());
+#endif
+      unsigned idx = 0;
+      for (std::vector<InstanceView*>::const_iterator it = ordered_views.begin();
+            it != ordered_views.end(); it++)
       {
-        result += it->first->compute_return_state_size(it->second, escaped_users, escaped_copies);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(unique_views.find(*it) != unique_views.end());
+#endif
+        result += (*it)->compute_return_state_size(unique_views[*it], overwrite_views[idx++],
+                                                   escaped_users, escaped_copies);
       }
       
       // Now we do the parts that are going to be send back in the end_pack_region_tree_state_return
@@ -6835,6 +6845,15 @@ namespace RegionRuntime {
         parent->find_dependences_above(wait_on, user);
       bool all_dominated = find_dependences_below(wait_on, user);
       Event wait_event = Event::merge_events(wait_on);
+#ifdef LEGION_SPY
+      if (!wait_event.exists())
+      {
+        UserEvent new_wait = UserEvent::create_user_event();
+        new_wait.trigger();
+        wait_event = new_wait;
+      }
+      LegionSpy::log_event_dependences(wait_on, wait_event);
+#endif
       // If we dominated all the users below update the valid event
       if (all_dominated)
         update_valid_event(wait_event, user.field_mask);
@@ -6983,8 +7002,29 @@ namespace RegionRuntime {
       find_copy_preconditions(preconditions, true/*writing*/, rm.req.redop, copy_mask);
       src_view->find_copy_preconditions(preconditions, false/*writing*/, rm.req.redop, copy_mask);
       Event copy_pre = Event::merge_events(preconditions);
+#ifdef LEGION_SPY
+      if (!copy_pre.exists())
+      {
+        UserEvent new_copy_pre = UserEvent::create_user_event();
+        new_copy_pre.trigger();
+        copy_pre = new_copy_pre;
+      }
+      LegionSpy::log_event_dependences(preconditions, copy_pre);
+#endif
       Event copy_post = manager->issue_copy(src_view->manager, copy_pre, copy_mask, 
                                             logical_region->handle.index_space);
+#ifdef LEGION_SPY
+      if (!copy_post.exists())
+      {
+        UserEvent new_copy_post = UserEvent::create_user_event();
+        new_copy_post.trigger();
+        copy_post = new_copy_post;
+      }
+      LegionSpy::log_copy_operation(src_view->manager->get_instance().id, manager->get_instance().id, 
+                                    src_view->manager->get_location().id, manager->get_location().id,
+                                    logical_region->handle.index_space.id, logical_region->handle.field_space.id, 
+                                    logical_region->handle.tree_id, copy_pre, copy_post);
+#endif
       // If this is a write copy, update the valid event, otherwise
       // add it as a reduction copy to this instance
       if (rm.req.redop == 0)
@@ -7712,7 +7752,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    size_t InstanceView::compute_return_state_size(const FieldMask &pack_mask,
+    size_t InstanceView::compute_return_state_size(const FieldMask &pack_mask, bool overwrite,
             std::map<EscapedUser,unsigned> &escaped_users, std::set<EscapedCopy> &escaped_copies)
     //--------------------------------------------------------------------------
     {
@@ -7752,11 +7792,14 @@ namespace RegionRuntime {
       {
         if (it->second * pack_mask)
           continue;
+        // Only pack these up if we're overwriting or its new
+        std::map<UniqueID,TaskUser>::const_iterator finder = added_users.find(it->first);
+        if (!overwrite && (finder == added_users.end()))
+          continue;
         packing_sizes[1]++;
         result += sizeof(it->first);
         result += sizeof(it->second);
         // See if it is an added user that we need to get
-        std::map<UniqueID,TaskUser>::const_iterator finder = added_users.find(it->first);
         if (finder != added_users.end())
         {
           packing_sizes[3]++;
@@ -7772,10 +7815,13 @@ namespace RegionRuntime {
       {
         if (it->second * pack_mask)
           continue;
+        std::map<Event,ReductionOpID>::const_iterator finder = added_copy_users.find(it->first);
+        // Only pack this up if we're overwriting or its new
+        if (!overwrite && (finder == added_copy_users.end()))
+          continue;
         packing_sizes[2]++;
         result += sizeof(it->first);
         result += sizeof(it->second);
-        std::map<Event,ReductionOpID>::const_iterator finder = added_copy_users.find(it->first);
         if (finder != added_copy_users.end())
         {
           packing_sizes[4]++;
@@ -7897,9 +7943,12 @@ namespace RegionRuntime {
       {
         if (it->second * pack_mask)
           continue;
+        std::map<UniqueID,TaskUser>::const_iterator finder = added_users.find(it->first);
+        if (!overwrite && (finder == added_users.end()))
+          continue;
         rez.serialize(it->first);
         rez.serialize(it->second);
-        if (added_users.find(it->first) != added_users.end())
+        if (finder != added_users.end())
           return_add_users.push_back(it->first);
       }
 #ifdef DEBUG_HIGH_LEVEL
@@ -7912,9 +7961,12 @@ namespace RegionRuntime {
       {
         if (it->second * pack_mask)
           continue;
+        std::map<Event,ReductionOpID>::const_iterator finder = added_copy_users.find(it->first);
+        if (!overwrite && (finder == added_copy_users.end()))
+          continue;
         rez.serialize(it->first);
         rez.serialize(it->second);
-        if (added_copy_users.find(it->first) != added_copy_users.end())
+        if (finder != added_copy_users.end())
           return_copy_users.push_back(it->first);
       }
 #ifdef DEBUG_HIGH_LEVEL
@@ -8127,6 +8179,7 @@ namespace RegionRuntime {
       for (std::map<Event,FieldMask>::const_iterator it = result->epoch_copy_users.begin();
             it != result->epoch_copy_users.end(); it++)
       {
+        printf("%ld %ld %ld\n", result->epoch_copy_users.size(), result->copy_users.size(), result->added_copy_users.size());
         assert((result->copy_users.find(it->first) != result->copy_users.end()) ||
                (result->added_copy_users.find(it->first) != result->added_copy_users.end()));
       }

@@ -2510,7 +2510,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < physical_instances.size(); idx++)
       {
         physical_region_impls[idx] = new PhysicalRegionImpl(idx, regions[idx].region, 
-                                                            physical_instances[idx].get_manager());
+            (physical_instances[idx].is_virtual_ref() ? NULL : physical_instances[idx].get_manager()));
         physical_regions[idx] = PhysicalRegion(physical_region_impls[idx]);
       }
       // If we're not remote, then we can release all the source copy instances
@@ -2845,6 +2845,15 @@ namespace RegionRuntime {
 #endif
 #ifdef LEGION_SPY
       LegionSpy::log_task_name(this->get_unique_id(), this->variants->name);
+      if (!start_condition.exists())
+      {
+        UserEvent new_start = UserEvent::create_user_event();
+        new_start.trigger();
+        start_condition = new_start;
+      }
+      // Record the dependences
+      LegionSpy::log_event_dependences(wait_on_events, start_condition);
+      LegionSpy::log_task_events(get_unique_id(), start_condition, get_termination_event());
 #endif
       // Now we need to select the variant to run
       const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
@@ -5101,6 +5110,9 @@ namespace RegionRuntime {
     {
       mapped_event = UserEvent::create_user_event();
       termination_event = UserEvent::create_user_event();
+#ifdef LEGION_SPY
+      LegionSpy::log_index_task_termination(get_unique_id(), termination_event);
+#endif
       if (must_parallelism)
       {
         must_barrier = Barrier::create_barrier(1/*expected arrivals*/);

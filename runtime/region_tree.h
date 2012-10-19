@@ -894,8 +894,8 @@ namespace RegionRuntime {
               std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
     public:
       bool has_added_users(void) const;
-      size_t compute_return_state_size(const FieldMask &pack_mask, std::map<EscapedUser,unsigned> &escaped_users,
-                                        std::set<EscapedCopy> &escaped_copies);
+      size_t compute_return_state_size(const FieldMask &pack_mask, bool overwrite, 
+          std::map<EscapedUser,unsigned> &escaped_users, std::set<EscapedCopy> &escaped_copies);
       size_t compute_return_users_size(std::map<EscapedUser,unsigned> &escaped_users,
                                        std::set<EscapedCopy> &escaped_copies,
                                        bool already_returning);
