@@ -1208,14 +1208,11 @@ namespace RegionRuntime {
         log_run(LEVEL_ERROR,"Physical region does not have an accessor of type %d\n",AT); \
         exit(ERROR_INVALID_ACCESSOR_REQUESTED);                                   \
       }                                                                           \
-      PhysicalInstance inst = PhysicalInstance::NO_INST;                          \
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic;                \
       if (is_impl)                                                                \
-        inst = op.impl->get_physical_instance();                                  \
+        generic = op.impl->get_accessor();                                        \
       else                                                                        \
-        inst = op.map->get_physical_instance(gen_id);                             \
-      assert(inst.exists());                                                      \
-      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic =               \
-        inst.get_accessor();                                                      \
+        generic = op.map->get_accessor(gen_id);                                   \
       return generic.convert<LowLevel::AT>();                                     \
     }
 #else // DEBUG_HIGH_LEVEL
@@ -1223,13 +1220,11 @@ namespace RegionRuntime {
     template<>                                                                    \
     LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
     {                                                                             \
-      PhysicalInstance inst = PhysicalInstance::NO_INST;                          \
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic;                \
       if (is_impl)                                                                \
-        inst = op.impl->get_physical_instance();                                  \
+        generic = op.impl->get_accessor();                                        \
       else                                                                        \
-        inst = op.map->get_physical_instance(gen_id);                             \
-      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic =               \
-        inst.get_accessor();                                                      \
+        generic = op.map->get_accessor(gen_id);                                   \
       return generic.convert<LowLevel::AT>();                                     \
     }
 #endif
@@ -1240,6 +1235,45 @@ namespace RegionRuntime {
     //GET_ACCESSOR_IMPL(AccessorGPUReductionFold)
     //GET_ACCESSOR_IMPL(AccessorReductionList)
 #undef GET_ACCESSOR_IMPL
+
+#ifdef DEBUG_HIGH_LEVEL
+#define GET_FIELD_ACCESSOR_IMPL(AT)                                                       \
+    template<>                                                                            \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(FieldID fid)  \
+    {                                                                                     \
+      bool has_access = has_accessor(AT);                                                 \
+      if (!has_access)                                                                    \
+      {                                                                                   \
+        log_run(LEVEL_ERROR,"Physical region does not have an accessor of type %d\n",AT); \
+        exit(ERROR_INVALID_ACCESSOR_REQUESTED);                                           \
+      }                                                                                   \
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic;                        \
+      if (is_impl)                                                                        \
+        generic = op.impl->get_field_accessor(fid);                                       \
+      else                                                                                \
+        generic = op.map->get_field_accessor(gen_id, fid);                                \
+      return generic.convert<LowLevel::AT>();                                             \
+    }
+#else
+#define GET_FIELD_ACCESSOR_IMPL(AT)                                                       \
+    template<>                                                                            \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(FieldID fid)  \
+    {                                                                                     \
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic;                        \
+      if (is_impl)                                                                        \
+        generic = op.impl->get_field_accessor(fid);                                       \
+      else                                                                                \
+        generic = op.map->get_field_accessor(gen_id, fid);                                \
+      return generic.convert<LowLevel::AT>();                                             \
+    }
+#endif
+    GET_FIELD_ACCESSOR_IMPL(AccessorGeneric)
+    //GET_FIELD_DACCESSOR_IMPL(AccessorArray)
+    //GET_FIELD_ACCESSOR_IMPL(AccessorArrayReductionFold)
+    //GET_FIELD_ACCESSOR_IMPL(AccessorGPU)
+    //GET_FIELD_ACCESSOR_IMPL(AccessorGPUReductionFold)
+    //GET_FIELD_ACCESSOR_IMPL(AccessorReductionList)
+#undef GET_FIELD_ACCESSOR_IMPL
 
     /////////////////////////////////////////////////////////////
     // Index Allocator 
@@ -1372,15 +1406,15 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     PhysicalRegionImpl::PhysicalRegionImpl(void)
       : valid(false), idx(0), handle(LogicalRegion::NO_REGION), 
-        instance(PhysicalInstance::NO_INST)
+        manager(NULL)
     //--------------------------------------------------------------------------
     {
     }
 
     //--------------------------------------------------------------------------
     PhysicalRegionImpl::PhysicalRegionImpl(unsigned id, LogicalRegion h,
-                                            PhysicalInstance inst)
-      : valid(true), idx(id), handle(h), instance(inst)
+                                            InstanceManager *man)
+      : valid(true), idx(id), handle(h), manager(man)
     //--------------------------------------------------------------------------
     {
     }
@@ -1405,11 +1439,13 @@ namespace RegionRuntime {
     LogicalRegion PhysicalRegionImpl::get_logical_region(void) const
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
       if (!valid)
       {
         log_region(LEVEL_ERROR,"Accessing invalidated mapping for task region %d",idx);
         exit(ERROR_INVALID_MAPPING_ACCESS);
       }
+#endif
       return handle;
     }
 
@@ -1417,12 +1453,28 @@ namespace RegionRuntime {
     PhysicalInstance PhysicalRegionImpl::get_physical_instance(void) const
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
       if (!valid)
       {
         log_region(LEVEL_ERROR,"Accessing invalidated mapping for task region %d",idx);
         exit(ERROR_INVALID_MAPPING_ACCESS);
       }
-      return instance;
+#endif
+      return manager->get_instance();
+    }
+
+    //--------------------------------------------------------------------------
+    LowLevel::RegionAccessor<LowLevel::AccessorGeneric> PhysicalRegionImpl::get_accessor(void) const
+    //--------------------------------------------------------------------------
+    {
+      return manager->get_accessor(); 
+    }
+
+    //--------------------------------------------------------------------------
+    LowLevel::RegionAccessor<LowLevel::AccessorGeneric> PhysicalRegionImpl::get_field_accessor(FieldID fid) const
+    //--------------------------------------------------------------------------
+    {
+      return manager->get_field_accessor(fid);
     }
 
     //--------------------------------------------------------------------------

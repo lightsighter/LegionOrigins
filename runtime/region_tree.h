@@ -722,6 +722,22 @@ namespace RegionRuntime {
       inline const FieldMask& get_allocated_fields(void) const { return allocated_fields; }
       inline bool is_remote(void) const { return remote; }
       inline Lock get_lock(void) const { return lock; }
+      inline LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_accessor(void) const
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(instance.exists());
+#endif
+        return instance.get_accessor();
+      }
+      inline LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_field_accessor(FieldID fid) const
+      {
+        std::map<FieldID,IndexSpace::CopySrcDstField>::const_iterator finder = field_infos.find(fid);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(instance.exists());
+        assert(finder != field_infos.end());
+#endif
+        return instance.get_accessor().get_field_accessor(finder->second.offset, finder->second.size);
+      }
     public:
       void add_reference(void);
       void remove_reference(void);
@@ -842,6 +858,7 @@ namespace RegionRuntime {
       inline Memory get_location(void) const { return manager->get_location(); }
       inline const FieldMask& get_physical_mask(void) const { return manager->get_allocated_fields(); }
       inline InstanceKey get_key(void) const { return InstanceKey(manager->unique_id, logical_region->handle); }
+      inline InstanceManager* get_manager(void) const { return manager; }
       Event perform_final_close(const FieldMask &mask);
       void copy_from(RegionMapper &rm, InstanceView *src_view, const FieldMask &copy_mask);
       void find_copy_preconditions(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
@@ -936,6 +953,7 @@ namespace RegionRuntime {
       inline bool has_required_lock(void) const { return required_lock.exists(); }
       inline Lock get_required_lock(void) const { return required_lock; }
       inline PhysicalInstance get_instance(void) const { return instance; }
+      inline InstanceManager* get_manager(void) const { return view->get_manager(); }
       void remove_reference(UniqueID uid);
     private:
       friend class RegionTreeForest;

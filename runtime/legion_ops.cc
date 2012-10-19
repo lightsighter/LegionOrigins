@@ -405,6 +405,38 @@ namespace RegionRuntime {
     {
       return PhysicalRegion(this, generation);
     }
+    
+    //--------------------------------------------------------------------------
+    LowLevel::RegionAccessor<LowLevel::AccessorGeneric> 
+      MappingOperation::get_accessor(GenerationID gen_id) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (gen_id != generation)
+      {
+        log_region(LEVEL_ERROR,"Accessing stale inline mapping operation that has been invalided");
+        exit(ERROR_STALE_INLINE_MAPPING_ACCESS);
+      }
+      assert(mapped_event.has_triggered());
+#endif
+      return physical_instance.get_manager()->get_accessor();
+    }
+    
+    //--------------------------------------------------------------------------
+    LowLevel::RegionAccessor<LowLevel::AccessorGeneric> 
+      MappingOperation::get_field_accessor(GenerationID gen_id, FieldID fid) const
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (gen_id != generation)
+      {
+        log_region(LEVEL_ERROR,"Accessing stale inline mapping operation that has been invalided");
+        exit(ERROR_STALE_INLINE_MAPPING_ACCESS);
+      }
+      assert(mapped_event.has_triggered());
+#endif
+      return physical_instance.get_manager()->get_field_accessor(fid);
+    }
 
     //--------------------------------------------------------------------------
     Event MappingOperation::get_map_event(void) const
@@ -2478,7 +2510,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < physical_instances.size(); idx++)
       {
         physical_region_impls[idx] = new PhysicalRegionImpl(idx, regions[idx].region, 
-                                                            physical_instances[idx].get_instance());
+                                                            physical_instances[idx].get_manager());
         physical_regions[idx] = PhysicalRegion(physical_region_impls[idx]);
       }
       // If we're not remote, then we can release all the source copy instances

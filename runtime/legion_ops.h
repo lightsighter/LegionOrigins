@@ -86,6 +86,8 @@ namespace RegionRuntime {
       LogicalRegion get_logical_region(GenerationID gen_id) const; 
       PhysicalInstance get_physical_instance(GenerationID gen_id) const;
       bool has_accessor(GenerationID gen_id, AccessorType at) const;
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_accessor(GenerationID gen_id) const;
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_field_accessor(GenerationID gen_id, FieldID fid) const;
       PhysicalRegion get_physical_region(void);
       Event get_map_event(void) const;
     public:

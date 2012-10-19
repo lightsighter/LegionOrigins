@@ -1517,7 +1517,7 @@ namespace RegionRuntime {
       friend class HighLevelRuntime;
       friend class PhysicalRegion;
       friend class SingleTask;
-      PhysicalRegionImpl(unsigned id, LogicalRegion h, PhysicalInstance inst);
+      PhysicalRegionImpl(unsigned id, LogicalRegion h, InstanceManager *manager);
     public:
       PhysicalRegionImpl(void);
       PhysicalRegionImpl(const PhysicalRegionImpl &rhs);
@@ -1525,12 +1525,14 @@ namespace RegionRuntime {
     protected:
       LogicalRegion get_logical_region(void) const;
       PhysicalInstance get_physical_instance(void) const;
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_accessor(void) const;
+      LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_field_accessor(FieldID fid) const;
       void invalidate(void);
     protected:
       bool valid;
       unsigned idx;
       LogicalRegion handle;
-      PhysicalInstance instance;
+      InstanceManager *manager;
     };
 
     /**
