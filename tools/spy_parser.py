@@ -26,6 +26,13 @@ requirement_pat         = re.compile(prefix+"Logical Requirement (?P<uid>[0-9]+)
 req_field_pat           = re.compile(prefix+"Logical Requirement Field (?P<uid>[0-9]+) (?P<index>[0-9]+) (?P<fid>[0-9]+)")
 mapping_dep_pat         = re.compile(prefix+"Mapping Dependence (?P<pid>[0-9]+) (?P<ctx>[0-9]+) (?P<prev_id>[0-9]+) (?P<pidx>[0-9]+) (?P<next_id>[0-9]+) (?P<nidx>[0-9]+) (?P<dtype>[0-9]+)")
 
+# Logger calls for events
+event_event_pat         = re.compile(prefix+"Event Event (?P<idone>[0-9]+) (?P<genone>[0-9]+) (?P<idtwo>[0-9]+) (?P<gentwo>[0-9]+)")
+task_event_pat          = re.compile(prefix+"Task Events (?P<uid>[0-9]+) (?P<ctx>[0-9]+) (?P<startid>[0-9]+) (?P<startgen>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
+index_term_pat          = re.compile(prefix+"Index Termination (?P<uid>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
+copy_event_pat          = re.compile(prefix+"Copy Events (?P<srcid>[0-9]+) (?P<dstid>[0-9]+) (?P<srcloc>[0-9]+) (?P<dstloc>[0-9]+) (?P<index>[0-9]+) (?P<field>[0-9]+) (?P<tree>[0-9]+) (?P<startid>[0-9]+) (?P<startgen>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
+map_event_pat           = re.compile(prefix+"Map Events (?P<uid>[0-9]+) (?P<startid>[0-9]+) (?P<startgen>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
+
 def parse_log_file(file_name, trees, ops):
     log = open(file_name, "r")
     matches = 0
@@ -89,6 +96,27 @@ def parse_log_file(file_name, trees, ops):
         m = mapping_dep_pat.match(line)
         if m <> None:
             ops.add_mapping_dependence(int(m.group('pid')), int(m.group('ctx')), int(m.group('prev_id')), int(m.group('pidx')), int(m.group('next_id')), int(m.group('nidx')), int(m.group('dtype')))
+            continue
+        # Event analysis
+        m = event_event_pat.match(line)
+        if m <> None:
+            events.add_event_dependence(int(m.group('idone')), int(m.group('genone')), int(m.group('idtwo')), int(m.group('gentwo')))
+            continue
+        m = task_event_pat.match(line)
+        if m <> None:
+            events.add_task_instance(int(m.group('uid')), int(m.group('ctx')), int(m.group('startid')), int(m.group('startgen')), int(m.group('termid')), int(m.group('termgen')))
+            continue
+        m = index_term_pat.match(line)
+        if m <> None:
+            events.add_index_term(int(m.group('uid')), int(m.group('termid')), int(m.group('termgen')))
+            continue
+        m = copy_event_pat.match(line)
+        if m <> None:
+            events.add_copy_instance(int(m.group('srcid')), int(m.group('dstid')), int(m.group('srcloc')), int(m.group('dstloc')), int(m.group('index')), int(m.group('field')), int(m.group('tree')), int(m.group('startid')), int(m.group('startgen')), int(m.group('termid')), int(m.group('termgen')))
+            continue
+        m = map_event_pat.match(line)
+        if m <> None:
+            events.add_map_instance(int(m.group('uid')), int(m.group('startid')), int(m.group('startgen')), int(m.group('termid')), int(m.group('termgen')))
             continue
         # If we made it here we didn't match
         matches = matches - 1

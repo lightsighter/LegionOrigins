@@ -499,3 +499,26 @@ class OpState(object):
                   " of "+mdep.op1.get_name()+" and index "+str(mdep.idx2)+" of "+mdep.op2.get_name()+ \
                   " in context of task "+parent_task.get_name()
 
+class EventGraph(object):
+    def __init__(self):
+        self.events = dict()
+        self.tasks = dict()
+        self.index_tasks = dict()
+        self.maps = dict()
+        self.copies = set()
+
+    def add_event_dependence(self, id1, gen1, id2, gen2):
+        pass
+
+    def add_task_instance(self, uid, ctx, startid, startgen, termid, termgen):
+        pass
+
+    def add_index_term(self, uid, termid, termgen):
+        pass
+
+    def add_copy_instance(self, srcid, dstid, srcloc, dstloc, index, field, tree, startid, startgen, termid, termgen):
+        pass
+
+    def add_map_instance(self, uid, startid, startgen, termid, termgen):
+        pass
+
