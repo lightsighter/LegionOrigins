@@ -8179,7 +8179,6 @@ namespace RegionRuntime {
       for (std::map<Event,FieldMask>::const_iterator it = result->epoch_copy_users.begin();
             it != result->epoch_copy_users.end(); it++)
       {
-        printf("%ld %ld %ld\n", result->epoch_copy_users.size(), result->copy_users.size(), result->added_copy_users.size());
         assert((result->copy_users.find(it->first) != result->copy_users.end()) ||
                (result->added_copy_users.find(it->first) != result->added_copy_users.end()));
       }
