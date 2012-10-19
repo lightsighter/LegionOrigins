@@ -91,7 +91,8 @@ enum {
 };
 
 ////////////////////////////////////////////////////////////////////////
-// Dimensions used in simulation. Must be densely packed and wrap:
+// Dimensions used in simulation. Must be densely packed and wrapped
+// such that the following is possible:
 //
 //  * (DIM_X + 1) % NDIMS == DIM_Y
 //  * (DIM_Y + 1) % NDIMS == DIM_Z
@@ -101,8 +102,8 @@ enum dim_t {
   DIM_X = 0,
   DIM_Y = 1,
   DIM_Z = 2,
+  NDIMS = 3, // Must be last entry in enum.
 };
-const unsigned NDIMS = 3; // Must equal number of entries in above enum.
 
 ////////////////////////////////////////////////////////////////////////
 // During the computation, each block will only require access to
@@ -112,8 +113,8 @@ const unsigned NDIMS = 3; // Must equal number of entries in above enum.
 enum dir_t {
   DIR_POS = 0,
   DIR_NEG = 1,
+  NDIRS = 2, // Must be last entry in enum.
 };
-const unsigned NDIRS = 2; // Must equal number of entries in above enum.
 
 ////////////////////////////////////////////////////////////////////////
 // Arguments to main_task.
@@ -153,6 +154,14 @@ struct InitGlobalArgs {
 ////////////////////////////////////////////////////////////////////////
 // Arguments to step_task.
 ////////////////////////////////////////////////////////////////////////
+struct StepGlobalArgs {
+  StepGlobalArgs(dim_t dim, dir_t dir, FieldID field_write, FieldID field_read1, FieldID field_read2)
+    : dim(dim), dir(dir), field_write(field_write), field_read1(field_read1), field_read2(field_read2) {}
+  dim_t dim;
+  dir_t dir;
+  FieldID field_write, field_read1, field_read2;
+};
+
 struct StepLocalArgs {
   StepLocalArgs(std::pair<unsigned, unsigned> &x_span,
                 std::pair<unsigned, unsigned> &y_span,
@@ -343,6 +352,8 @@ void top_level_task(const void * /* input_args */, size_t /* input_arglen */,
 		    const std::vector<RegionRequirement> & /* reqs */,
 		    const std::vector<PhysicalRegion> & /* regions */,
 		    Context ctx, HighLevelRuntime *runtime) {
+  log_app.info("In top_level_task...");
+
   MainArgs args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
   unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
@@ -413,6 +424,8 @@ void main_task(const void *input_args, size_t input_arglen,
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
+  log_app.info("In main_task...");
+
   MainArgs &args = *(MainArgs *)input_args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
   unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
@@ -580,7 +593,7 @@ void main_task(const void *input_args, size_t input_arglen,
     fields.push_back(FieldSpaceRequirement(fspace, NO_MEMORY));
 
     // Update electric field.
-    for (unsigned dim = 0; dim < NDIMS; dim++) {
+    for (int dim = 0; dim < NDIMS; dim++) {
       std::vector<FieldID> write_fields, read_fields, ghost1_fields, ghost2_fields;
       write_fields.push_back(field_e[dim]);
       read_fields.push_back(field_h[(dim + 1)%NDIMS]);
@@ -602,13 +615,16 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
+      StepGlobalArgs global_args((dim_t)dim, DIR_POS, field_e[dim], field_h[(dim + 1)%NDIMS], field_h[(dim + 2)%NDIMS]);
+
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
-                                     TaskArgument(NULL, 0), position_arg_map, Predicate::TRUE_PRED, false));
+                                     TaskArgument(&global_args, sizeof(global_args)), position_arg_map,
+                                     Predicate::TRUE_PRED, false));
     }
 
     // Update magnetic field.
-    for (unsigned dim = 0; dim < NDIMS; dim++) {
+    for (int dim = 0; dim < NDIMS; dim++) {
       std::vector<FieldID> write_fields, read_fields, ghost1_fields, ghost2_fields;
       write_fields.push_back(field_h[dim]);
       read_fields.push_back(field_e[(dim + 1)%NDIMS]);
@@ -629,6 +645,8 @@ void main_task(const void *input_args, size_t input_arglen,
       regions.push_back(RegionRequirement(ghost_partition[(dim + 2)%NDIMS][DIR_NEG], 0 /* default projection */,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
+
+      StepGlobalArgs global_args((dim_t)dim, DIR_NEG, field_h[dim], field_e[(dim + 1)%NDIMS], field_e[(dim + 2)%NDIMS]);
 
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
@@ -659,6 +677,8 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime * /* runtime */) {
+  log_app.info("In init_task...");
+
   // FIXME (Elliott): Currently doesn't link because API doesn't exist yet.
 #if 0
   InitGlobalArgs &args = *(InitGlobalArgs *)input_global_args;
@@ -687,28 +707,50 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
 ////////////////////////////////////////////////////////////////////////
 // Updates simulation by one timestep.
 ////////////////////////////////////////////////////////////////////////
-void step_task(const void * /* input_global_args */, size_t /* input_global_arglen */,
+void step_task(const void * input_global_args, size_t input_global_arglen,
                const void *input_local_args, size_t input_local_arglent,
                const unsigned /* point */ [1],
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
-  StepLocalArgs &args = *(StepLocalArgs *)input_local_args;
-  unsigned &x_min = args.x_min, &x_max = args.x_max;
-  unsigned &y_min = args.y_min, &y_max = args.y_max;
-  unsigned &z_min = args.z_min, &z_max = args.z_max;
+  log_app.info("In step_task...");
+
+  StepGlobalArgs &global_args = *(StepGlobalArgs *)input_global_args;
+  dim_t &dim = global_args.dim;
+  dir_t &dir = global_args.dir;
+  FieldID &field_write = global_args.field_write;
+  FieldID &field_read1 = global_args.field_read1;
+  FieldID &field_read2 = global_args.field_read2;
+
+  StepLocalArgs &local_args = *(StepLocalArgs *)input_local_args;
+  unsigned &x_min = local_args.x_min, &x_max = local_args.x_max;
+  unsigned &y_min = local_args.y_min, &y_max = local_args.y_max;
+  unsigned &z_min = local_args.z_min, &z_max = local_args.z_max;
 
   PhysicalRegion write_cells = regions[0];
   PhysicalRegion read_cells = regions[1];
   PhysicalRegion ghost1_cells = regions[2];
   PhysicalRegion ghost2_cells = regions[3];
 
-  printf("Step for %d..%d x %d..%d x %d..%d\n", x_min, x_max, y_min, y_max, z_min, z_max);
+  // FIXME (Elliott): Currently doesn't link because API doesn't exist yet.
+#if 0
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> write = write_cells.get_accessor<AccessorGeneric>(field_write);
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read1 = read1_cells.get_accessor<AccessorGeneric>(field_read1);
+  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read2 = read2_cells.get_accessor<AccessorGeneric>(field_read2);
+#endif
+
+  for (unsigned x = x_min; x < x_max; x++) {
+    for (unsigned y = y_min; y < y_max; y++) {
+      for (unsigned z = z_min; z < z_max; z++) {
+        // TODO (Elliott): Kernel math here
+      }
+    }
+  }
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     Processor local) {
-  // TODO(Elliott): Customize mappers
+  // TODO (Elliott): Customize mappers
 }
 
 int main(int argc, char **argv) {
