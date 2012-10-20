@@ -706,7 +706,7 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
   while (enabled->get_next(position, length)) {
     for (int index = position; index < position + length; index++) {
       for (unsigned field = 0; field < NDIMS*2; field++) {
-        accessor[field].write(ptr_t<double>(index), 1.2345678*fields[field]); // FIXME (Elliott): Debugging
+        accessor[field].write(ptr_t<double>(index), 1.2345678*index*fields[field]); // FIXME (Elliott): Debugging
       }
     }
   }
@@ -755,9 +755,9 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
     for (unsigned y = y_min; y < y_max; y++) {
       for (unsigned z = z_min; z < z_max; z++) {
         unsigned c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(write.read(ptr_t<double>(c)) - 1.2345678*field_write) < 0.0000001);
-        assert(fabs(read1.read(ptr_t<double>(c)) - 1.2345678*field_read1) < 0.0000001);
-        assert(fabs(read2.read(ptr_t<double>(c)) - 1.2345678*field_read2) < 0.0000001);
+        assert(fabs(write.read(ptr_t<double>(c)) - 1.2345678*c*field_write) < 0.000001);
+        assert(fabs(read1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
+        assert(fabs(read2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
       }
     }
   }
@@ -767,14 +767,14 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
       for (unsigned z = z_min; z < z_max; z++) {
         unsigned y = dir == DIR_POS ? y_max : y_min - 1;
         unsigned c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*field_read1) < 0.0000001);
+        assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
       }
     }
     for (unsigned x = x_min; x < x_max; x++) {
       for (unsigned y = y_min; y < y_max; y++) {
         unsigned z = dir == DIR_POS ? z_max : z_min - 1;
         unsigned c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*field_read2) < 0.0000001);
+        assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
       }
     }
   }
