@@ -481,6 +481,7 @@ namespace RegionRuntime {
       // Logical region helper functions
       FieldMask perform_dependence_checks(const LogicalUser &user, 
                     const std::list<LogicalUser> &users, const FieldMask &user_mask, bool closing_partition = false);
+      void merge_new_field_state(GenericState &gstate, const FieldState &new_state, bool add_state);
       void merge_new_field_states(GenericState &gstate, std::vector<FieldState> &new_states, bool add_states);
       virtual bool are_children_disjoint(Color c1, Color c2) = 0;
       virtual bool are_closing_partition(void) const = 0;

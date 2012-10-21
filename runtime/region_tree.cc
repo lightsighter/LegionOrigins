@@ -1994,6 +1994,16 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         TreeStateLogger::capture_state(runtime, ridx, task_name, top_node, ctx, false/*pack*/, false/*send*/);
 #endif
+        // We also need to update the field states of the parent
+        // partition so that it knows that this region is open
+        if (top_node->parent != NULL)
+        {
+          RegionTreeNode::FieldState new_state(GenericUser(unpacking_mask, RegionUsage(req)), unpacking_mask, top_node->row_source->color);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(top_node->parent->physical_states.find(ctx) != top_node->parent->physical_states.end());
+#endif
+          top_node->merge_new_field_state(top_node->parent->physical_states[ctx], new_state, true/*add state*/);
+        }
       }
       else
       {
@@ -4025,6 +4035,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void RegionTreeNode::merge_new_field_state(GenericState &gstate,
+                          const FieldState &new_state, bool add_state)
+    //--------------------------------------------------------------------------
+    {
+      bool added = false;
+      for (std::list<FieldState>::iterator it = gstate.field_states.begin();
+            it != gstate.field_states.end(); it++)
+      {
+        if (it->overlap(new_state))
+        {
+          it->merge(new_state);
+          added = true;
+          break;
+        }
+      }
+      if (!added)
+        gstate.field_states.push_back(new_state);
+
+      if (add_state)
+        gstate.added_states.push_back(new_state);
+    }
+
+    //--------------------------------------------------------------------------
     void RegionTreeNode::merge_new_field_states(GenericState &gstate,
                           std::vector<FieldState> &new_states, bool add_states)
     //--------------------------------------------------------------------------
@@ -4032,24 +4065,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < new_states.size(); idx++)
       {
         const FieldState &next = new_states[idx];
-        bool added = false;
-        for (std::list<FieldState>::iterator it = gstate.field_states.begin();
-              it != gstate.field_states.end(); it++)
-        {
-          if (it->overlap(next))
-          {
-            it->merge(next);
-            added = true;
-            break;
-          }
-        }
-        if (!added)
-          gstate.field_states.push_back(next);
-      }
-      if (add_states)
-      {
-        gstate.added_states.insert(gstate.added_states.end(),
-                        new_states.begin(),new_states.end());
+        merge_new_field_state(gstate, next, add_states);        
       }
 #if 0
       // Actually this is no longer a valid check since children can be
@@ -8161,8 +8177,8 @@ namespace RegionRuntime {
 #ifdef LEGION_SPY
           result += sizeof(bool);
 #endif
-          result += sizeof(it->first);
-          result += sizeof(it->second);
+          result += sizeof(finder->first);
+          result += sizeof(finder->second);
           // Add it to the list of escaped copies
           escaped_copies.insert(EscapedCopy(get_key(), finder->first));
         }
@@ -8175,8 +8191,8 @@ namespace RegionRuntime {
 #endif
           packing_sizes[4]++;
           result += sizeof(bool);
-          result += sizeof(it->first);
-          result += sizeof(it->second);
+          result += sizeof(finder->first);
+          result += sizeof(finder->second);
         }
 #endif
       }
@@ -8362,7 +8378,7 @@ namespace RegionRuntime {
           assert(finder != added_users.end());
 #endif
 #ifdef LEGION_SPY
-          rez.serialize(true);
+          rez.serialize<bool>(true);
 #endif
           rez.serialize(*it);
           rez.serialize(finder->second);
@@ -8377,7 +8393,7 @@ namespace RegionRuntime {
         for (std::vector<UniqueID>::const_iterator it = return_deleted_users.begin();
               it != return_deleted_users.end(); it++)
         {
-          rez.serialize(false);
+          rez.serialize<bool>(false);
           rez.serialize(*it);
           rez.serialize(deleted_users[*it]);
         }
@@ -8394,7 +8410,7 @@ namespace RegionRuntime {
           assert(finder != added_copy_users.end());
 #endif
 #ifdef LEGION_SPY
-          rez.serialize(true);
+          rez.serialize<bool>(true);
 #endif
           rez.serialize(*it);
           rez.serialize(finder->second);
@@ -8409,7 +8425,7 @@ namespace RegionRuntime {
         for (std::vector<Event>::const_iterator it = return_deleted_copy_users.begin();
               it != return_deleted_copy_users.end(); it++)
         {
-          rez.serialize(false);
+          rez.serialize<bool>(false);
           rez.serialize(*it);
           rez.serialize(deleted_copy_users[*it]);
         }
