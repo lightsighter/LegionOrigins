@@ -587,6 +587,7 @@ namespace RegionRuntime {
       bool stealable_set;
       bool stealable;
       bool remote;
+      bool top_level_task;
       UserEvent mapped_event;
       UserEvent termination_event;
       FutureImpl *future;

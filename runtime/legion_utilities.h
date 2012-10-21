@@ -80,7 +80,7 @@ namespace RegionRuntime {
 #endif
         return buffer; 
       }
-    public:
+    private:
       size_t total_bytes;
       char *buffer;
       off_t index;
@@ -778,11 +778,11 @@ namespace RegionRuntime {
       for (int idx = (BIT_ELMTS-1); idx >= 0; idx--)
       {
         if (idx == (BIT_ELMTS-1))
-          sprintf(result,"%64lx",bit_vector[idx]);
+          sprintf(result,"%4.4lx",bit_vector[idx]);
         else
         {
           char temp[8*sizeof(T)+1];
-          sprintf(temp,"%64lx",bit_vector[idx]);
+          sprintf(temp,"%4.4lx",bit_vector[idx]);
           strcat(result,temp);
         }
       }

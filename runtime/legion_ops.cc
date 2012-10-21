@@ -2986,6 +2986,8 @@ namespace RegionRuntime {
             RegionMapper rm(this, unique_id, phy_ctx, idx, regions[idx], NULL/*shouldn't need it*/, mapper_lock,
                             Processor::NO_PROC, single_event, multi_event,
                             tag, false/*sanitizing*/, false/*inline mapping*/, source_copy_instances);
+            // First remove our reference so we don't accidentally end up waiting on ourself
+            physical_instances[idx].remove_reference(unique_id);
             Event close_event = forest_ctx->close_to_instance(physical_instances[idx], rm);
             wait_on_events.insert(close_event);
           }
@@ -3338,6 +3340,7 @@ namespace RegionRuntime {
         stealable_set = false;
         stealable = false;
         remote = false;
+        top_level_task = false;
         future = NULL;
         remote_future = NULL;
         remote_future_len = 0;
@@ -3557,7 +3560,7 @@ namespace RegionRuntime {
                                               );
             }
           }
-          buffer_size += forest_ctx->post_compute_region_tree_state_return();
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(is_leaf/*last return*/);
           // Now pack everything up and send it back
           Serializer rez(buffer_size);
           rez.serialize<Processor>(orig_proc);
@@ -4014,7 +4017,7 @@ namespace RegionRuntime {
                                                 );
             }
           }
-          buffer_size += forest_ctx->post_compute_region_tree_state_return();
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(true/*last return*/);
           // Finally pack up our source copy instances to send back
           buffer_size += compute_source_copy_instances_return();
           // Now pack it all up
@@ -4191,8 +4194,8 @@ namespace RegionRuntime {
         (*it)->deactivate();
       }
 
-      // If we're remote, deactivate ourself
-      if (remote)
+      // If we're remote or the top level task, deactivate ourself
+      if (remote || top_level_task)
         this->deactivate();
     }
 
@@ -4499,8 +4502,7 @@ namespace RegionRuntime {
     bool PointTask::is_remote(void)
     //--------------------------------------------------------------------------
     {
-      // PointTask is never remote
-      return false;
+      return slice_owner->remote;
     }
 
     //--------------------------------------------------------------------------
@@ -6883,7 +6885,7 @@ namespace RegionRuntime {
             buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::PHYSICAL);
           }
         }
-        buffer_size += forest_ctx->post_compute_region_tree_state_return();
+        buffer_size += forest_ctx->post_compute_region_tree_state_return(is_leaf/*last return*/);
         // Now pack everything up
         Serializer rez(buffer_size);
         rez.serialize(orig_proc);
@@ -6977,7 +6979,7 @@ namespace RegionRuntime {
               buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::DIFF);
             }
           }
-          buffer_size += forest_ctx->post_compute_region_tree_state_return();
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(true/*last return*/);
           buffer_size += sizeof(size_t);
           // Also send back any source copy instances to be released
           for (std::vector<PointTask*>::const_iterator it = points.begin();

@@ -1760,7 +1760,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    size_t RegionTreeForest::post_compute_region_tree_state_return(void)
+    size_t RegionTreeForest::post_compute_region_tree_state_return(bool last_return)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1790,6 +1790,11 @@ namespace RegionRuntime {
       {
         if ((it->second->is_remote() || (unique_managers.find(it->second) != unique_managers.end())) &&
             (it->second->is_valid_free()))
+        {
+          returning_managers.push_back(it->second);
+          it->second->find_user_returns(returning_views);
+        }
+        else if (last_return && (it->second->remote && !it->second->remote_frac.is_empty()))
         {
           returning_managers.push_back(it->second);
           it->second->find_user_returns(returning_views);
@@ -1938,7 +1943,8 @@ namespace RegionRuntime {
             it != returning_managers.end(); it++)
       {
 #ifdef DEBUG_HIGH_LEVEL
-        assert((*it)->is_valid_free());
+        // Not valid if we're sending back the last set of returning remote managers
+        //assert((*it)->is_valid_free());
 #endif
         rez.serialize((*it)->unique_id);
         (*it)->pack_remote_fraction(rez);
@@ -5845,7 +5851,10 @@ namespace RegionRuntime {
         derez.deserialize(valid_mask);
         InstanceView *new_view = context->find_view(key);
         if (state.valid_views.find(new_view) == state.valid_views.end())
+        {
           state.valid_views[new_view] = valid_mask;
+          new_view->add_valid_reference();
+        }
         else
           state.valid_views[new_view] |= valid_mask;
         // Also put it on the added list 
@@ -6619,7 +6628,7 @@ namespace RegionRuntime {
     InstanceManager::~InstanceManager(void)
     //--------------------------------------------------------------------------
     {
-      if (!remote && instance.exists())
+      if (!remote && !clone && instance.exists())
       {
         log_leak(LEVEL_WARNING,"Leaking physical instance %x in memory %x",
                     instance.id, location.id);
@@ -6904,7 +6913,8 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(remote);
-      assert(is_valid_free());
+      // Not valid if we're sending back the last set of managers
+      //assert(is_valid_free());
       assert(!remote_frac.is_empty());
 #endif
       InstFrac return_frac = remote_frac;
@@ -6939,6 +6949,7 @@ namespace RegionRuntime {
 #ifndef DISABLE_GC
       if (!remote && !clone && (references == 0) && local_frac.is_whole())
       {
+        log_garbage(LEVEL_INFO,"Garbage collecting physical instance %x in memory %x",instance.id, location.id);
         instance.destroy();
         lock.destroy_lock();
         instance = PhysicalInstance::NO_INST;
@@ -8572,6 +8583,8 @@ namespace RegionRuntime {
       }
       size_t new_added_users;
       derez.deserialize(new_added_users);
+      if (result->added_users.empty() && (new_added_users > 0))
+        result->check_state_change(true/*adding*/);
       for (unsigned idx = 0; idx < new_added_users; idx++)
       {
 #ifdef LEGION_SPY
@@ -8605,6 +8618,8 @@ namespace RegionRuntime {
       }
       size_t new_added_copy_users;
       derez.deserialize(new_added_copy_users);
+      if (result->added_copy_users.empty() && (new_added_copy_users > 0))
+        result->check_state_change(true/*adding*/);
       for (unsigned idx = 0; idx < new_added_copy_users; idx++)
       {
 #ifdef LEGION_SPY
@@ -8705,6 +8720,8 @@ namespace RegionRuntime {
 #endif
       size_t num_added_users;
       derez.deserialize(num_added_users);
+      if (result->added_users.empty() && (num_added_users > 0))
+        result->check_state_change(true/*adding*/);
       for (unsigned idx = 0; idx < num_added_users; idx++)
       {
         UniqueID uid;
@@ -8721,6 +8738,8 @@ namespace RegionRuntime {
       }
       size_t num_added_copy_users;
       derez.deserialize(num_added_copy_users);
+      if (result->added_copy_users.empty() && (num_added_copy_users > 0))
+        result->check_state_change(true/*adding*/);
       for (unsigned idx = 0; idx < num_added_copy_users; idx++)
       {
         Event copy_event;

@@ -2911,6 +2911,8 @@ namespace RegionRuntime {
         top->initialize_task(NULL/*no parent*/, HighLevelRuntime::legion_main_id,
                               &HighLevelRuntime::get_input_args(), sizeof(InputArgs),
                               Predicate::TRUE_PRED, 0/*map id*/, 0/*mapping tag*/, get_mapper(0), get_mapper_lock(0));
+        // Mark the top level task so it knows to reclaim itself
+        top->top_level_task = true;
 #ifdef LEGION_SPY
         LegionSpy::log_top_level_task(top->get_unique_id(), top->ctx_id, HighLevelRuntime::legion_main_id);
 #endif

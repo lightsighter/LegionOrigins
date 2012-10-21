@@ -122,7 +122,7 @@ namespace RegionRuntime {
                                               , const char *task_name
 #endif
                                               );
-      size_t post_compute_region_tree_state_return(void);
+      size_t post_compute_region_tree_state_return(bool last_return);
       void begin_pack_region_tree_state_return(Serializer &rez);
       void pack_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
                               ContextID ctx, bool overwrite, SendingMode mode, Serializer &rez);
