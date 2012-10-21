@@ -28,12 +28,12 @@ mapping_dep_pat         = re.compile(prefix+"Mapping Dependence (?P<pid>[0-9]+) 
 
 # Logger calls for events
 event_event_pat         = re.compile(prefix+"Event Event (?P<idone>[0-9]+) (?P<genone>[0-9]+) (?P<idtwo>[0-9]+) (?P<gentwo>[0-9]+)")
-task_event_pat          = re.compile(prefix+"Task Events (?P<uid>[0-9]+) (?P<ctx>[0-9]+) (?P<startid>[0-9]+) (?P<startgen>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
+task_event_pat          = re.compile(prefix+"Task Events (?P<uid>[0-9]+) (?P<point>[0-9]+) (?P<startid>[0-9]+) (?P<startgen>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
 index_term_pat          = re.compile(prefix+"Index Termination (?P<uid>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
 copy_event_pat          = re.compile(prefix+"Copy Events (?P<srcid>[0-9]+) (?P<dstid>[0-9]+) (?P<srcloc>[0-9]+) (?P<dstloc>[0-9]+) (?P<index>[0-9]+) (?P<field>[0-9]+) (?P<tree>[0-9]+) (?P<startid>[0-9]+) (?P<startgen>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
 map_event_pat           = re.compile(prefix+"Map Events (?P<uid>[0-9]+) (?P<startid>[0-9]+) (?P<startgen>[0-9]+) (?P<termid>[0-9]+) (?P<termgen>[0-9]+)")
 
-def parse_log_file(file_name, trees, ops):
+def parse_log_file(file_name, trees, ops, events):
     log = open(file_name, "r")
     matches = 0
     for line in log:
@@ -104,7 +104,7 @@ def parse_log_file(file_name, trees, ops):
             continue
         m = task_event_pat.match(line)
         if m <> None:
-            events.add_task_instance(int(m.group('uid')), int(m.group('ctx')), int(m.group('startid')), int(m.group('startgen')), int(m.group('termid')), int(m.group('termgen')))
+            events.add_task_instance(int(m.group('uid')), int(m.group('point')), int(m.group('startid')), int(m.group('startgen')), int(m.group('termid')), int(m.group('termgen')))
             continue
         m = index_term_pat.match(line)
         if m <> None:

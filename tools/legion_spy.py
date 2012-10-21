@@ -22,7 +22,7 @@ def main():
     if len(sys.argv) < 2:
         usage()
 
-    opts, args = getopt(sys.argv[1:],'l')
+    opts, args = getopt(sys.argv[1:],'lp')
     opts = dict(opts)
     if len(args) <> 1:
         usage()
@@ -31,13 +31,18 @@ def main():
     if '-l' in opts:
         logical_checks = True 
 
+    make_pictures = False
+    if '-p' in opts:
+        make_pictures = True
+
     file_name = args[0]
 
     tree_state = TreeState()
     ops_state  = OpState()
+    event_graph = EventGraph()
 
     print 'Loading log file '+file_name+'...'
-    total_matches = parse_log_file(file_name, tree_state, ops_state)
+    total_matches = parse_log_file(file_name, tree_state, ops_state, event_graph)
     print 'Matched '+str(total_matches)+' lines'
     if total_matches == 0:
         print "No matches. Exiting..."
@@ -46,6 +51,10 @@ def main():
     if logical_checks:
         print "Checking all mapping dependences..."
         ops_state.check_logical(tree_state)
+
+    if make_pictures:
+        print "Generating event graph pictures..."
+        event_graph.make_pictures(ops_state,temp_dir)
 
     print "Legion Spy analysis complete.  Exiting..."
 

@@ -448,6 +448,10 @@ class OpState(object):
             return self.maps[uid]
         return self.deletions[uid]
 
+    def get_name(self, uid):
+        assert uid in self.tasks
+        return self.tasks[uid].get_name()
+
     def add_requirement(self, uid, index, is_reg, ispace, fspace, tid, priv, coher, redop):
         self.get_op(uid).add_requirement(index, is_reg, ispace, fspace, tid, priv, coher, redop)
 
@@ -499,6 +503,245 @@ class OpState(object):
                   " of "+mdep.op1.get_name()+" and index "+str(mdep.idx2)+" of "+mdep.op2.get_name()+ \
                   " in context of task "+parent_task.get_name()
 
+
+
+class EventHandle(object):
+    def __init__(self, uid, gen):
+        self.uid = uid
+        self.gen = gen
+
+    def __hash__(self):
+        return hash((self.uid,self.gen))
+
+    def __eq__(self,other):
+        return (self.uid,self.gen) == (other.uid,other.gen)
+
+class TaskHandle(object):
+    def __init__(self, uid, point):
+        self.uid = uid
+        self.point = point 
+
+    def __hash__(self):
+        return hash((self.uid,self.point))
+
+    def __eq__(self,other):
+        return (self.uid,self.point) == (other.uid,other.point)
+
+class Event(object):
+    def __init__(self, handle):
+        self.handle = handle
+        self.incoming = set()
+        self.outgoing = set()
+        self.marked = False
+
+    def add_incoming(self, event):
+        assert self <> event
+        self.incoming.add(event)
+
+    def add_outgoing(self, event):
+        if self == event:
+            print str(self.handle.uid)+" "+str(self.handle.gen)
+        assert self <> event
+        self.outgoing.add(event)
+
+    def traverse(self, component):
+        if self.marked:
+            return
+        self.marked = True
+        component.add_event(self)
+        for n in self.incoming:
+            n.traverse(component)
+        for n in self.outgoing:
+            n.traverse(component)
+
+    def print_prev_dependences(self, printer, name):
+        for n in self.incoming:
+            n.print_prev_dependences(printer, name)
+
+class TaskInstance(object):
+    def __init__(self, handle, start, term):
+        self.handle = handle
+        self.start_event = start
+        self.term_event = term
+        self.marked = False
+        self.name = 'task_node_'+str(handle.uid)+'_'+str(handle.point)
+
+    def traverse(self, component):
+        if self.marked:
+            return
+        self.marked = True
+        component.add_task(self)
+        self.start_event.traverse(component)
+        self.term_event.traverse(component)
+
+    def print_node(self, printer, ops):
+        printer.println(self.name+' [style=filled,label="'+ops.get_name(self.handle.uid)+ 
+            '\\nUnique\ ID\ '+str(self.handle.uid)+'",fillcolor=lightskyblue,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
+
+    def print_dependences(self, printer):
+        self.start_event.print_prev_dependences(printer, self.name)
+
+    def print_prev_dependences(self, printer, later_name):
+        # Print the dependence, don't traverse back any farther
+        printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];') 
+
+class IndexInstance(object):
+    def __init__(self, uid, term):
+        self.uid = uid
+        self.term_event = term
+        self.points = dict()
+
+    def add_point(self, handle, point):
+        assert handle not in self.points
+        self.points[handle] = point
+
+class CopyInstance(object):
+    def __init__(self, uid, srcid, dstid, srcloc, dstloc, index, field, tree, start, term):
+        self.srcid = srcid
+        self.dstid = dstid
+        self.srcloc = srcloc
+        self.dstloc = dstloc
+        self.index_space = index
+        self.field_space = field
+        self.tree_id = tree
+        self.start_event = start
+        self.term_event = term
+        self.marked = False
+        self.name = 'copy_node_'+str(uid)
+
+    def traverse(self, component):
+        if self.marked:
+            return
+        self.marked = True
+        component.add_copy(self)
+        self.start_event.traverse(component)
+        self.term_event.traverse(component)
+
+    def print_node(self, printer):
+        printer.println(self.name+' [style=filled,label="Src\ Inst:\ '+str(self.srcid)+'\ Src\ Loc:\ '+str(self.srcloc)+
+            '\\nDst\ Inst:\ '+str(self.dstid)+'\ Dst\ Loc:\ '+str(self.dstloc)+
+            '\\nLogical\ Region:\ (index:'+str(self.index_space)+',field:'+str(self.field_space)+',tree:'+str(self.tree_id)+')'+
+            '",fillcolor=darkgoldenrod1,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
+
+    def print_dependences(self, printer):
+        self.start_event.print_prev_dependences(printer, self.name)
+
+    def print_prev_dependences(self, printer, later_name):
+        printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];')
+
+class MapInstance(object):
+    def __init__(self, uid, start, term):
+        self.uid = uid
+        self.start_event = start
+        self.term_event = term
+        self.name = 'mapping_node_'+str(uid)
+        self.marked = False
+
+    def traverse(self, component):
+        if self.marked:
+            return
+        self.marked = True
+        component.add_map(self)
+        self.start_event.traverse(component)
+        self.term_event.traverse(component)
+
+    def print_node(self, printer):
+        printer.println(self.name+' [style=filled,label="Inline\ Mapping\ '+str(self.uid)+
+            '",fillcolor=mediumseagreen,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
+
+    def print_dependences(self, printer):
+        self.start_event.print_prev_dependences(printer, self.name)
+
+    def print_prev_dependences(self, printer, later_name):
+        printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];')
+
+class EventGraphPrinter(object):
+    def __init__(self,path,name):
+        self.filename = path+name+'.dot'
+        self.out = open(self.filename,'w')
+        self.depth = 0
+        self.println('digraph '+name)
+        self.println('{')
+        self.down()
+        #self.println('aspect = ".00001,100";')
+        #self.println('ratio = 1;')
+        #self.println('size = "10,10";')
+        self.println('compound = true;')
+
+    def close(self):
+        self.up()
+        self.println('}')
+        self.out.close()
+        return self.filename
+
+    def up(self):
+        assert self.depth > 0
+        self.depth = self.depth-1
+
+    def down(self):
+        self.depth = self.depth+1
+
+    def println(self,string):
+        for i in range(self.depth):
+            self.out.write('  ')
+        self.out.write(string)
+        self.out.write('\n')
+
+
+class ConnectedComponent(object):
+    def __init__(self):
+        self.events = set()
+        self.tasks = set()
+        self.maps = set()
+        self.copies = set()
+
+    def add_event(self, event):
+        assert event not in self.events
+        self.events.add(event)
+
+    def add_task(self, task):
+        assert task not in self.tasks
+        self.tasks.add(task)
+
+    def add_map(self, mapp):
+        assert mapp not in self.maps
+        self.maps.add(mapp)
+
+    def add_copy(self, copy):
+        assert copy not in self.copies
+        self.copies.add(copy)
+
+    def empty(self):
+        if len(self.tasks) == 0 and len(self.maps) == 0 and len(self.copies) == 0:
+            return True
+        return False
+
+    def generate_graph(self, idx, ops, path):
+        name = 'event_graph_'+str(idx)
+        printer = EventGraphPrinter(path,name)
+        # Print the nodes
+        for t in self.tasks:
+            t.print_node(printer,ops)
+        for m in self.maps:
+            m.print_node(printer)
+        for c in self.copies:
+            c.print_node(printer)
+        # Now print the dependences
+        for t in self.tasks:
+            t.print_dependences(printer)
+        for m in self.maps:
+            m.print_dependences(printer)
+        for c in self.copies:
+            c.print_dependences(printer) 
+        dot_file = printer.close()
+        pdf_file = name+'.pdf'
+        try:
+            subprocess.check_call(['dot -Tpdf -o '+pdf_file+' '+dot_file],shell=True)
+        except:
+            print "WARNING: DOT failure, image for event graph "+str(idx)+" not generated"
+            subprocess.call(['rm -f core '+pdf_file],shell=True)
+
+
 class EventGraph(object):
     def __init__(self):
         self.events = dict()
@@ -506,19 +749,68 @@ class EventGraph(object):
         self.index_tasks = dict()
         self.maps = dict()
         self.copies = set()
+        self.next_copy = 1
+
+    def get_event(self, handle):
+        if handle not in self.events:
+            self.events[handle] = Event(handle)
+        return self.events[handle]
 
     def add_event_dependence(self, id1, gen1, id2, gen2):
-        pass
+        e1 = self.get_event(EventHandle(id1,gen1))
+        e2 = self.get_event(EventHandle(id2,gen2))
+        e1.add_outgoing(e2)
+        e2.add_incoming(e1)
 
-    def add_task_instance(self, uid, ctx, startid, startgen, termid, termgen):
-        pass
+    def add_task_instance(self, uid, point, startid, startgen, termid, termgen):
+        handle = TaskHandle(uid, point)
+        assert handle not in self.tasks
+        start_event = self.get_event(EventHandle(startid,startgen))
+        term_event = self.get_event(EventHandle(termid,termgen))
+        task = TaskInstance(handle,start_event,term_event)
+        self.tasks[handle] = task
+        if uid in self.index_tasks:
+            self.index_tasks[uid].add_point(handle, task)
+            global_term = self.index_tasks[uid].term_event
+            term_event.add_outgoing(global_term)
+            global_term.add_incoming(term_event)
+        start_event.add_outgoing(task)
+        term_event.add_incoming(task)
 
     def add_index_term(self, uid, termid, termgen):
-        pass
+        assert uid not in self.index_tasks
+        term_event = self.get_event(EventHandle(termid, termgen))
+        self.index_tasks[uid] = IndexInstance(uid, term_event)
 
     def add_copy_instance(self, srcid, dstid, srcloc, dstloc, index, field, tree, startid, startgen, termid, termgen):
-        pass
+        start_event = self.get_event(EventHandle(startid,startgen))
+        term_event = self.get_event(EventHandle(termid,termgen))
+        copy_op = CopyInstance(self.next_copy, srcid, dstid, srcloc, dstloc, index, field, tree, start_event, term_event)
+        self.next_copy = self.next_copy + 1
+        start_event.add_outgoing(copy_op)
+        term_event.add_incoming(copy_op)
 
     def add_map_instance(self, uid, startid, startgen, termid, termgen):
-        pass
+        assert uid not in self.maps
+        start_event = self.get_event(EventHandle(startid,startgen))
+        term_event = self.get_event(EventHandle(termid,termgen))
+        map_inst = MapInstance(uid, start_event, term_event)
+        self.maps[uid] = map_inst
+        start_event.add_outgoing(map_inst)
+        term_event.add_incoming(map_inst)
+
+    def make_pictures(self, ops, path):
+        # First compute the connected components of the graph 
+        components = list()
+        # Go through all the events and find the components
+        for h,e in self.events.iteritems():
+            comp = ConnectedComponent()
+            e.traverse(comp)
+            if not comp.empty():
+                components.append(comp)
+
+        print "Found "+str(len(components))+" event graphs"
+
+        for idx in range(len(components)):
+            components[idx].generate_graph(idx,ops,path)
 
