@@ -17,8 +17,6 @@ namespace RegionRuntime {
     // Field Space 
     /////////////////////////////////////////////////////////////
     class FieldSpace {
-    public:
-      static const FieldSpace NO_SPACE;
     protected:
       // Only the runtime should be able to make these
       FRIEND_ALL_RUNTIME_CLASSES;
@@ -32,6 +30,8 @@ namespace RegionRuntime {
       inline bool operator<(const FieldSpace &rhs) const;
     private:
       FieldSpaceID id;
+    public:
+      static const FieldSpace NO_SPACE;
     };
 
     /////////////////////////////////////////////////////////////
@@ -1074,6 +1074,10 @@ namespace RegionRuntime {
 #endif
       static unsigned max_tasks_per_schedule_request;
       static unsigned max_task_window_per_context;
+#ifdef DEBUG_HIGH_LEVEL
+    public:
+      static bool logging_region_tree_state;
+#endif
     private:
       // Member variables
       const Processor local_proc;
@@ -1195,6 +1199,11 @@ namespace RegionRuntime {
       // queue_lock -> theiving_lock
       // queue_lock -> mapper_lock[x]
       // mapping_lock -> mapper_lock[x]
+#ifdef DEBUG_HIGH_LEVEL
+      TreeStateLogger *tree_state_logger;
+    public:
+      TreeStateLogger* get_tree_state_logger(void) const { return tree_state_logger; }
+#endif
     };
 
     /////////////////////////////////////////////////////////////

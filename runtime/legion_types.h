@@ -250,6 +250,9 @@ namespace RegionRuntime {
     template<typename T> class Fraction;
     template<typename T, unsigned int MAX> class BitMask;
 
+    // legion_logging.h
+    class TreeStateLogger;
+
     typedef LowLevel::Machine Machine;
     typedef LowLevel::IndexSpace IndexSpace;
     typedef LowLevel::IndexSpaceAllocator IndexSpaceAllocator;
@@ -308,7 +311,8 @@ namespace RegionRuntime {
     friend class RegionNode;                      \
     friend class PartitionNode;                   \
     friend class InstanceView;                    \
-    friend class InstanceManager;
+    friend class InstanceManager;                 \
+    friend class TreeStateLogger;
 
     // Timing events
     enum {

@@ -184,6 +184,9 @@ namespace RegionRuntime {
     public:
       inline void shift_left(unsigned shift);
     public:
+      // Allocates memory that becomes owned by the caller
+      inline char* to_string(void) const;
+    public:
       static inline int pop_count(const BitMask<unsigned,MAX> &mask);
       static inline int pop_count(const BitMask<unsigned long,MAX> &mask);
       static inline int pop_count(const BitMask<unsigned long long,MAX> &mask);
@@ -764,6 +767,26 @@ namespace RegionRuntime {
       }
       // Handle the last one
       bit_vector[0] = bit_vector[0] << shift;
+    }
+
+    //-------------------------------------------------------------------------
+    template<typename T, unsigned MAX>
+    inline char* BitMask<T,MAX>::to_string(void) const
+    //-------------------------------------------------------------------------
+    {
+      char *result = (char*)malloc((MAX+1)*sizeof(char));
+      for (unsigned idx = 0; idx < BIT_ELMTS; idx++)
+      {
+        if (idx == 0)
+          sprintf(result,"%lx",bit_vector[idx]);
+        else
+        {
+          char temp[8*sizeof(T)+1];
+          sprintf(temp,"%lx",bit_vector[idx]);
+          strcat(result,temp);
+        }
+      }
+      return result;
     }
 
     //-------------------------------------------------------------------------

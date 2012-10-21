@@ -2893,7 +2893,8 @@ namespace RegionRuntime {
       }
       // Record the dependences
       LegionSpy::log_event_dependences(wait_on_events, start_condition);
-      LegionSpy::log_task_events(get_unique_id(), ctx_id, start_condition, get_termination_event());
+      LegionSpy::log_task_events(get_unique_id(), (is_index_space ? *((unsigned*)index_point) : 0), 
+                                  start_condition, get_termination_event());
 #endif
       // Now we need to select the variant to run
       const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
@@ -3549,7 +3550,11 @@ namespace RegionRuntime {
             if (non_virtual_mapped_region[idx])
             {
               buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
-                                              IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL);
+                                              IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL
+#ifdef DEBUG_HIGH_LEVEL
+                                              , variants->name
+#endif
+                                              );
             }
           }
           buffer_size += forest_ctx->post_compute_region_tree_state_return();
@@ -3810,12 +3815,20 @@ namespace RegionRuntime {
               if (physical_instances[idx].is_virtual_ref())
               {
                 forest_ctx->pack_region_tree_state(regions[idx],
-                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez
+#ifdef DEBUG_HIGH_LEVEL
+                              , idx, variants->name
+#endif
+                              );
               }
               else
               {
                 forest_ctx->pack_region_tree_state(regions[idx],
-                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez);
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez
+#ifdef DEBUG_HIGH_LEVEL
+                              , idx, variants->name
+#endif
+                              );
                 forest_ctx->pack_reference(physical_instances[idx], rez);
               }
             }
@@ -3828,7 +3841,11 @@ namespace RegionRuntime {
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             forest_ctx->pack_region_tree_state(regions[idx], 
-                            get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
+                            get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez
+#ifdef DEBUG_HIGH_LEVEL
+                            , idx, variants->name
+#endif
+                            );
           }
         }
       }
@@ -3888,12 +3905,20 @@ namespace RegionRuntime {
             if (!non_virtual_mapped_region[idx])
             {
               // Unpack the state in our context
-              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez); 
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez
+#ifdef DEBUG_HIGH_LEVEL
+                  , idx, variants->name 
+#endif
+                  ); 
               physical_instances.push_back(InstanceRef()); // virtual instance
             }
             else
             {
-              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez);
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez
+#ifdef DEBUG_HIGH_LEVEL
+                  , idx, variants->name
+#endif
+                  );
               physical_instances.push_back(forest_ctx->unpack_reference(derez)); 
             }
           }
@@ -3906,7 +3931,11 @@ namespace RegionRuntime {
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           // Unpack the state in our context
-          forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez);
+          forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez
+#ifdef DEBUG_HIGH_LEVEL
+              , idx, variants->name
+#endif
+              );
         }
       }
       unlock_context();
@@ -3968,13 +3997,21 @@ namespace RegionRuntime {
             if (!non_virtual_mapped_region[idx])
             {
               buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
-                                                IS_WRITE(regions[idx]), RegionTreeForest::PRIVILEGE);
+                                                IS_WRITE(regions[idx]), RegionTreeForest::PRIVILEGE
+#ifdef DEBUG_HIGH_LEVEL
+                                                , variants->name
+#endif
+                                                );
             }
             else
             {
               // Physical was already sent back, send back the other fields
               buffer_size += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
-                                                IS_WRITE(regions[idx]), RegionTreeForest::DIFF);
+                                                IS_WRITE(regions[idx]), RegionTreeForest::DIFF
+#ifdef DEBUG_HIGH_LEVEL
+                                                , variants->name
+#endif
+                                                );
             }
           }
           buffer_size += forest_ctx->post_compute_region_tree_state_return();
@@ -4203,7 +4240,11 @@ namespace RegionRuntime {
         {
           ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
           forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, IS_WRITE(regions[idx]), 
-                                                                  RegionTreeForest::PHYSICAL, derez); 
+                                                                  RegionTreeForest::PHYSICAL, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                                  , idx, variants->name
+#endif
+                                                                  ); 
         }
       }
       forest_ctx->end_unpack_region_tree_state_return(derez);
@@ -4233,12 +4274,20 @@ namespace RegionRuntime {
         if (!non_virtual_mapped_region[idx])
         {
           forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, IS_WRITE(regions[idx]), 
-                                                                  RegionTreeForest::PRIVILEGE, derez);
+                                                                  RegionTreeForest::PRIVILEGE, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                                  , idx, variants->name
+#endif
+                                                                  );
         }
         else
         {
           forest_ctx->unpack_region_tree_state_return(regions[idx], phy_ctx, IS_WRITE(regions[idx]), 
-                                                                        RegionTreeForest::DIFF, derez);
+                                                                        RegionTreeForest::DIFF, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                                        , idx, variants->name
+#endif
+                                                                        );
         }
       }
       forest_ctx->end_unpack_region_tree_state_return(derez);
@@ -5791,7 +5840,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(!IS_WRITE(regions[idx])); // If this was the case it should have been premapped
 #endif
-        forest_ctx->unpack_region_tree_state_return(regions[idx], ctx, false/*overwrite*/, mode, derez);
+        forest_ctx->unpack_region_tree_state_return(regions[idx], ctx, false/*overwrite*/, mode, derez
+#ifdef DEBUG_HIGH_LEVEL
+            , idx, variants->name
+#endif
+            );
       }
       else
       {
@@ -5808,8 +5861,12 @@ namespace RegionRuntime {
             derez.deserialize(touched);
             touched_regions.insert(touched);
             regions[idx].region = touched;
-            forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, true/*overwrite*/,
-                                                        mode, derez);
+            forest_ctx->unpack_region_tree_state_return(regions[idx], ctx, true/*overwrite*/,
+                                                        mode, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                        , idx, variants->name
+#endif
+                                                        );
           }
           // Set the handle type back
           regions[idx].handle_type = PROJECTION;
@@ -5825,8 +5882,12 @@ namespace RegionRuntime {
         }
         else
         {
-          forest_ctx->unpack_region_tree_state_return(regions[idx], ctx_id, false/*overwrite*/,
-                                                      mode, derez);
+          forest_ctx->unpack_region_tree_state_return(regions[idx], ctx, false/*overwrite*/,
+                                                      mode, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                      , idx, variants->name
+#endif
+                                                      );
         }
       }
     }
@@ -6394,12 +6455,20 @@ namespace RegionRuntime {
               if (non_virtual_mappings[idx] < points.size())
               {
                 forest_ctx->pack_region_tree_state(regions[idx],
-                                get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
+                                get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez
+#ifdef DEBUG_HIGH_LEVEL
+                                , idx, variants->name
+#endif
+                                );
               }
               else
               {
                 forest_ctx->pack_region_tree_state(regions[idx],
-                                get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez);
+                                get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez
+#ifdef DEBUG_HIGH_LEVEL
+                                , idx, variants->name
+#endif
+                                );
               }
             }
           }
@@ -6426,12 +6495,20 @@ namespace RegionRuntime {
             if (premapped_regions.find(idx) != premapped_regions.end())
             {
               forest_ctx->pack_region_tree_state(regions[idx],
-                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez);
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::DIFF, rez
+#ifdef DEBUG_HIGH_LEVEL
+                              , idx, variants->name
+#endif
+                              );
             }
             else
             {
               forest_ctx->pack_region_tree_state(regions[idx],
-                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez);
+                              get_enclosing_physical_context(regions[idx].parent), RegionTreeForest::PRIVILEGE, rez
+#ifdef DEBUG_HIGH_LEVEL
+                              , idx, variants->name
+#endif
+                              );
             }
           }
           // Now we need to pack the argument map
@@ -6495,11 +6572,19 @@ namespace RegionRuntime {
             if (non_virtual_mappings[idx] < num_points)
             {
               // Unpack the physical state in our context
-              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez);
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez
+#ifdef DEBUG_HIGH_LEVEL
+                  , idx, variants->name
+#endif
+                  );
             }
             else
             {
-              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez);
+              forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez
+#ifdef DEBUG_HIGH_LEVEL
+                  , idx, variants->name
+#endif
+                  );
             }
           }
         }
@@ -6528,11 +6613,19 @@ namespace RegionRuntime {
         {
           if (premapped_regions.find(idx) != premapped_regions.end())
           {
-            forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez);
+            forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::DIFF, derez
+#ifdef DEBUG_HIGH_LEVEL
+                , idx, variants->name
+#endif
+                );
           }
           else
           {
-            forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez);
+            forest_ctx->unpack_region_tree_state(regions[idx], ctx_id, RegionTreeForest::PRIVILEGE, derez
+#ifdef DEBUG_HIGH_LEVEL
+                , idx, variants->name
+#endif
+                );
           }
         }
         
@@ -7069,7 +7162,11 @@ namespace RegionRuntime {
         assert(!IS_WRITE(regions[idx])); // if this was the case it should have been premapped
 #endif
         result += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id, 
-                                                    false/*overwrite*/, mode);
+                                                    false/*overwrite*/, mode
+#ifdef DEBUG_HIGH_LEVEL
+                                                    , variants->name
+#endif
+                                                    );
       }
       else
       {
@@ -7088,7 +7185,11 @@ namespace RegionRuntime {
 #endif
               sending_set.insert((*it)->regions[idx].region);
               result += forest_ctx->compute_region_tree_state_return((*it)->regions[idx], idx, ctx_id,
-                                                      true/*overwrite*/, mode);
+                                                      true/*overwrite*/, mode
+#ifdef DEBUG_HIGH_LEVEL
+                                                      , variants->name
+#endif
+                                                      );
             }
           }
           result += (sending_set.size() * sizeof(LogicalRegion));
@@ -7098,7 +7199,11 @@ namespace RegionRuntime {
           // We this was a read-only or reduce requirement so we
           // only need to send back the diff
           result += forest_ctx->compute_region_tree_state_return(regions[idx], idx, ctx_id,
-                                                      false/*overwrite*/, mode);
+                                                      false/*overwrite*/, mode
+#ifdef DEBUG_HIGH_LEVEL
+                                                      , variants->name
+#endif
+                                                      );
         }
       }
       return result;

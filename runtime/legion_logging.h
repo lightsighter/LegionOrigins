@@ -99,7 +99,8 @@ namespace RegionRuntime {
       // Logger calls for events
       static inline void log_event_dependence(Event one, Event two)
       {
-        log_spy(LEVEL_INFO,"Event Event %d %d %d %d", one.id, one.gen, two.id, two.gen);
+        if (one != two)
+          log_spy(LEVEL_INFO,"Event Event %d %d %d %d", one.id, one.gen, two.id, two.gen);
       }
 
       static inline void log_event_dependences(const std::set<Event> &preconditions, Event result)
@@ -107,13 +108,15 @@ namespace RegionRuntime {
         for (std::set<Event>::const_iterator it = preconditions.begin();
               it != preconditions.end(); it++)
         {
-          log_spy(LEVEL_INFO,"Event Event %d %d %d %d", it->id, it->gen, result.id, result.gen);
+          if (*it != result)
+            log_spy(LEVEL_INFO,"Event Event %d %d %d %d", it->id, it->gen, result.id, result.gen);
         }
       }
 
-      static inline void log_task_events(unsigned unique_id, unsigned ctx_id, Event start_event, Event term_event)
+      // TODO: figure out how to handle non-1-D points as well as points that aren't integers
+      static inline void log_task_events(unsigned unique_id, unsigned point, Event start_event, Event term_event)
       {
-        log_spy(LEVEL_INFO,"Task Events %d %d %d %d %d %d", unique_id, ctx_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
+        log_spy(LEVEL_INFO,"Task Events %d %d %d %d %d %d", unique_id, point, start_event.id, start_event.gen, term_event.id, term_event.gen);
       }
 
       static inline void log_index_task_termination(unsigned unique_id, Event term_event)
@@ -133,6 +136,32 @@ namespace RegionRuntime {
       {
         log_spy(LEVEL_INFO, "Map Events %d %d %d %d %d", unique_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
       }
+    };
+
+    class TreeStateLogger {
+    public:
+      explicit TreeStateLogger(Processor local_proc);
+      ~TreeStateLogger(void);
+    public:
+      void log(const char *fmt, ...);
+      void down(void);
+      void up(void);
+      void start_block(const char *ftm, ...);
+      void finish_block(void);
+      unsigned get_depth(void) const { return depth; }
+    public:
+      static void capture_state(HighLevelRuntime *rt, unsigned idx, const char *task_name, 
+                                RegionNode *node, ContextID ctx, bool pack, bool send);
+      static void capture_state(HighLevelRuntime *rt, unsigned idx, const char *task_name,
+                                PartitionNode *node, ContextID ctx, bool pack, bool send);
+      static void capture_state(HighLevelRuntime *rt, const RegionRequirement *req, unsigned idx, const char *task_name,
+                                RegionNode *node, ContextID ctx, bool pre_map, bool sanitize);
+    private:
+      void println(const char *fmt, va_list args);
+    private:
+      FILE *tree_state_log;
+      char block_buffer[128];
+      unsigned depth;
     };
   };
 };

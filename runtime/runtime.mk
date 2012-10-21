@@ -60,4 +60,4 @@ ifdef ALT_MAPPERS
 MAPPER_SRC	+= $(LG_RT_DIR)/alt_mappers.cc
 endif
 
-HIGH_RUNTIME_SRC += $(LG_RT_DIR)/legion.cc $(LG_RT_DIR)/legion_ops.cc $(LG_RT_DIR)/region_tree.cc 
+HIGH_RUNTIME_SRC += $(LG_RT_DIR)/legion.cc $(LG_RT_DIR)/legion_ops.cc $(LG_RT_DIR)/region_tree.cc $(LG_RT_DIR)/legion_logging.cc 

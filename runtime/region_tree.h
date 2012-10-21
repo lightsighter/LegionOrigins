@@ -88,9 +88,17 @@ namespace RegionRuntime {
       size_t compute_region_tree_state_size(const RegionRequirement &req, ContextID ctx, SendingMode mode);
       size_t post_compute_region_tree_state_size(void);
       void begin_pack_region_tree_state(Serializer &rez, unsigned long num_ways = 1);
-      void pack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Serializer &rez);
+      void pack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Serializer &rez
+#ifdef DEBUG_HIGH_LEVEL
+            , unsigned idx, const char *task_name
+#endif
+          );
       void begin_unpack_region_tree_state(Deserializer &derez, unsigned long split_factor = 1);
-      void unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Deserializer &derez);
+      void unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Deserializer &derez
+#ifdef DEBUG_HIGH_LEVEL
+            , unsigned idx, const char *task_name
+#endif
+          );
     public:
       // Packing and unpacking reference send
       size_t compute_reference_size(InstanceRef ref);
@@ -109,7 +117,11 @@ namespace RegionRuntime {
     public:
       // Packing and unpacking state return
       size_t compute_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
-                                              ContextID ctx, bool overwrite, SendingMode mode);
+                                              ContextID ctx, bool overwrite, SendingMode mode
+#ifdef DEBUG_HIGH_LEVEL
+                                              , const char *task_name
+#endif
+                                              );
       size_t post_compute_region_tree_state_return(void);
       void begin_pack_region_tree_state_return(Serializer &rez);
       void pack_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
@@ -117,7 +129,11 @@ namespace RegionRuntime {
       void end_pack_region_tree_state_return(Serializer &rez);
       void begin_unpack_region_tree_state_return(Deserializer &derez);
       void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
-                                            bool overwrite, SendingMode mode, Deserializer &derez);
+                                            bool overwrite, SendingMode mode, Deserializer &derez
+#ifdef DEBUG_HIGH_LEVEL
+                                            , unsigned idx, const char *task_name
+#endif
+                                            );
       void end_unpack_region_tree_state_return(Deserializer &derez);
     public:
       size_t compute_created_state_return(ContextID ctx);
@@ -415,6 +431,8 @@ namespace RegionRuntime {
         void pack_physical_state(const FieldMask &pack_mask, Serializer &rez) const;
         void unpack_physical_state(Deserializer &derez, unsigned shift = 0);
       public:
+        void print_state(TreeStateLogger *logger) const;
+      public:
         FieldMask valid_fields;
         OpenState open_state;
         ReductionOpID redop;
@@ -490,6 +508,7 @@ namespace RegionRuntime {
       friend class PartitionNode;
       friend class InstanceManager;
       friend class InstanceView;
+      friend class TreeStateLogger;
       RegionNode(LogicalRegion r, PartitionNode *par, IndexSpaceNode *row_src,
                  FieldSpaceNode *col_src, bool add, RegionTreeForest *ctx);
       ~RegionNode(void);
@@ -558,6 +577,8 @@ namespace RegionRuntime {
                                 bool invalidate_views, bool recurse);
       void pack_diff_state(ContextID ctx, const FieldMask &pack_mask, Serializer &rez);
       void unpack_diff_state(ContextID ctx, Deserializer &derez);
+    public:
+      void print_physical_context(ContextID ctx, TreeStateLogger *logger);
     private:
       const LogicalRegion handle;
       PartitionNode *const parent;
@@ -578,6 +599,7 @@ namespace RegionRuntime {
       friend class RegionNode;
       friend class InstanceManager;
       friend class InstanceView;
+      friend class TreeStateLogger;
       PartitionNode(LogicalPartition p, RegionNode *par, IndexPartNode *row_src,
                     bool add, RegionTreeForest *ctx);
       ~PartitionNode(void);
@@ -631,6 +653,8 @@ namespace RegionRuntime {
                                 bool invalidate_views, bool recurse);
       void pack_diff_state(ContextID ctx, const FieldMask &pack_mask, Serializer &rez);
       void unpack_diff_state(ContextID ctx, Deserializer &derez);
+    public:
+      void print_physical_context(ContextID ctx, TreeStateLogger *logger);
     private:
       const LogicalPartition handle;
       RegionNode *const parent;
@@ -856,6 +880,7 @@ namespace RegionRuntime {
       bool is_valid_view(void) const;
       bool has_war_dependence(const FieldMask &mask) const;
     public:
+      inline PhysicalInstance get_instance(void) const { return manager->get_instance(); }
       inline Memory get_location(void) const { return manager->get_location(); }
       inline const FieldMask& get_physical_mask(void) const { return manager->get_allocated_fields(); }
       inline InstanceKey get_key(void) const { return InstanceKey(manager->unique_id, logical_region->handle); }
@@ -926,6 +951,10 @@ namespace RegionRuntime {
       std::map<UniqueID,TaskUser> added_users;
       std::map<Event,ReductionOpID> copy_users; // if redop > 0 then writing reduction, otherwise just a read
       std::map<Event,ReductionOpID> added_copy_users;
+#ifdef LEGION_SPY
+      std::map<UniqueID,TaskUser> deleted_users;
+      std::map<Event,ReductionOpID> deleted_copy_users;
+#endif
       // The next three members deal with dependence analysis
       // and the state of the view, they should always entirely
       // be passed back

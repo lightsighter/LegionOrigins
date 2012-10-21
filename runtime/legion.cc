@@ -2929,6 +2929,14 @@ namespace RegionRuntime {
       Processor copy = local_proc;
       copy.enable_idle_task();
       this->idle_task_enabled = true;
+#ifdef DEBUG_HIGH_LEVEL
+      tree_state_logger = NULL;
+      if (logging_region_tree_state)
+      {
+        tree_state_logger = new TreeStateLogger(local_proc);
+        assert(tree_state_logger != NULL);
+      }
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -2993,6 +3001,14 @@ namespace RegionRuntime {
       unique_lock.destroy();
       stealing_lock.destroy();
       thieving_lock.destroy();
+#endif
+#ifdef DEBUG_HIGH_LEVEL
+      if (logging_region_tree_state)
+      {
+        assert(tree_state_logger != NULL);
+        delete tree_state_logger;
+        tree_state_logger = NULL;
+      }
 #endif
     }
 
@@ -3168,6 +3184,9 @@ namespace RegionRuntime {
 #ifdef INORDER_EXECUTION
     /*static*/ bool HighLevelRuntime::program_order_execution = false;
 #endif
+#ifdef DEBUG_HIGH_LEVEL
+    /*static*/ bool HighLevelRuntime::logging_region_tree_state = false;
+#endif
 
     //--------------------------------------------------------------------------
     /*static*/ bool HighLevelRuntime::is_subtype(TypeHandle parent, TypeHandle child)
@@ -3259,12 +3278,21 @@ namespace RegionRuntime {
 #else
           if (!strcmp(argv[i],"-hl:inorder"))
           {
-            fprintf(stderr,"WARNING: Inorder execution is disabled.  To enable inorder execution compile with "
-                            " the -DINORDER_EXECUTION flag.\n");
+            log_run(LEVEL_WARNING,"WARNING: Inorder execution is disabled.  To enable inorder execution compile with "
+                            " the -DINORDER_EXECUTION flag.");
           }
 #endif
           INT_ARG("-hl:sched", max_tasks_per_schedule_request);
           INT_ARG("-hl:window", max_task_window_per_context);
+#ifdef DEBUG_HIGH_LEVEL
+          BOOL_ARG("-hl:tree",logging_region_tree_state);
+#else
+          if (!strcmp(argv[i],"-hl:tree"))
+          {
+            log_run(LEVEL_WARNING,"WARNING: Region tree state logging is disabled.  To enable region tree state logging "
+                              " compile in debug mode.");
+          }
+#endif
         }
 #undef INT_ARG
 #undef BOOL_ARG

@@ -866,7 +866,14 @@ namespace RegionRuntime {
       FieldSpaceNode *field_node = get_node(rm.req.region.field_space);
       FieldMask field_mask = field_node->get_field_mask(rm.req.instance_fields);
       PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
-      get_node(start_region)->register_physical_region(user, rm);
+      RegionNode *top_node = get_node(start_region);
+#ifdef DEBUG_HIGH_LEVEL
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, true/*premap*/, rm.sanitizing);
+#endif
+      top_node->register_physical_region(user, rm);
+#ifdef DEBUG_HIGH_LEVEL
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, false/*premap*/, rm.sanitizing);
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -1180,7 +1187,11 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_region_tree_state(const RegionRequirement &req, ContextID ctx, 
-                                                  SendingMode mode, Serializer &rez)
+                                                  SendingMode mode, Serializer &rez
+#ifdef DEBUG_HIGH_LEVEL
+                                                  , unsigned idx, const char *task_name
+#endif
+                                                  )
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1195,11 +1206,17 @@ namespace RegionRuntime {
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
+#ifdef DEBUG_HIGH_LEVEL
+        TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, true/*send*/);
+#endif
         top_node->pack_physical_state(ctx, packing_mask, rez, false/*invalidate views*/, true/*recurse*/);
       }
       else
       {
         PartitionNode *top_node = get_node(req.partition);
+#ifdef DEBUG_HIGH_LEVEL
+        TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, true/*send*/);
+#endif
         top_node->parent->pack_physical_state(ctx, packing_mask, rez, false/*invalidate views*/, false/*recurse*/);
         top_node->pack_physical_state(ctx, packing_mask, rez, false/*invalidate views*/, true/*recurse*/);
       }
@@ -1227,7 +1244,11 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Deserializer &derez)
+    void RegionTreeForest::unpack_region_tree_state(const RegionRequirement &req, ContextID ctx, SendingMode mode, Deserializer &derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                    , unsigned idx, const char *task_name
+#endif
+        )
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1242,6 +1263,9 @@ namespace RegionRuntime {
         RegionNode *top_node = get_node(req.region);
         top_node->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
+#ifdef DEBUG_HIGH_LEVEL
+        TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, false/*pack*/, true/*send*/);
+#endif
       }
       else
       {
@@ -1249,6 +1273,9 @@ namespace RegionRuntime {
         top_node->parent->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
         top_node->parent->unpack_physical_state(ctx, derez, false/*recurse*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
+#ifdef DEBUG_HIGH_LEVEL
+        TreeStateLogger::capture_state(runtime, idx, task_name, top_node->parent, ctx, false/*pack*/, true/*send*/);
+#endif
       }
     }
 
@@ -1661,7 +1688,11 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     size_t RegionTreeForest::compute_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
-                                                              ContextID ctx, bool overwrite, SendingMode mode)
+                                                              ContextID ctx, bool overwrite, SendingMode mode
+#ifdef DEBUG_HIGH_LEVEL
+                                                              , const char *task_name
+#endif
+                                                              )
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1681,6 +1712,9 @@ namespace RegionRuntime {
         RegionNode *top_node = get_node(req.region);
         result += top_node->compute_state_size(ctx, packing_mask,
                           unique_managers, unique_views, ordered_views, true/*mark invalide views*/, true/*recurse*/);
+#ifdef DEBUG_HIGH_LEVEL
+        TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, false/*send*/);
+#endif
       }
       else
       {
@@ -1697,6 +1731,9 @@ namespace RegionRuntime {
           result += top_node->compute_diff_state_size(ctx, packing_mask,
                           unique_managers, unique_views, ordered_views, 
                           diff_regions, diff_partitions, true/*invalidate views*/, true/*recurse*/);
+#ifdef DEBUG_HIGH_LEVEL
+          TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, false/*send*/);
+#endif
         }
         else
         {
@@ -1704,6 +1741,9 @@ namespace RegionRuntime {
           result += top_node->compute_diff_state_size(ctx, packing_mask,
                           unique_managers, unique_views, ordered_views, 
                           diff_regions, diff_partitions, true/*invalidate views*/, true/*recurse*/);
+#ifdef DEBUG_HIGH_LEVEL
+          TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, false/*return*/);
+#endif
         }
         result += 2*sizeof(size_t); // number of regions and partitions
         result += (diff_regions.size() * sizeof(LogicalRegion));
@@ -1928,7 +1968,11 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx,
-                                                            bool overwrite, SendingMode mode, Deserializer &derez)
+                                                            bool overwrite, SendingMode mode, Deserializer &derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                            , unsigned ridx, const char *task_name
+#endif
+                                                            )
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1947,6 +1991,9 @@ namespace RegionRuntime {
         RegionNode *top_node = get_node(req.region);
         top_node->initialize_physical_context(ctx, unpacking_mask, true/*top*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/); 
+#ifdef DEBUG_HIGH_LEVEL
+        TreeStateLogger::capture_state(runtime, ridx, task_name, top_node, ctx, false/*pack*/, false/*send*/);
+#endif
       }
       else
       {
@@ -1966,6 +2013,18 @@ namespace RegionRuntime {
           derez.deserialize(handle);
           get_node(handle)->unpack_diff_state(ctx, derez);
         }
+#ifdef DEBUG_HIGH_LEVEL
+        if (req.handle_type == SINGULAR)
+        {
+          RegionNode *top_node = get_node(req.region);
+          TreeStateLogger::capture_state(runtime, ridx, task_name, top_node, ctx, false/*pack*/, false/*send*/);
+        }
+        else
+        {
+          PartitionNode *top_node = get_node(req.partition);
+          TreeStateLogger::capture_state(runtime, ridx, task_name, top_node, ctx, false/*pack*/, false/*send*/);
+        }
+#endif
       }
     }
 
@@ -4413,6 +4472,46 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void RegionTreeNode::FieldState::print_state(TreeStateLogger *logger) const
+    //--------------------------------------------------------------------------
+    {
+      switch (open_state)
+      {
+        case NOT_OPEN:
+          {
+            logger->log("Field State: NOT OPEN (%ld)", open_children.size());
+            break;
+          }
+        case OPEN_EXCLUSIVE:
+          {
+            logger->log("Field State: OPEN EXCLUSIVE (%ld)", open_children.size());
+            break;
+          }
+        case OPEN_READ_ONLY:
+          {
+            logger->log("Field State: OPEN READ-ONLY (%ld)", open_children.size());
+            break;
+          }
+        case OPEN_REDUCE:
+          {
+            logger->log("Field State: OPEN REDUCE Mode %d (%ld)", open_children.size());
+            break;
+          }
+        default:
+          assert(false);
+      }
+      logger->down();
+      for (std::map<Color,FieldMask>::const_iterator it = open_children.begin();
+            it != open_children.end(); it++)
+      {
+        char *mask_buffer = it->second.to_string();
+        logger->log("Color %d   Mask %s", it->first, mask_buffer);
+        free(mask_buffer);
+      }
+      logger->up();
+    }
+
+    //--------------------------------------------------------------------------
     void RegionTreeNode::PhysicalState::clear_state(const FieldMask &init_mask)
     //--------------------------------------------------------------------------
     {
@@ -4447,7 +4546,6 @@ namespace RegionRuntime {
               it != to_delete.end(); it++)
         {
           // Remove the reference, we can add it back later if it gets put back on
-          //(*it)->mark_view(false/*valid*/, true/*force*/);
           (*it)->remove_valid_reference();
           valid_views.erase(*it);
         }
@@ -4858,7 +4956,6 @@ namespace RegionRuntime {
       PhysicalState &state = physical_states[ctx];
       // Add our reference first in case the new view is also currently in
       // the list of valid views.  We don't want it to be prematurely deleted
-      //new_view->mark_view(true/*valid*/,true/*force*/);
       new_view->add_valid_reference();
       if (dirty)
       {
@@ -4901,7 +4998,6 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = new_views.begin();
             it != new_views.end(); it++)
       {
-        //(*it)->mark_view(true/*valid*/,true/*force*/);
         (*it)->add_valid_reference();
       }
       if (!!dirty_mask)
@@ -5184,7 +5280,6 @@ namespace RegionRuntime {
       for (std::vector<InstanceView*>::const_iterator it = to_delete.begin();
             it != to_delete.end(); it++)
       {
-        //(*it)->mark_view(false/*valid*/,true/*force*/);
         (*it)->remove_valid_reference();
         state.valid_views.erase(*it);
       }
@@ -5576,7 +5671,6 @@ namespace RegionRuntime {
         if (state.valid_views.find(new_view) == state.valid_views.end())
         {
           state.valid_views[new_view] = valid_mask;
-          //new_view->mark_view(true/*valid*/, true/*force*/);
           new_view->add_valid_reference();
         }
         else
@@ -5752,6 +5846,65 @@ namespace RegionRuntime {
         new_states[idx].unpack_physical_state(derez);
       }
       merge_new_field_states(state, new_states, true/*add states*/);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::print_physical_context(ContextID ctx, TreeStateLogger *logger)
+    //--------------------------------------------------------------------------
+    {
+      logger->log("Region Node (%x,%d,%d) Color %d at depth %d", 
+          handle.index_space.id, handle.field_space.id,handle.tree_id,
+          row_source->color, logger->get_depth());
+      logger->down();
+      if (physical_states.find(ctx) != physical_states.end())
+      {
+        PhysicalState &state = physical_states[ctx];
+        // Dirty Mask
+        {
+          char *dirty_buffer = state.dirty_mask.to_string();
+          logger->log("Dirty Mask: %s",dirty_buffer);
+          free(dirty_buffer);
+        }
+        // Valid Views
+        {
+          logger->log("Valid Instances (%ld)", state.valid_views.size());
+          logger->down();
+          for (std::map<InstanceView*,FieldMask>::const_iterator it = state.valid_views.begin();
+                it != state.valid_views.end(); it++)
+          {
+            char *valid_mask = it->second.to_string();
+            logger->log("Instance %x   Memory %x   Mask %s",
+                it->first->get_instance().id, it->first->get_location().id, valid_mask);
+            free(valid_mask);
+          }
+          logger->up();
+        }
+        // Open Field States 
+        {
+          logger->log("Open Field States (%ld)", state.field_states.size());
+          logger->down();
+          for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+                it != state.field_states.end(); it++)
+          {
+            it->print_state(logger);
+          }
+          logger->up();
+        }
+      }
+      else
+      {
+        logger->log("No state");
+      }
+      logger->log("");
+
+      // Now do all the children
+      for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->print_physical_context(ctx, logger);
+      }
+
+      logger->up();
     }
 
     /////////////////////////////////////////////////////////////
@@ -6387,6 +6540,45 @@ namespace RegionRuntime {
       merge_new_field_states(state, new_states, true/*add states*/);
     }
 
+    //--------------------------------------------------------------------------
+    void PartitionNode::print_physical_context(ContextID ctx, TreeStateLogger *logger)
+    //--------------------------------------------------------------------------
+    {
+      logger->log("Partition Node (%d,%d,%d) Color %d disjoint %d at depth %d",
+          handle.index_partition, handle.field_space.id, handle.tree_id, 
+          row_source->color, disjoint, logger->get_depth());
+      logger->down();
+      if (physical_states.find(ctx) != physical_states.end())
+      {
+        PhysicalState &state = physical_states[ctx];
+        // Open Field States
+        {
+          logger->log("Open Field States (%ld)", state.field_states.size()); 
+          logger->down();
+          for (std::list<FieldState>::const_iterator it = state.field_states.begin();
+                it != state.field_states.end(); it++)
+          {
+            it->print_state(logger);
+          }
+          logger->up();
+        }
+      }
+      else
+      {
+        logger->log("No state");
+      }
+      logger->log("");
+
+      // Now do all the children
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->print_physical_context(ctx, logger);
+      }
+
+      logger->up();
+    }
+
     /////////////////////////////////////////////////////////////
     // Instance Manager 
     /////////////////////////////////////////////////////////////
@@ -6870,6 +7062,11 @@ namespace RegionRuntime {
         it->second.use_multi = true;
         it->second.references++;
       }
+      // Also need to update the list of epoch users
+      if (epoch_users.find(uid) == epoch_users.end())
+        epoch_users[uid] = user.field_mask;
+      else
+        epoch_users[uid] |= user.field_mask;
       return InstanceRef(wait_event, manager->get_location(), manager->get_instance(),
                           this, false/*copy*/, (IS_ATOMIC(user.usage) ? manager->get_lock() : Lock::NO_LOCK));
     }
@@ -6911,8 +7108,14 @@ namespace RegionRuntime {
       it->second.references--;
       if (it->second.references == 0)
       {
-        added_users.erase(it);
+#ifndef LEGION_SPY
         epoch_users.erase(uid);
+#else
+        // If we're doing legion spy debugging, then keep it in the epoch users
+        // and move it over to the deleted users 
+        deleted_users.insert(*it);
+#endif
+        added_users.erase(it);
         if (added_users.empty())
           check_state_change(false/*adding*/);
       }
@@ -6929,8 +7132,14 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(it != added_copy_users.end());
 #endif
-      added_copy_users.erase(it);
+#ifndef LEGION_SPY
       epoch_copy_users.erase(copy_e);
+#else
+      // If we're doing legion spy then don't keep it in the epoch users
+      // and move it over to the deleted users
+      deleted_copy_users.insert(*it);
+#endif
+      added_copy_users.erase(it);
       if (added_copy_users.empty())
         check_state_change(false/*adding*/);
     }
@@ -7172,8 +7381,18 @@ namespace RegionRuntime {
           if (finder == users.end())
           {
             finder = added_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
             assert(finder != added_users.end());
+#endif
+#else
+            if (finder == added_users.end())
+            {
+              finder = deleted_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != deleted_users.end());
+#endif
+            }
 #endif
           }
           DependenceType dtype = check_dependence_type(finder->second.user.usage, user.usage);
@@ -7217,8 +7436,18 @@ namespace RegionRuntime {
             if (finder == copy_users.end())
             {
               finder = added_copy_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
               assert(finder != added_copy_users.end());
+#endif
+#else
+              if (finder == added_copy_users.end())
+              {
+                finder = deleted_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(finder != deleted_copy_users.end());
+#endif
+              }
 #endif
             }
             if (finder->second != 0)
@@ -7241,8 +7470,18 @@ namespace RegionRuntime {
             if (finder == copy_users.end())
             {
               finder = added_copy_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
               assert(finder != added_copy_users.end());
+#endif
+#else
+              if (finder == added_copy_users.end())
+              {
+                finder = deleted_copy_users.end();
+#ifdef DEBUG_HIGH_LEVEL
+                assert(finder != deleted_copy_users.end());
+#endif
+              }
 #endif
             }
             if (finder->second != user.usage.redop)
@@ -7265,8 +7504,18 @@ namespace RegionRuntime {
             if (finder == copy_users.end())
             {
               finder = added_copy_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
               assert(finder != added_copy_users.end());
+#endif
+#else
+              if (finder == added_copy_users.end())
+              {
+                finder = deleted_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(finder != deleted_copy_users.end());
+#endif
+              }
 #endif
             }
             wait_on.insert(finder->first);
@@ -7306,8 +7555,18 @@ namespace RegionRuntime {
             if (finder == users.end())
             {
               finder = added_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
               assert(finder != added_users.end());
+#endif
+#else
+              if (finder == added_users.end())
+              {
+                finder = deleted_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(finder != deleted_users.end());
+#endif
+              }
 #endif
             }
             if ((redop != 0) && (finder->second.user.usage.redop == redop))
@@ -7334,8 +7593,18 @@ namespace RegionRuntime {
               if (finder == copy_users.end())
               {
                 finder = added_copy_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
                 assert(finder != added_copy_users.end());
+#endif
+#else
+                if (finder == added_copy_users.end())
+                {
+                  finder = deleted_copy_users.end();
+#ifdef DEBUG_HIGH_LEVEL
+                  assert(finder != deleted_copy_users.end());
+#endif
+                }
 #endif
               }
               if (finder->second == redop)
@@ -7363,8 +7632,18 @@ namespace RegionRuntime {
             if (finder == users.end())
             {
               finder = added_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
               assert(finder != added_users.end());
+#endif
+#else
+              if (finder == added_users.end())
+              {
+                finder = deleted_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(finder != deleted_users.end());
+#endif
+              }
 #endif
             }
             if (HAS_WRITE(finder->second.user.usage))
@@ -7388,8 +7667,18 @@ namespace RegionRuntime {
             if (finder == copy_users.end())
             {
               finder = added_copy_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
               assert(finder != added_copy_users.end());
+#endif
+#else
+              if (finder == added_copy_users.end())
+              {
+                finder = deleted_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+                assert(finder != deleted_copy_users.end());
+#endif
+              }
 #endif
             }
             if (finder->second == 0)
@@ -7570,8 +7859,18 @@ namespace RegionRuntime {
         if (finder == users.end())
         {
           finder = added_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
           assert(finder != added_users.end());
+#endif
+#else
+          if (finder == added_users.end())
+          {
+            finder = deleted_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(finder != deleted_users.end());
+#endif
+          }
 #endif
         }
         rez.serialize(finder->second);
@@ -7589,8 +7888,18 @@ namespace RegionRuntime {
         if (finder == copy_users.end())
         {
           finder = added_copy_users.find(it->first);
+#ifndef LEGION_SPY
 #ifdef DEBUG_HIGH_LEVEL
           assert(finder != added_copy_users.end());
+#endif
+#else
+          if (finder == added_copy_users.end())
+          {
+            finder = deleted_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(finder != deleted_copy_users.end());
+#endif
+          }
 #endif
         }
         rez.serialize(finder->second);
@@ -7794,7 +8103,11 @@ namespace RegionRuntime {
           continue;
         // Only pack these up if we're overwriting or its new
         std::map<UniqueID,TaskUser>::const_iterator finder = added_users.find(it->first);
-        if (!overwrite && (finder == added_users.end()))
+        if (!overwrite && (finder == added_users.end())
+#ifdef LEGION_SPY
+              && (deleted_users.find(it->first) == deleted_users.end())
+#endif
+            )
           continue;
         packing_sizes[1]++;
         result += sizeof(it->first);
@@ -7803,11 +8116,27 @@ namespace RegionRuntime {
         if (finder != added_users.end())
         {
           packing_sizes[3]++;
+#ifdef LEGION_SPY
+          result += sizeof(bool);
+#endif
           result += sizeof(finder->first);
           result += sizeof(finder->second);
           // Add it to the list of escaped users
           escaped_users[EscapedUser(get_key(), finder->first)] = finder->second.references;
         }
+#ifdef LEGION_SPY
+        else
+        {
+          finder = deleted_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != deleted_users.end());
+#endif
+          packing_sizes[3]++;
+          result += sizeof(bool);
+          result += sizeof(finder->first);
+          result += sizeof(finder->second);
+        }
+#endif
       }
       result += sizeof(size_t); // number of epoch copy users
       for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
@@ -7817,7 +8146,11 @@ namespace RegionRuntime {
           continue;
         std::map<Event,ReductionOpID>::const_iterator finder = added_copy_users.find(it->first);
         // Only pack this up if we're overwriting or its new
-        if (!overwrite && (finder == added_copy_users.end()))
+        if (!overwrite && (finder == added_copy_users.end())
+#ifdef LEGION_SPY
+              && (deleted_copy_users.find(it->first) == deleted_copy_users.end())
+#endif
+            )
           continue;
         packing_sizes[2]++;
         result += sizeof(it->first);
@@ -7825,11 +8158,27 @@ namespace RegionRuntime {
         if (finder != added_copy_users.end())
         {
           packing_sizes[4]++;
+#ifdef LEGION_SPY
+          result += sizeof(bool);
+#endif
           result += sizeof(it->first);
           result += sizeof(it->second);
           // Add it to the list of escaped copies
           escaped_copies.insert(EscapedCopy(get_key(), finder->first));
         }
+#ifdef LEGION_SPY
+        else
+        {
+          finder = deleted_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != deleted_copy_users.end());
+#endif
+          packing_sizes[4]++;
+          result += sizeof(bool);
+          result += sizeof(it->first);
+          result += sizeof(it->second);
+        }
+#endif
       }
       result += sizeof(size_t); // number of added users
       result += sizeof(size_t); // number of added copy users that needs to be sent back
@@ -7938,39 +8287,69 @@ namespace RegionRuntime {
       }
       rez.serialize(packing_sizes[1]); // number of returning epoch users 
       std::vector<UniqueID> return_add_users;
+#ifdef LEGION_SPY
+      std::vector<UniqueID> return_deleted_users;
+#endif
       for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
             it != epoch_users.end(); it++)
       {
         if (it->second * pack_mask)
           continue;
         std::map<UniqueID,TaskUser>::const_iterator finder = added_users.find(it->first);
-        if (!overwrite && (finder == added_users.end()))
+        if (!overwrite && (finder == added_users.end())
+#ifdef LEGION_SPY
+              && (deleted_users.find(it->first) == deleted_users.end())
+#endif
+            )
           continue;
         rez.serialize(it->first);
         rez.serialize(it->second);
         if (finder != added_users.end())
           return_add_users.push_back(it->first);
+#ifdef LEGION_SPY
+        else if (deleted_users.find(it->first) != deleted_users.end())
+          return_deleted_users.push_back(it->first);
+#endif
       }
 #ifdef DEBUG_HIGH_LEVEL
+#ifndef LEGION_SPY
       assert(return_add_users.size() == packing_sizes[3]);
+#else
+      assert((return_add_users.size() + return_deleted_users.size()) == packing_sizes[3]);
+#endif
 #endif
       rez.serialize(packing_sizes[2]);
       std::vector<Event> return_copy_users;
+#ifdef LEGION_SPY
+      std::vector<Event> return_deleted_copy_users;
+#endif
       for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
             it != epoch_copy_users.end(); it++)
       {
         if (it->second * pack_mask)
           continue;
         std::map<Event,ReductionOpID>::const_iterator finder = added_copy_users.find(it->first);
-        if (!overwrite && (finder == added_copy_users.end()))
+        if (!overwrite && (finder == added_copy_users.end())
+#ifdef LEGION_SPY
+              && (deleted_copy_users.find(it->first) == deleted_copy_users.end())
+#endif
+            )
           continue;
         rez.serialize(it->first);
         rez.serialize(it->second);
         if (finder != added_copy_users.end())
           return_copy_users.push_back(it->first);
+#ifdef LEGION_SPY
+        else if (deleted_copy_users.find(it->first) != deleted_copy_users.end())
+          return_deleted_copy_users.push_back(it->first);
+#endif
       }
 #ifdef DEBUG_HIGH_LEVEL
+#ifndef LEGION_SPY
       assert(return_copy_users.size() == packing_sizes[4]);
+#else
+      assert((return_copy_users.size() + return_deleted_copy_users.size()) == packing_sizes[4]);
+#endif
 #endif
       rez.serialize(packing_sizes[3]);
       if (packing_sizes[3] > 0)
@@ -7978,9 +8357,31 @@ namespace RegionRuntime {
         for (std::vector<UniqueID>::const_iterator it = return_add_users.begin();
               it != return_add_users.end(); it++)
         {
+          std::map<UniqueID,TaskUser>::iterator finder = added_users.find(*it);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != added_users.end());
+#endif
+#ifdef LEGION_SPY
+          rez.serialize(true);
+#endif
           rez.serialize(*it);
-          rez.serialize(added_users[*it]);
+          rez.serialize(finder->second);
+          // Remove it from the added users and put it in the users
+#ifdef DEBUG_HIGH_LEVEL
+          assert(users.find(*it) == users.end());
+#endif
+          users.insert(*finder);
+          added_users.erase(finder);
         }
+#ifdef LEGION_SPY
+        for (std::vector<UniqueID>::const_iterator it = return_deleted_users.begin();
+              it != return_deleted_users.end(); it++)
+        {
+          rez.serialize(false);
+          rez.serialize(*it);
+          rez.serialize(deleted_users[*it]);
+        }
+#endif
       }
       rez.serialize(packing_sizes[4]);
       if (packing_sizes[4] > 0)
@@ -7988,9 +8389,31 @@ namespace RegionRuntime {
         for (std::vector<Event>::const_iterator it = return_copy_users.begin();
               it != return_copy_users.end(); it++)
         {
+          std::map<Event,ReductionOpID>::iterator finder = added_copy_users.find(*it);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(finder != added_copy_users.end());
+#endif
+#ifdef LEGION_SPY
+          rez.serialize(true);
+#endif
           rez.serialize(*it);
-          rez.serialize(added_copy_users[*it]);
+          rez.serialize(finder->second);
+          // Remove it from the list of added copy users and make it a user
+#ifdef DEBUG_HIGH_LEVEL
+          assert(copy_users.find(*it) == copy_users.end());
+#endif
+          copy_users.insert(*finder);
+          added_copy_users.erase(finder);
         }
+#ifdef LEGION_SPY
+        for (std::vector<Event>::const_iterator it = return_deleted_copy_users.begin();
+              it != return_deleted_copy_users.end(); it++)
+        {
+          rez.serialize(false);
+          rez.serialize(*it);
+          rez.serialize(deleted_copy_users[*it]);
+        }
+#endif
       }
     }
 
@@ -8135,19 +8558,43 @@ namespace RegionRuntime {
       derez.deserialize(new_added_users);
       for (unsigned idx = 0; idx < new_added_users; idx++)
       {
+#ifdef LEGION_SPY
+        bool is_added;
+        derez.deserialize(is_added);
+#endif
         UniqueID uid;
         derez.deserialize(uid);
         TaskUser user;
         derez.deserialize(user);
         // Only need to add it if it didn't already exist since this is all about
         // state and not about reference counting for garbage collection
+#ifdef LEGION_SPY
+        if (is_added) {
+#endif
         if (result->added_users.find(uid) == result->added_users.end())
           result->added_users[uid] = user;
+        else
+        {
+          // Need to merge the users together
+          result->added_users[uid].references += user.references;
+          result->added_users[uid].use_multi = true;
+        }
+#ifdef LEGION_SPY
+        }
+        else
+        {
+          result->deleted_users[uid] = user;
+        }
+#endif
       }
       size_t new_added_copy_users;
       derez.deserialize(new_added_copy_users);
       for (unsigned idx = 0; idx < new_added_copy_users; idx++)
       {
+#ifdef LEGION_SPY
+        bool is_added;
+        derez.deserialize(is_added);
+#endif
         Event copy_event;
         derez.deserialize(copy_event);
         ReductionOpID redop;
@@ -8156,7 +8603,15 @@ namespace RegionRuntime {
         if (result->added_copy_users.find(copy_event) != result->added_copy_users.end())
           assert(result->added_copy_users[copy_event] == redop);
 #endif
+#ifdef LEGION_SPY
+        if (is_added) {
+#endif
         result->added_copy_users[copy_event] = redop;
+#ifdef LEGION_SPY
+        }
+        else
+          result->deleted_copy_users[copy_event] = redop;
+#endif
       }
 #ifdef DEBUG_HIGH_LEVEL
       // Big sanity check
@@ -8172,15 +8627,23 @@ namespace RegionRuntime {
       for (std::map<UniqueID,FieldMask>::const_iterator it = result->epoch_users.begin();
             it != result->epoch_users.end(); it++)
       {
-        assert((result->users.find(it->first) != result->users.end()) ||
-               (result->added_users.find(it->first) != result->added_users.end()));
+        assert((result->users.find(it->first) != result->users.end())
+               || (result->added_users.find(it->first) != result->added_users.end())
+#ifdef LEGION_SPY
+               || (result->deleted_users.find(it->first) != result->deleted_users.end())
+#endif
+               );
       }
       // Same thing for epoch copy users
       for (std::map<Event,FieldMask>::const_iterator it = result->epoch_copy_users.begin();
             it != result->epoch_copy_users.end(); it++)
       {
-        assert((result->copy_users.find(it->first) != result->copy_users.end()) ||
-               (result->added_copy_users.find(it->first) != result->added_copy_users.end()));
+        assert((result->copy_users.find(it->first) != result->copy_users.end())
+               || (result->added_copy_users.find(it->first) != result->added_copy_users.end())
+#ifdef LEGION_SPY
+               || (result->deleted_copy_users.find(it->first) != result->deleted_copy_users.end())
+#endif
+            );
       }
 #endif
     }
@@ -8235,7 +8698,10 @@ namespace RegionRuntime {
         if (result->added_users.find(uid) == result->added_users.end())
           result->added_users[uid] = user;
         else
+        {
           result->added_users[uid].references += user.references;
+          result->added_users[uid].use_multi = true;
+        }
       }
       size_t num_added_copy_users;
       derez.deserialize(num_added_copy_users);
