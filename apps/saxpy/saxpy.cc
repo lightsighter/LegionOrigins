@@ -57,7 +57,7 @@ public:
                                 std::map<Color,ColoredPoints<unsigned> > &coloring) {
     for (unsigned i = 0; i < *get_num_blocks(); i++) {
       coloring[i] = ColoredPoints<unsigned>();
-      coloring[i].ranges.insert(std::pair<unsigned, unsigned>(BLOCK_SIZE*i, BLOCK_SIZE*(i + 1)));
+      coloring[i].ranges.insert(std::pair<unsigned, unsigned>(BLOCK_SIZE*i, BLOCK_SIZE*(i + 1)-1));
     }
   }
 };
@@ -694,6 +694,15 @@ public:
                                 bool &enable_WAR_optimization)
   {
     enable_WAR_optimization = false;
+#if 0
+    printf("Valid instances: ");
+    for (std::map<Memory,bool>::const_iterator it = current_instances.begin();
+          it != current_instances.end(); it++)
+    {
+      printf("%d ", it->first.id);
+    }
+    printf("\n");
+#endif
     switch (task->task_id)
     {
       case TOP_LEVEL_TASK_ID:
@@ -707,18 +716,20 @@ public:
         {
         assert(task->is_index_space);
         assert(task->index_point != NULL);
-        unsigned point = *((unsigned*)task->index_point);
-        printf("Mapping logical region (%d,%x) of point %d to memory %x for init vectors index %d\n", req.region.get_tree_id(), req.region.get_index_space().id, point, ordered_mems[3-point].id, index);
-        target_ranking.push_back(ordered_mems[3 - point]);
+        //unsigned point = *((unsigned*)task->index_point);
+        Memory target = {((local_proc.id) % 4) + 1};
+        //printf("Mapping logical region (%d,%x) of point %d to memory %x for init vectors index %d\n", req.region.get_tree_id(), req.region.get_index_space().id, point, target.id, index);
+        target_ranking.push_back(target);
         break;
         }
       case TASKID_ADD_VECTORS:
         {
         assert(task->is_index_space);
         assert(task->index_point != NULL);
-        unsigned point2 = *((unsigned*)task->index_point);
-        printf("Mapping logical region (%d,%x) of point %d to memory %x for add vectors index %d\n",req.region.get_tree_id(), req.region.get_index_space().id, point2, ordered_mems[point2].id, index);
-        target_ranking.push_back(ordered_mems[point2]);
+        //unsigned point2 = *((unsigned*)task->index_point);
+        Memory target = {local_proc.id};
+        //printf("Mapping logical region (%d,%x) of point %d to memory %x for add vectors index %d\n",req.region.get_tree_id(), req.region.get_index_space().id, point2, target.id, index);
+        target_ranking.push_back(target);
         break;
         }
       default:
@@ -755,7 +766,7 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 #endif
   //runtime->replace_default_mapper(new DebugMapper(machine, runtime, local));
   //runtime->replace_default_mapper(new SequoiaMapper(machine, runtime, local));
-  //runtime->replace_default_mapper(new TestMapper(machine, runtime, local));
+  runtime->replace_default_mapper(new TestMapper(machine, runtime, local));
 }
 
 int main(int argc, char **argv) {
