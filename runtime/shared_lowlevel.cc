@@ -2048,51 +2048,67 @@ namespace RegionRuntime {
 			const ElementMask &_dst_mask,
 			EventImpl *_done_event)
 	    : srcs(_srcs), dsts(_dsts), src_mask(_src_mask), dst_mask(_dst_mask), 
-	      done_event(_done_event) {}
+	      done_event(_done_event) 
+          {
+            PTHREAD_SAFE_CALL(pthread_mutex_init(&mutex,NULL));    
+          }
+
+          ~CopyOperation(void)
+          {
+            PTHREAD_SAFE_CALL(pthread_mutex_destroy(&mutex));
+          }
 
 	  virtual void trigger(unsigned count = 1, TriggerHandle handle = 0)
 	  {
 	    perform_copy_operation();
             // Trigger the done event if it exists when we're done
-            if (!done_event)
-              done_event->trigger();
+            // Hold the lock when reading done event since we need to make
+            // sure it has been set if it needs to be set
+            PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
+            EventImpl *done_clone = done_event;
+            PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+            if (done_clone)
+              done_clone->trigger();
 	    delete this;
-	  }
-
-	  Event get_done_event(void) const 
-	  { 
-	    return (done_event ? done_event->get_event() : Event::NO_EVENT);
 	  }
 
 	  // registers the copy event with the before_event - returns true if successful, false if not
 	  //  (in which case the copy is performed immediately)
-	  bool register_copy(Event wait_on)
+	  Event register_copy(Event wait_on)
 	  {
+            Event result = Event::NO_EVENT;
 	    if (wait_on.exists()) {
 	      // Try registering this as a triggerable with the event	
 	      EventImpl *event_impl = Runtime::get_runtime()->get_event_impl(wait_on);
-
+              // Need to hold the mutex here in case we have to set the done_event
+              // to make sure it gets set before trigger is called
+              PTHREAD_SAFE_CALL(pthread_mutex_lock(&mutex));
 	      if (event_impl->register_dependent(this, wait_on.gen, 0)) {
 		// make sure we have a completion event
 		if (!done_event)
 		  done_event = Runtime::get_runtime()->get_free_event();
-		return true;
+                result = done_event->get_event();
+                PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
+                return result;
 	      }
+              PTHREAD_SAFE_CALL(pthread_mutex_unlock(&mutex));
 	    }
 
 	    // either there was no wait event or it has already fired
 	    perform_copy_operation();
-	    return false;
+            // We're done, so we can free ourselves
+            delete this;
+            return result;
 	  }
 
 	protected:
 	  void perform_copy_operation(void);
-
 	  std::vector<CopySrcDstField> srcs;
 	  std::vector<CopySrcDstField> dsts;
 	  const ElementMask &src_mask;
 	  const ElementMask &dst_mask;
 	  EventImpl *done_event;
+          pthread_mutex_t mutex;
 	};
 
     public:
@@ -3369,14 +3385,7 @@ namespace RegionRuntime {
       CopyOperation *co = new CopyOperation(srcs, dsts, 
 					    get_element_mask(), get_element_mask(),
 					    0);
-      if(co->register_copy(wait_on)) {
-	// copy will happen some time in the future
-	return co->get_done_event();
-      } else {
-	// copy already occurred - we can free the CopyOperation object
-	delete co;
-	return Event::NO_EVENT;
-      }
+      return co->register_copy(wait_on);
     }
 
     Event IndexSpace::Impl::copy(const std::vector<CopySrcDstField>& srcs,
@@ -3387,14 +3396,7 @@ namespace RegionRuntime {
       CopyOperation *co = new CopyOperation(srcs, dsts, 
 					    get_element_mask(), mask,
 					    0);
-      if(co->register_copy(wait_on)) {
-	// copy will happen some time in the future
-	return co->get_done_event();
-      } else {
-	// copy already occurred - we can free the CopyOperation object
-	delete co;
-	return Event::NO_EVENT;
-      }
+      return co->register_copy(wait_on);
     }
 
     ////////////////////////////////////////////////////////
