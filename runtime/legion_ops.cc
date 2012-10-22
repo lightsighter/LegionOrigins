@@ -2987,8 +2987,12 @@ namespace RegionRuntime {
                             Processor::NO_PROC, single_event, multi_event,
                             tag, false/*sanitizing*/, false/*inline mapping*/, source_copy_instances);
             // First remove our reference so we don't accidentally end up waiting on ourself
+            InstanceRef clone_ref = physical_instances[idx];
             physical_instances[idx].remove_reference(unique_id);
-            Event close_event = forest_ctx->close_to_instance(physical_instances[idx], rm);
+            Event close_event = forest_ctx->close_to_instance(clone_ref, rm);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(close_event != get_termination_event());
+#endif
             wait_on_events.insert(close_event);
           }
         }
@@ -4080,6 +4084,14 @@ namespace RegionRuntime {
         }
       }
 
+      // Now can invalidate any valid physical instances our context for
+      // all the regions which we had as region requirements.  We can't invalidate
+      // virtual mapped regions since that information has escaped our context.
+      // Note we don't need to worry about doing this for leaf tasks since there
+      // are no mappings performed in a leaf task context.  We also don't have to
+      // do this for any created regions since either they are explicitly deleted
+      // or their state is passed back in finish_task to the enclosing context.
+
       // Figure out whether we need to wait to launch the finish task
       Event wait_on_event = Event::merge_events(cleanup_events);
       if (!wait_on_event.exists())
@@ -4582,6 +4594,7 @@ namespace RegionRuntime {
       result += sizeof(index_element_size);
       result += sizeof(index_dimensions);
       result += (index_element_size*index_dimensions);
+      result += sizeof(point_termination_event);
 #ifdef DEBUG_HIGH_LEVEL
       assert(local_point_argument != NULL);
 #endif
@@ -4609,6 +4622,7 @@ namespace RegionRuntime {
       rez.serialize<size_t>(index_element_size);
       rez.serialize<unsigned>(index_dimensions);
       rez.serialize(index_point,index_element_size*index_dimensions);
+      rez.serialize<UserEvent>(point_termination_event);
       rez.serialize<size_t>(local_point_argument_len);
       rez.serialize(local_point_argument,local_point_argument_len);
       rez.serialize<bool>(is_leaf);
@@ -4635,6 +4649,7 @@ namespace RegionRuntime {
 #endif
       index_point = malloc(index_element_size*index_dimensions);
       derez.deserialize(index_point,index_element_size*index_dimensions);
+      derez.deserialize<UserEvent>(point_termination_event);
       derez.deserialize<size_t>(local_point_argument_len);
 #ifdef DEBUG_HIGH_LEVEL
       assert(local_point_argument == NULL);
