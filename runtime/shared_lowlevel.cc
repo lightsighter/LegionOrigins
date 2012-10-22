@@ -2053,6 +2053,9 @@ namespace RegionRuntime {
 	  virtual void trigger(unsigned count = 1, TriggerHandle handle = 0)
 	  {
 	    perform_copy_operation();
+            // Trigger the done event if it exists when we're done
+            if (!done_event)
+              done_event->trigger();
 	    delete this;
 	  }
 
