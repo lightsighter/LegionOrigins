@@ -202,13 +202,13 @@ namespace RegionRuntime {
       {
         delete it->second;
       }
-      for (std::map<UniqueManagerID,InstanceManager*>::iterator it = managers.begin();
-            it != managers.end(); it++)
+      for (std::map<InstanceKey,InstanceView*>::iterator it = views.begin();
+            it != views.end(); it++)
       {
         delete it->second;
       }
-      for (std::map<InstanceKey,InstanceView*>::iterator it = views.begin();
-            it != views.end(); it++)
+      for (std::map<UniqueManagerID,InstanceManager*>::iterator it = managers.begin();
+            it != managers.end(); it++)
       {
         delete it->second;
       }
@@ -885,8 +885,7 @@ namespace RegionRuntime {
       PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
       RegionNode *close_node = get_node(rm.req.region);
       PhysicalCloser closer(user, rm, close_node, false/*leave open*/); 
-      closer.targets_selected = true;
-      closer.upper_targets.push_back(ref.view);
+      closer.add_upper_target(ref.view);
 #ifdef DEBUG_HIGH_LEVEL
       assert(closer.upper_targets.back()->logical_region == close_node);
 #endif
@@ -4669,6 +4668,16 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       added = false;
+      // Also go through all of the physical states and invalidate
+      // the valid physical instances
+      for (std::map<ContextID,PhysicalState>::const_iterator it = physical_states.begin();
+            it != physical_states.end(); it++)
+      {
+        invalidate_instance_views(it->first, FieldMask(FIELD_ALL_ONES), false/*clean*/);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(it->second.valid_views.empty());
+#endif
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -4849,7 +4858,7 @@ namespace RegionRuntime {
           // If we mapped the region close up any partitions below that
           // might have valid data that we need for our instance
           PhysicalCloser closer(user, rm, this, IS_READ_ONLY(user.usage));
-          closer.upper_targets.push_back(new_view);
+          closer.add_upper_target(new_view);
           closer.targets_selected = true;
           siphon_open_children(closer, state, user, user.field_mask);
 #ifdef DEBUG_HIGH_LEVEL
@@ -7143,6 +7152,18 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    InstanceView::~InstanceView(void)
+    //--------------------------------------------------------------------------
+    {
+      if (!manager->is_remote() && !manager->is_clone() && (valid_references > 0))
+      {
+        log_leak(LEVEL_WARNING,"Instance View for Instace %x from Logical Region (%x,%d,%d) still has %d valid references",
+            manager->get_instance().id, logical_region->handle.index_space.id, logical_region->handle.field_space.id,
+            logical_region->handle.tree_id, valid_references);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     InstanceView* InstanceView::get_subview(Color pc, Color rc)
     //--------------------------------------------------------------------------
     {
@@ -9093,7 +9114,26 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       if (targets_selected)
+      {
         upper_targets = rhs.lower_targets;
+        for (std::vector<InstanceView*>::const_iterator it = upper_targets.begin();
+              it != upper_targets.end(); it++)
+        {
+          (*it)->add_valid_reference();
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    PhysicalCloser::~PhysicalCloser(void)
+    //--------------------------------------------------------------------------
+    {
+      // Remove valid references from any physical targets
+      for (std::vector<InstanceView*>::const_iterator it = upper_targets.begin();
+            it != upper_targets.end(); it++)
+      {
+        (*it)->remove_valid_reference();
+      }
     }
     
     //--------------------------------------------------------------------------
@@ -9176,7 +9216,7 @@ namespace RegionRuntime {
           FieldMask need_update = user.field_mask - best_mask;
           if (!!need_update)
             close_target->issue_update_copy(best, rm, need_update);
-          upper_targets.push_back(best);
+          add_upper_target(best);
         }
         // Now see if we want to try to create any new instances
         for (std::vector<Memory>::const_iterator it = to_create.begin();
@@ -9188,7 +9228,7 @@ namespace RegionRuntime {
           {
             // Update all the fields
             close_target->issue_update_copy(new_view, rm, user.field_mask);
-            upper_targets.push_back(new_view);
+            add_upper_target(new_view);
             // If we were only supposed to make one, then we're done
             if (create_one)
               break;
@@ -9261,6 +9301,15 @@ namespace RegionRuntime {
       assert(partition_valid);
 #endif
       partition_valid = false;
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalCloser::add_upper_target(InstanceView *target)
+    //--------------------------------------------------------------------------
+    {
+      targets_selected = true;
+      target->add_valid_reference();
+      upper_targets.push_back(target);
     }
 
     /////////////////////////////////////////////////////////////
