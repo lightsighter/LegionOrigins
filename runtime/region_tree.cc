@@ -1741,6 +1741,11 @@ namespace RegionRuntime {
           result += top_node->compute_diff_state_size(ctx, packing_mask,
                           unique_managers, unique_views, ordered_views, 
                           diff_regions, diff_partitions, true/*invalidate views*/, true/*recurse*/);
+          // Also need to invalidate the valid views of the parent
+#ifdef DEBUG_HIGH_LEVEL
+          assert(top_node->parent != NULL);
+#endif
+          top_node->parent->mark_invalid_instance_views(ctx, packing_mask, false/*recurse*/);
 #ifdef DEBUG_HIGH_LEVEL
           TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, false/*return*/);
 #endif
@@ -1760,7 +1765,29 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    size_t RegionTreeForest::post_compute_region_tree_state_return(bool last_return)
+    void RegionTreeForest::post_partition_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(req.handle_type == PROJECTION);
+      assert(IS_WRITE(req)); // should only need to do this for write requirements
+#endif
+      FieldSpaceNode *field_node = get_node(req.parent.field_space);
+      FieldMask packing_mask = compute_field_mask(req, mode, field_node);
+      if (!packing_mask)
+        return;
+      PartitionNode *top_node = get_node(req.partition);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(top_node->parent != NULL); 
+#endif
+      // Mark all the nodes in the parent invalid
+      top_node->parent->mark_invalid_instance_views(ctx, packing_mask, false/*recurse*/);
+      // Now do the rest of the tree
+      top_node->mark_invalid_instance_views(ctx, packing_mask, true/*recurse*/);
+    }
+
+    //--------------------------------------------------------------------------
+    size_t RegionTreeForest::post_compute_region_tree_state_return(void)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1783,18 +1810,14 @@ namespace RegionRuntime {
           unique_managers.erase(*it);
         }
       }
-      // Now find the set of instances that no longer have any valid views
-      // and are either remote or are about to be returned to the parent context.  
+      // This is the set of managers which can have their remote fractions sent back.  Either
+      // they are in the set of unique managers being sent back or they're remote.  No matter
+      // what they must be NOT have any valid views here to send them back
       for (std::map<UniqueManagerID,InstanceManager*>::const_iterator it = managers.begin();
             it != managers.end(); it++)
       {
-        if ((it->second->is_remote() || (unique_managers.find(it->second) != unique_managers.end())) &&
-            (it->second->is_valid_free()))
-        {
-          returning_managers.push_back(it->second);
-          it->second->find_user_returns(returning_views);
-        }
-        else if (last_return && (it->second->remote && !it->second->remote_frac.is_empty()))
+        if ((it->second->is_remote() || (unique_managers.find(it->second) != unique_managers.end()))
+            && (it->second->is_valid_free()))
         {
           returning_managers.push_back(it->second);
           it->second->find_user_returns(returning_views);
@@ -1874,7 +1897,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     void RegionTreeForest::pack_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
-                                                          ContextID ctx, bool overwrite, SendingMode mode, Serializer &rez)
+            ContextID ctx, bool overwrite, SendingMode mode, Serializer &rez)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1920,7 +1943,38 @@ namespace RegionRuntime {
         }
         diff_regions.clear();
         diff_partitions.clear();
+        // Invalidate any parent views of a partition node
+        if (req.handle_type == PROJECTION)
+        {
+          PartitionNode *top_node = get_node(req.partition);
+#ifdef DEBUG_HIGH_LEVEL
+          assert(top_node->parent != NULL);
+#endif
+          top_node->parent->invalidate_instance_views(ctx, packing_mask, false/*clean*/);
+        }
       }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::post_partition_pack_return(const RegionRequirement &req, ContextID ctx, SendingMode mode)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(req.handle_type == PROJECTION);
+      assert(IS_WRITE(req)); // should only need to do this for write requirements
+#endif
+      FieldSpaceNode *field_node = get_node(req.parent.field_space);
+      FieldMask packing_mask = compute_field_mask(req, mode, field_node);
+      if (!packing_mask)
+        return;
+      PartitionNode *top_node = get_node(req.partition);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(top_node->parent != NULL); 
+#endif
+      // first invalidate the parent views
+      top_node->parent->mark_invalid_instance_views(ctx, packing_mask, false/*clean*/);
+      // Now recursively do the rest
+      top_node->recursive_invalidate_views(ctx, packing_mask);
     }
 
     //--------------------------------------------------------------------------
@@ -1943,8 +1997,7 @@ namespace RegionRuntime {
             it != returning_managers.end(); it++)
       {
 #ifdef DEBUG_HIGH_LEVEL
-        // Not valid if we're sending back the last set of returning remote managers
-        //assert((*it)->is_valid_free());
+        assert((*it)->is_valid_free());
 #endif
         rez.serialize((*it)->unique_id);
         (*it)->pack_remote_fraction(rez);
@@ -5284,6 +5337,45 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void RegionNode::mark_invalid_instance_views(ContextID ctx, const FieldMask &invalid_mask, bool recurse)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(physical_states.find(ctx) != physical_states.end());
+#endif
+      PhysicalState &state = physical_states[ctx];
+      for (std::map<InstanceView*,FieldMask>::const_iterator it = state.valid_views.begin();
+            it != state.valid_views.end(); it++)
+      {
+        FieldMask diff = it->second - invalid_mask;
+        // only mark it as to be invalidated if all the fields will no longer be valid
+        if (!diff)
+          it->first->mark_to_be_invalidated();
+      }
+
+      if (recurse)
+      {
+        for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+              it != color_map.end(); it++)
+        {
+          it->second->mark_invalid_instance_views(ctx, invalid_mask, recurse);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionNode::recursive_invalidate_views(ContextID ctx, const FieldMask &invalid_mask)
+    //--------------------------------------------------------------------------
+    {
+      invalidate_instance_views(ctx, invalid_mask, false/*clean*/);
+      for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->recursive_invalidate_views(ctx, invalid_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     void RegionNode::invalidate_instance_views(ContextID ctx, const FieldMask &invalid_mask, bool clean)
     //--------------------------------------------------------------------------
     {
@@ -6566,6 +6658,31 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void PartitionNode::mark_invalid_instance_views(ContextID ctx, const FieldMask &mask, bool recurse)
+    //--------------------------------------------------------------------------
+    {
+      if (recurse)
+      {
+        for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+              it != color_map.end(); it++)
+        {
+          it->second->mark_invalid_instance_views(ctx, mask, recurse);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void PartitionNode::recursive_invalidate_views(ContextID ctx, const FieldMask &mask)
+    //--------------------------------------------------------------------------
+    {
+      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+            it != color_map.end(); it++)
+      {
+        it->second->recursive_invalidate_views(ctx, mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     void PartitionNode::print_physical_context(ContextID ctx, TreeStateLogger *logger)
     //--------------------------------------------------------------------------
     {
@@ -6913,8 +7030,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(remote);
-      // Not valid if we're sending back the last set of managers
-      //assert(is_valid_free());
+      assert(is_valid_free());
       assert(!remote_frac.is_empty());
 #endif
       InstFrac return_frac = remote_frac;
@@ -7198,7 +7314,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!to_be_invalidated);
       assert(valid_references > 0);
 #endif
       to_be_invalidated = true;

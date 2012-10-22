@@ -117,15 +117,17 @@ namespace RegionRuntime {
     public:
       // Packing and unpacking state return
       size_t compute_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
-                                              ContextID ctx, bool overwrite, SendingMode mode
+                                              ContextID ctx, bool overwrite, SendingMode mode 
 #ifdef DEBUG_HIGH_LEVEL
                                               , const char *task_name
 #endif
                                               );
-      size_t post_compute_region_tree_state_return(bool last_return);
+      void post_partition_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode);
+      size_t post_compute_region_tree_state_return(void);
       void begin_pack_region_tree_state_return(Serializer &rez);
       void pack_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
                               ContextID ctx, bool overwrite, SendingMode mode, Serializer &rez);
+      void post_partition_pack_return(const RegionRequirement &req, ContextID ctx, SendingMode mode);
       void end_pack_region_tree_state_return(Serializer &rez);
       void begin_unpack_region_tree_state_return(Deserializer &derez);
       void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
@@ -544,6 +546,8 @@ namespace RegionRuntime {
                           const FieldMask &dirty_mask, const std::vector<InstanceView*>& new_views);
       void issue_update_copy(InstanceView *dst, RegionMapper &rm, FieldMask copy_mask);
       void perform_copy_operation(RegionMapper &rm, InstanceView *src, InstanceView *dst, const FieldMask &copy_mask);
+      void mark_invalid_instance_views(ContextID ctx, const FieldMask &invalid_mask, bool recurse);
+      void recursive_invalidate_views(ContextID ctx, const FieldMask &invalid_mask);
       void invalidate_instance_views(ContextID ctx, const FieldMask &invalid_mask, bool clean);
       void find_valid_instance_views(ContextID ctx, 
                                      std::list<std::pair<InstanceView*,FieldMask> > &valid_views, 
@@ -654,6 +658,9 @@ namespace RegionRuntime {
                                 bool invalidate_views, bool recurse);
       void pack_diff_state(ContextID ctx, const FieldMask &pack_mask, Serializer &rez);
       void unpack_diff_state(ContextID ctx, Deserializer &derez);
+    public:
+      void mark_invalid_instance_views(ContextID ctx, const FieldMask &invalid_mask, bool recurse);
+      void recursive_invalidate_views(ContextID ctx, const FieldMask &invalid_mask);
     public:
       void print_physical_context(ContextID ctx, TreeStateLogger *logger);
     private:
