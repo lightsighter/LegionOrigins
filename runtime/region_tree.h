@@ -226,7 +226,6 @@ namespace RegionRuntime {
       std::set<FieldSpaceNode*>     send_field_nodes;
       std::set<RegionNode*>         send_logical_nodes;
       std::vector<IndexPartNode*>  new_index_part_nodes;
-      std::vector<PartitionNode*>   new_partition_nodes;
       std::set<InstanceManager*>        unique_managers;
       std::map<InstanceView*,FieldMask> unique_views; // points to the top instance view
       std::vector<InstanceView*>        ordered_views;
@@ -883,8 +882,8 @@ namespace RegionRuntime {
       InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
       InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
       // These two are methods mark when a view is valid in the region tree
-      void remove_user(UniqueID uid, unsigned refs, bool strict = true);
-      void remove_copy(Event copy, bool strict = true);
+      void remove_user(UniqueID uid, unsigned refs);
+      void remove_copy(Event copy);
       void add_valid_reference(void);
       void remove_valid_reference(void);
       void mark_to_be_invalidated(void);

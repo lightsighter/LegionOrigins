@@ -2987,8 +2987,8 @@ namespace RegionRuntime {
                             Processor::NO_PROC, single_event, multi_event,
                             tag, false/*sanitizing*/, false/*inline mapping*/, source_copy_instances);
             // First remove our reference so we don't accidentally end up waiting on ourself
-            InstanceRef clone_ref = physical_instances[idx];
-            physical_instances[idx].remove_reference(unique_id);
+            InstanceRef clone_ref = clone_instances[idx];
+            clone_instances[idx].remove_reference(unique_id);
             Event close_event = forest_ctx->close_to_instance(clone_ref, rm);
 #ifdef DEBUG_HIGH_LEVEL
             assert(close_event != get_termination_event());

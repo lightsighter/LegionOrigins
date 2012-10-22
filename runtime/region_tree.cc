@@ -1397,11 +1397,6 @@ namespace RegionRuntime {
       {
         (*it)->find_new_partitions(new_index_part_nodes);
       }
-      for (std::list<RegionNode*>::const_iterator it = top_logical_trees.begin();
-            it != top_logical_trees.end(); it++)
-      {
-        (*it)->find_new_partitions(new_partition_nodes);
-      }
 
       // Then compute the size of the computed partitions, the created nodes,
       // and the handles for the deleted nodes
@@ -1410,13 +1405,6 @@ namespace RegionRuntime {
       result += (new_index_part_nodes.size() * sizeof(IndexSpace)); // parent handles
       for (std::vector<IndexPartNode*>::const_iterator it = new_index_part_nodes.begin();
             it != new_index_part_nodes.end(); it++)
-      {
-        result += (*it)->compute_tree_size(true/*returning*/);
-      }
-      result += sizeof(size_t); // number of new logical partitions
-      result += (new_partition_nodes.size() * sizeof(LogicalRegion)); // parent handles
-      for (std::vector<PartitionNode*>::const_iterator it = new_partition_nodes.begin();
-            it != new_partition_nodes.end(); it++)
       {
         result += (*it)->compute_tree_size(true/*returning*/);
       }
@@ -1484,16 +1472,6 @@ namespace RegionRuntime {
       rez.serialize(new_index_part_nodes.size());
       for (std::vector<IndexPartNode*>::const_iterator it = new_index_part_nodes.begin();
             it != new_index_part_nodes.end(); it++)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        assert((*it)->parent != NULL);
-#endif
-        rez.serialize((*it)->parent->handle);
-        (*it)->serialize_tree(rez,true/*returning*/);
-      }
-      rez.serialize(new_partition_nodes.size());
-      for (std::vector<PartitionNode*>::const_iterator it = new_partition_nodes.begin();
-            it != new_partition_nodes.end(); it++)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert((*it)->parent != NULL);
@@ -1576,7 +1554,6 @@ namespace RegionRuntime {
       send_field_nodes.clear();
       send_logical_nodes.clear();
       new_index_part_nodes.clear();
-      new_partition_nodes.clear();
     }
 
     //--------------------------------------------------------------------------
@@ -1598,18 +1575,6 @@ namespace RegionRuntime {
         assert(parent_node != NULL);
 #endif
         IndexPartNode::deserialize_tree(derez, parent_node, this, true/*returning*/);
-      }
-      size_t new_partition_nodes;
-      derez.deserialize(new_partition_nodes);
-      for (unsigned idx = 0; idx < new_partition_nodes; idx++)
-      {
-        LogicalRegion parent_handle;
-        derez.deserialize(parent_handle);
-        RegionNode *parent_node = get_node(parent_handle);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(parent_node != NULL);
-#endif
-        PartitionNode::deserialize_tree(derez, parent_node, this, true/*returning*/);
       }
 
       // Unpack created nodes
@@ -2428,7 +2393,7 @@ namespace RegionRuntime {
         unsigned references;
         derez.deserialize(references);
         InstanceView *view = find_view(user.view_key);
-        view->remove_user(user.user, references, false/*strict*/);
+        view->remove_user(user.user, references);
       }
       size_t num_escaped_copies;
       derez.deserialize(num_escaped_copies);
@@ -2437,7 +2402,7 @@ namespace RegionRuntime {
         EscapedCopy copy;
         derez.deserialize(copy);
         InstanceView *view = find_view(copy.view_key);
-        view->remove_copy(copy.copy_event, false/*strict*/);
+        view->remove_copy(copy.copy_event);
       }
     }
 
@@ -6645,6 +6610,8 @@ namespace RegionRuntime {
       for (std::list<FieldState>::const_iterator it = state.added_states.begin();
             it != state.added_states.end(); it++)
       {
+        if (it->valid_fields * pack_mask)
+          continue;
         it->pack_physical_state(pack_mask, rez);
       }
     }
@@ -7258,15 +7225,14 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_user(UniqueID uid, unsigned refs, bool strict /*= true*/)
+    void InstanceView::remove_user(UniqueID uid, unsigned refs)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
-      if ((it == added_users.end()) && !strict)
+      if (it == added_users.end())
         return;
 #ifdef DEBUG_HIGH_LEVEL
-      assert(it != added_users.end());
       assert(it->second.references > 0);
 #endif
       it->second.references--;
@@ -7286,16 +7252,13 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_copy(Event copy_e, bool strict /*= true*/)
+    void InstanceView::remove_copy(Event copy_e)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<Event,ReductionOpID>::iterator it = added_copy_users.find(copy_e);
-      if ((it == added_copy_users.end()) && !strict)
+      if (it == added_copy_users.end())
         return;
-#ifdef DEBUG_HIGH_LEVEL
-      assert(it != added_copy_users.end());
-#endif
 #ifndef LEGION_SPY
       epoch_copy_users.erase(copy_e);
 #else
@@ -8228,6 +8191,9 @@ namespace RegionRuntime {
             std::map<EscapedUser,unsigned> &escaped_users, std::set<EscapedCopy> &escaped_copies)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!manager->is_clone());
+#endif
       // Pack all the valid events, the epoch users, and the epoch copy users,
       // also pack any added users that need to be sent back
       for (unsigned idx = 0; idx < 5; idx++)
@@ -8354,6 +8320,9 @@ namespace RegionRuntime {
                 std::set<EscapedCopy> &escaped_copies, bool already_returning)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!manager->is_clone());
+#endif
       // Zero out the packing sizes
       size_t result = 0;
       // Check to see if we've returned before 
