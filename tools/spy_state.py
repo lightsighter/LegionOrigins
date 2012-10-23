@@ -718,10 +718,11 @@ class Event(object):
             n.print_prev_dependences(printer, name)
 
 class TaskInstance(object):
-    def __init__(self, handle, start, term):
+    def __init__(self, handle, start, term, is_index):
         self.handle = handle
         self.start_event = start
         self.term_event = term
+        self.is_index_space = is_index
         self.marked = False
         self.name = 'task_node_'+str(handle.uid)+'_'+str(handle.point)
 
@@ -734,7 +735,10 @@ class TaskInstance(object):
         self.term_event.traverse(component)
 
     def print_node(self, printer, ops):
-        printer.println(self.name+' [style=filled,label="'+ops.get_name(self.handle.uid)+ 
+        index_string = ""
+        if self.is_index_space:
+            index_string = '\\nIndex\ Space\ Point\ '+str(self.handle.point)
+        printer.println(self.name+' [style=filled,label="'+ops.get_name(self.handle.uid)+index_string+ 
             '\\nUnique\ ID\ '+str(self.handle.uid)+'",fillcolor=lightskyblue,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
     def print_dependences(self, printer):
@@ -755,7 +759,7 @@ class IndexInstance(object):
         self.points[handle] = point
 
 class CopyInstance(object):
-    def __init__(self, uid, srcid, dstid, srcloc, dstloc, index, field, tree, start, term):
+    def __init__(self, uid, srcid, dstid, srcloc, dstloc, index, field, tree, start, term, mask):
         self.srcid = srcid
         self.dstid = dstid
         self.srcloc = srcloc
@@ -765,6 +769,7 @@ class CopyInstance(object):
         self.tree_id = tree
         self.start_event = start
         self.term_event = term
+        self.mask = mask
         self.marked = False
         self.name = 'copy_node_'+str(uid)
 
@@ -780,6 +785,7 @@ class CopyInstance(object):
         printer.println(self.name+' [style=filled,label="Src\ Inst:\ '+str(self.srcid)+'\ Src\ Loc:\ '+str(self.srcloc)+
             '\\nDst\ Inst:\ '+str(self.dstid)+'\ Dst\ Loc:\ '+str(self.dstloc)+
             '\\nLogical\ Region:\ (index:'+str(self.index_space)+',field:'+str(self.field_space)+',tree:'+str(self.tree_id)+')'+
+            '\\nCopy\ Mask:\ '+self.mask+
             '",fillcolor=darkgoldenrod1,fontsize=14,fontcolor=black,shape=record,penwidth=2];')
 
     def print_dependences(self, printer):
@@ -921,12 +927,12 @@ class EventGraph(object):
         e1.add_outgoing(e2)
         e2.add_incoming(e1)
 
-    def add_task_instance(self, uid, point, startid, startgen, termid, termgen):
+    def add_task_instance(self, uid, index_space, point, startid, startgen, termid, termgen):
         handle = TaskHandle(uid, point)
         assert handle not in self.tasks
         start_event = self.get_event(EventHandle(startid,startgen))
         term_event = self.get_event(EventHandle(termid,termgen))
-        task = TaskInstance(handle,start_event,term_event)
+        task = TaskInstance(handle,start_event,term_event,index_space)
         self.tasks[handle] = task
         if uid in self.index_tasks:
             self.index_tasks[uid].add_point(handle, task)
@@ -941,10 +947,10 @@ class EventGraph(object):
         term_event = self.get_event(EventHandle(termid, termgen))
         self.index_tasks[uid] = IndexInstance(uid, term_event)
 
-    def add_copy_instance(self, srcid, dstid, srcloc, dstloc, index, field, tree, startid, startgen, termid, termgen):
+    def add_copy_instance(self, srcid, dstid, srcloc, dstloc, index, field, tree, startid, startgen, termid, termgen, mask):
         start_event = self.get_event(EventHandle(startid,startgen))
         term_event = self.get_event(EventHandle(termid,termgen))
-        copy_op = CopyInstance(self.next_copy, srcid, dstid, srcloc, dstloc, index, field, tree, start_event, term_event)
+        copy_op = CopyInstance(self.next_copy, srcid, dstid, srcloc, dstloc, index, field, tree, start_event, term_event, mask)
         self.next_copy = self.next_copy + 1
         start_event.add_outgoing(copy_op)
         term_event.add_incoming(copy_op)
