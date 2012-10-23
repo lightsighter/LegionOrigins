@@ -45,7 +45,7 @@ def parse_log_file(file_name, trees, ops, events):
             continue
         m = index_part_pat.match(line)
         if m <> None:
-            trees.add_index_partition(int(m.group('pid')), int(m.group('uid')), bool(m.group('disjoint')), int(m.group('color')))
+            trees.add_index_partition(int(m.group('pid')), int(m.group('uid')), True if (int(m.group('disjoint'))) == 1 else False, int(m.group('color')))
             continue
         m = index_subspace_pat.match(line)
         if m <> None:
@@ -87,7 +87,7 @@ def parse_log_file(file_name, trees, ops, events):
         # Mapping dependence analysis
         m = requirement_pat.match(line)
         if m <> None:
-            ops.add_requirement(int(m.group('uid')), int(m.group('index')), bool(m.group('is_reg')), int(m.group('ispace')), int(m.group('fspace')), int(m.group('tid')), int(m.group('priv')), int(m.group('coher')), int(m.group('redop')))
+            ops.add_requirement(int(m.group('uid')), int(m.group('index')), True if (int(m.group('is_reg')))==1 else False, int(m.group('ispace')), int(m.group('fspace')), int(m.group('tid')), int(m.group('priv')), int(m.group('coher')), int(m.group('redop')))
             continue
         m = req_field_pat.match(line)
         if m <> None:

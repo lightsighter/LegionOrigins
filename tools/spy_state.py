@@ -74,7 +74,7 @@ def is_mapping_dependence(dtype):
 
 def check_for_anti_dependence(req1, req2, actual):
     if req1.is_read_only():
-        assert req1.has_write()
+        assert req2.has_write()
         return ANTI_DEPENDENCE
     else:
         if req2.is_write_only():
@@ -258,7 +258,7 @@ class TreeState(object):
         node1 = self.get_index_node(req1.is_reg, req1.ispace)
         node2 = self.get_index_node(req2.is_reg, req2.ispace) 
         if not self.is_aliased(node1, node2):
-            return NO_DEPENDNECE
+            return NO_DEPENDENCE
         # Otherwise check the coherence and the privilege
         return compute_dependence_type(req1, req2)
 
@@ -290,6 +290,8 @@ class TreeState(object):
 
     def get_index_node(self, is_reg, iid):
         if is_reg:
+            if iid not in self.index_space_nodes:
+                print "MISSING iid "+str(iid)
             assert iid in self.index_space_nodes
             return self.index_space_nodes[iid]
         else:
