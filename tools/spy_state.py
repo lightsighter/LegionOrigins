@@ -2,6 +2,7 @@
 
 import subprocess
 import string
+import sys
 
 # These are imported from legion_types.h
 NO_DEPENDENCE = 0
@@ -64,6 +65,43 @@ class Requirement(object):
 
     def is_relaxed(self):
         return self.coher == RELAXED
+
+    def to_string(self):
+        if self.is_reg:
+            print "Region Requirement for region ("+str(self.ispace)+","+str(self.fspace)+","+str(self.tid)+")"
+        else:
+            print "Region Requirement for partition ("+str(self.ispace)+","+str(self.fspace)+","+str(self.tid)+")"
+        print "    Privilege: "+self.get_privilege()
+        print "    Coherence: "+self.get_coherence()
+        print "    Fields: "+self.get_fields()
+
+    def get_privilege(self):
+        if self.priv == NO_ACCESS:
+            return "NO ACCESS"
+        elif self.priv == READ_ONLY:
+            return "READ ONLY"
+        elif self.priv == READ_WRITE:
+            return "READ-WRITE"
+        elif self.priv == WRITE_ONLY:
+            return "WRITE ONLY"
+        else:
+            return "REDUCE with Reduction Op "+str(self.redop)
+
+    def get_coherence(self):
+        if self.coher == EXCLUSIVE:
+            return "EXCLUSIVE"
+        elif self.coher == ATOMIC:
+            return "ATOMIC"
+        elif self.coher == SIMULTANEOUS:
+            return "SIMULTANEOUS"
+        else:
+            return "RELAXED"
+
+    def get_fields(self):
+        result = ""
+        for f in self.fields:
+            result = result + str(f) + " "
+        return result
 
 
 def is_mapping_dependence(dtype):
@@ -275,12 +313,20 @@ class TreeState(object):
                     inode2 = inode2.parent
         assert inode1.depth == inode2.depth
         # Handle the easy cases
-        # Different ancestors, therefore in different trees, so disjoint
-        if inode1 <> inode2:
-            return False
         # If one was a subregion of the other, they are definitely aliased
-        if (inode1 == orig1) or (inode1 == orig2):
+        if (inode1 is orig1) or (inode1 is orig2):
             return True
+        # Now walk backwards up the tree in sync until either we either
+        # find a common ancestor or we run out of parents in which case
+        # they are in different trees and are therefore disjoint
+        while inode1 is not inode2:
+            if inode1.parent == None:
+                return False
+            if inode2.parent == None:
+                return False
+            inode1 = inode1.parent
+            inode2 = indoe2.parent
+        assert inode1 is inode2
         # Least common ancestor is a region, so they came from different
         # partitions and are therefore disjoint
         # TODO: handle when partitions are computed to be disjoint
@@ -299,7 +345,7 @@ class TreeState(object):
             return self.index_part_nodes[iid]
 
 
-class Context(object):
+class ContextHandle(object):
     def __init__(self, uid, ctx):
         self.uid = uid
         self.ctx = ctx
@@ -311,6 +357,67 @@ class Context(object):
         return (self.uid,self.ctx) == (other.uid,other.ctx)
 
 
+class Context(object):
+    def __init__(self,handle,state):
+        self.handle = handle
+        self.op_state = state
+        self.ops = list()
+        self.mdeps = list() # The runtime computed mapping dependences
+        self.adeps = list() # The mapping dependences computed here
+
+    def append_op(self,op):
+        self.ops.append(op)
+
+    def add_mdep(self,mdep):
+        self.mdeps.append(mdep)
+
+    def add_adep(self,adep):
+        self.adeps.append(adep)
+
+    def compute_dependence_diff(self,tree_state):
+        if (len(self.ops) == 0) or (len(self.ops) == 1):
+            return
+        parent_task = self.op_state.get_op(self.handle.uid)
+        print "Checking mapping dependences for task "+str(parent_task.name)
+        # First compute the list of adeps between each pair of operations
+        for idx in range(1,len(self.ops)):
+            for prev in range(idx):
+                self.ops[prev].find_dependences(self.ops[idx], self.handle, self, tree_state)
+        print "    Found "+str(len(self.adeps))+" dependences in all-pairs test for task "+str(parent_task.name)
+
+        # For all the actual dependences make sure we have a dependence path between the
+        # two different operations based on the dependences computed by the runtime
+        count = 0
+        errors = 0
+        for adep in self.adeps:
+            sys.stdout.write("    Checking dependence: %d \r" % (count))
+            if not adep.op2.has_path(adep.op1):
+                print "    ERROR: Failed to compute mapping dependence between index "+str(adep.idx1)+ \
+                  " of "+adep.op1.get_name()+" (ID "+str(adep.op1.uid)+") and index "+str(adep.idx2)+ \
+                  " of "+adep.op2.get_name()+" (ID "+str(adep.op2.uid)+")"
+                errors = errors + 1
+            for op in self.ops:
+                op.unmark()
+            count = count + 1
+
+        # Now go through all the mdeps and see if there were any in there that were not
+        # computed by the adep computation, which indicates that we computed an unnecessary dependence
+        warnings = 0
+        for mdep in self.mdeps:
+            found = False
+            for adep in self.adeps:
+                if adep == mdep:
+                    found = True
+                    break
+            if not found:
+                print "    WARNING: Computed extra mapping dependence between index "+str(mdep.idx1)+ \
+                  " of "+mdep.op1.get_name()+" (ID "+str(mdep.op1.uid)+") and index "+str(mdep.idx2)+ \
+                  " of "+mdep.op2.get_name()+" (ID "+str(mdep.op2.uid)+") in context of task "+parent_task.get_name()
+                warnings = warnings + 1
+
+        print "    Mapping Dependence Errors: "+str(errors)
+        print "    Mapping Dependence Warnings: "+str(warnings)
+                
 
 class MappingDependence(object):
     def __init__(self, ctx, op1, op2, idx1, idx2, dtype):
@@ -322,7 +429,7 @@ class MappingDependence(object):
         self.dtype = dtype
 
     def __eq__(self,other):
-        return (self.ctx == other.ctx) and (self.op1 == other.op1) and (self.op2 == other.op2) and (self.idx1 == other.idx1) and (self.idx2 == other.idx2) and (self.dtype == other.dtype)
+        return (self.ctx == other.ctx) and (self.op1 is other.op1) and (self.op2 is other.op2) and (self.idx1 == other.idx1) and (self.idx2 == other.idx2) and (self.dtype == other.dtype)
 
 
 class TaskOp(object):
@@ -334,10 +441,17 @@ class TaskOp(object):
         else:
             self.name = str(tid)
         self.reqs = dict()
+        self.incoming = set()
+        self.outgoing = set()
+        self.marked = False
 
     def add_requirement(self, index, is_reg, ispace, fspace, tid, priv, coher, redop):
         assert index not in self.reqs
         self.reqs[index] = Requirement(index, is_reg, ispace, fspace, tid, priv, coher, redop)
+
+    def print_req(self,idx):
+        assert idx in self.reqs
+        self.reqs[idx].to_string()
 
     def add_req_field(self, index, fid):
         assert index in self.reqs
@@ -346,25 +460,55 @@ class TaskOp(object):
     def get_name(self):
         return "Task "+self.name
 
-    def find_dependences(self, op, ctx, op_state, tree_state):
+    def find_dependences(self, op, handle, context, tree_state):
         for idx,req in self.reqs.items():
-            op.find_individual_dependences(self, req, ctx, op_state, tree_state)
+            op.find_individual_dependences(self, req, handle, context, tree_state)
 
-    def find_individual_dependences(self, other_op, other_req, ctx, op_state, tree_state):
+    def find_individual_dependences(self, other_op, other_req, handle, context, tree_state):
         for idx,req in self.reqs.items():
             dtype = tree_state.compute_dependence(other_req, req)
             if is_mapping_dependence(dtype):
-                op_state.add_actual_dependence(MappingDependence(ctx, other_op, self, other_req.index, req.index, dtype))
+                context.add_adep(MappingDependence(handle, other_op, self, other_req.index, req.index, dtype))
+
+    def add_incoming(self,op):
+        assert op <> self
+        self.incoming.add(op)
+
+    def add_outgoing(self,op):
+        assert op <> self
+        self.outgoing.add(op)
+
+    def has_path(self,target):
+        if target == self:
+            return True
+        if self.marked:
+            return False
+        # Otherwise check all the outgoing edges
+        for op in self.outgoing:
+            if op.has_path(target):
+                return True
+        self.marked = True
+        return False
+
+    def unmark(self):
+        self.marked = False
 
 
 class MapOp(object):
     def __init__(self, uid):
         self.uid = uid
         self.req = None
+        self.incoming = set()
+        self.outgoing = set()
+        self.marked = False
 
     def add_requirement(self, index, is_reg, ispace, fspace, tid, priv, coher, redop):
         assert index == 0
         self.req = Requirement(index, is_reg, ispace, fspace, tid, priv, coher, redop)
+
+    def print_req(self,idx):
+        assert idx == 0
+        self.req.to_string()
 
     def add_req_field(self, index, fid):
         assert self.req <> None
@@ -373,29 +517,77 @@ class MapOp(object):
     def get_name(self):
         return "Mapping "+str(self.uid)
 
-    def find_dependences(self, op, ctx, op_state, tree_state):
-        op.find_individual_dependences(self, self.req, ctx, op_state, tree_state)
+    def find_dependences(self, op, handle, context, tree_state):
+        op.find_individual_dependences(self, self.req, handle, context, tree_state)
 
-    def find_individual_dependences(self, other_op, other_req, ctx, op_state, tree_state):
+    def find_individual_dependences(self, other_op, other_req, handle, context, tree_state):
         dtype = tree_state.compute_dependence(other_req, self.req)
         if is_mapping_dependence(dtype):
-            op_state.add_actual_dependence(MappingDependence(ctx, other_op, self, other_req.index, self.req.index, dtype))
+            context.add_adep(MappingDependence(handle, other_op, self, other_req.index, self.req.index, dtype))
+
+    def add_incoming(self,op):
+        assert op <> self
+        self.incoming.add(op)
+
+    def add_outgoing(self,op):
+        assert op <> self
+        self.outgoing.add(op)
+
+    def has_path(self,target):
+        if target == self:
+            return True
+        if self.marked:
+            return False
+        # Otherwise check all the outgoing edges
+        for op in self.outgoing:
+            if op.has_path(target):
+                return True
+        self.marked = True
+        return False
+
+    def unmark(self):
+        self.marked = False
 
 
 class DeletionOp(object):
     def __init__(self, uid):
         self.uid = uid
+        self.incoming = set()
+        self.marked = False
 
     def get_name(self):
         return "Deletion "+str(self.uid)
 
-    def find_dependences(self, op, ctx, op_state, tree_state):
+    def find_dependences(self, op, handle, context, tree_state):
         # No need to do anything
         pass
 
-    def find_individual_dependences(self, other_op, other_req, ctx, op_state, tree_state):
+    def find_individual_dependences(self, other_op, other_req, handle, context, tree_state):
         # TODO: implement this for deletion
         pass
+
+    def add_incoming(self,op):
+        assert op <> self
+        self.incoming.add(op)
+
+    def add_outgoin(self,op):
+        # Should never happen
+        assert False
+
+    def has_path(self,target):
+        if target == self:
+            return True
+        if self.marked:
+            return False
+        # Otherwise check all the outgoing edges
+        for op in self.outgoing:
+            if op.has_path(target):
+                return True
+        self.marked = True
+        return False
+
+    def unmark(self):
+        self.marked = False
 
 
 class OpState(object):
@@ -404,8 +596,6 @@ class OpState(object):
         self.maps = dict()
         self.deletions = dict()
         self.contexts = dict()
-        self.mdeps = list() # The runtime computed mapping dependences
-        self.adeps = list() # The mapping dependences computed here
 
     def add_top_task(self, uid, tid):
         assert uid not in self.tasks
@@ -416,31 +606,31 @@ class OpState(object):
         if uid not in self.tasks:
             self.tasks[uid] = TaskOp(uid, tid, None)
         context = self.get_context(pid, ctx)
-        self.contexts[context].append(self.tasks[uid])
+        context.append_op(self.tasks[uid])
 
     def add_mapping(self, uid, pid, ctx):
         assert uid not in self.maps
         mapping = MapOp(uid)
         self.maps[uid] = mapping
         context = self.get_context(pid, ctx)
-        self.contexts[context].append(mapping)
+        context.append_op(mapping)
 
     def add_deletion(self, uid, pid, ctx):
         assert uid not in self.deletions
         deletion = DeletionOp(uid)
         self.deletions[uid] = deletion
         context = self.get_context(pid, ctx)
-        self.contexts[context].append(deletion)
+        context.append_op(deletion)
 
     def add_name(self, uid, name):
         assert uid in self.tasks
         self.tasks[uid].name = name
 
     def get_context(self, pid, ctx):
-        ctx = Context(pid, ctx)
+        ctx = ContextHandle(pid, ctx)
         if ctx not in self.contexts:
-            self.contexts[ctx] = list()
-        return ctx
+            self.contexts[ctx] = Context(ctx,self)
+        return self.contexts[ctx]
 
     def get_op(self, uid):
         assert (uid in self.tasks) or (uid in self.maps) or (uid in self.deletions)
@@ -464,47 +654,14 @@ class OpState(object):
         context = self.get_context(pid, ctx)
         op1 = self.get_op(prev_id)
         op2 = self.get_op(next_id)
-        self.mdeps.append(MappingDependence(context, op1, op2, pidx, nidx, dtype))
-
-    def add_actual_dependence(self, dependence):
-        self.adeps.append(dependence)
-
-    def compute_dependences(self, ctx, ops, tree_state):
-        if (len(ops) == 0) or (len(ops) == 1):
-            return
-        for idx in range(1,len(ops)):
-            for prev in range(idx):
-                ops[prev].find_dependences(ops[idx], ctx, self, tree_state)
+        context.add_mdep(MappingDependence(context.handle, op1, op2, pidx, nidx, dtype))
+        # Graph edges point backwards in time from second task to first task
+        op1.add_incoming(op2)
+        op2.add_outgoing(op1)
 
     def check_logical(self, tree_state):
-        # Compute the mapping dependences for each context 
-        for ctx,ops in self.contexts.items():
-            self.compute_dependences(ctx, ops, tree_state) 
-
-        # Compute the difference in sets
-        for mdep in reversed(self.mdeps):
-            for adep in self.adeps:
-                if mdep == adep:
-                    self.mdeps.remove(mdep)
-                    self.adeps.remove(adep)
-                    break
-
-        # Print out the differences, if we still have mdeps
-        # that is an warning since they were extra mapping dependences. 
-        # If we still have adeps that is an error since it means
-        # we failed to compute the dependence
-        for adep in self.adeps:
-            parent_task = self.get_op(adep.ctx.uid)
-            print "ERROR: Failed to compute mapping dependence between index "+str(adep.idx1)+ \
-                  " of "+adep.op1.get_name()+" and index "+str(adep.idx2)+" of "+adep.op2.get_name()+ \
-                  " in context of task "+parent_task.get_name()
-
-        for mdep in self.mdeps:
-            parent_task = self.get_op(mdep.ctx.uid)
-            print "WARNING: Computed extra mapping dependence between index "+str(mdep.idx1)+ \
-                  " of "+mdep.op1.get_name()+" and index "+str(mdep.idx2)+" of "+mdep.op2.get_name()+ \
-                  " in context of task "+parent_task.get_name()
-
+        for handle,ctx in self.contexts.iteritems():
+            ctx.compute_dependence_diff(tree_state)
 
 
 class EventHandle(object):
