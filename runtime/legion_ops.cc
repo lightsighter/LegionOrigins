@@ -2931,7 +2931,7 @@ namespace RegionRuntime {
       }
       // Record the dependences
       LegionSpy::log_event_dependences(wait_on_events, start_condition);
-      LegionSpy::log_task_events(get_unique_id(), (is_index_space ? *((unsigned*)index_point) : 0), 
+      LegionSpy::log_task_events(get_unique_id(), is_index_space, (is_index_space ? *((unsigned*)index_point) : 0), 
                                   start_condition, get_termination_event());
 #endif
       // Now we need to select the variant to run
