@@ -882,8 +882,8 @@ namespace RegionRuntime {
       InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
       InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
       // These two are methods mark when a view is valid in the region tree
-      void remove_user(UniqueID uid, unsigned refs);
-      void remove_copy(Event copy);
+      void remove_user(UniqueID uid, unsigned refs, bool strict);
+      void remove_copy(Event copy, bool strict);
       void add_valid_reference(void);
       void remove_valid_reference(void);
       void mark_to_be_invalidated(void);
@@ -994,7 +994,7 @@ namespace RegionRuntime {
       inline Lock get_required_lock(void) const { return required_lock; }
       inline PhysicalInstance get_instance(void) const { return instance; }
       inline InstanceManager* get_manager(void) const { return view->get_manager(); }
-      void remove_reference(UniqueID uid);
+      void remove_reference(UniqueID uid, bool strict);
     private:
       friend class RegionTreeForest;
       Event ready_event;

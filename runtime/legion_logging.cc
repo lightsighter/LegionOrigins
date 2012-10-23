@@ -168,7 +168,7 @@ namespace RegionRuntime {
 
     //--------------------------------------------------------------------------
     /*static*/ void TreeStateLogger::capture_state(HighLevelRuntime *rt, const RegionRequirement *req,
-      unsigned idx, const char *task_name, RegionNode *node, ContextID ctx, bool pre_map, bool sanitize)
+      unsigned idx, const char *task_name, RegionNode *node, ContextID ctx, bool pre_map, bool sanitize, bool closing)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -192,9 +192,14 @@ namespace RegionRuntime {
           else
           {
             assert(req->handle_type == SINGULAR);
-            logger->start_block("BEFORE MAPPING REGION (%x,%d,%d) index %d of task %s in context %d",
-                req->region.index_space.id, req->region.field_space.id, req->region.tree_id,
-                idx, task_name, ctx);
+            if (closing)
+              logger->start_block("BEFORE CLOSING REGION (%x,%d,%d) index %d of task %s in context %d",
+                  req->region.index_space.id, req->region.field_space.id, req->region.tree_id,
+                  idx, task_name, ctx);
+            else
+              logger->start_block("BEFORE MAPPING REGION (%x,%d,%d) index %d of task %s in context %d",
+                  req->region.index_space.id, req->region.field_space.id, req->region.tree_id,
+                  idx, task_name, ctx);
           }
         }
         else
@@ -213,9 +218,14 @@ namespace RegionRuntime {
           else
           {
             assert(req->handle_type == SINGULAR);
-            logger->start_block("AFTER MAPPING REGION (%x,%d,%d) index %d of task %s in context %d",
-                req->region.index_space.id, req->region.field_space.id, req->region.tree_id,
-                idx, task_name, ctx);
+            if (closing)
+              logger->start_block("AFTER CLOSING REGION (%x,%d,%d) index %d of task %s in context %d",
+                  req->region.index_space.id, req->region.field_space.id, req->region.tree_id,
+                  idx, task_name, ctx);
+            else
+              logger->start_block("AFTER MAPPING REGION (%x,%d,%d) index %d of task %s in context %d",
+                  req->region.index_space.id, req->region.field_space.id, req->region.tree_id,
+                  idx, task_name, ctx);
           }
         }
 

@@ -868,11 +868,11 @@ namespace RegionRuntime {
       PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
       RegionNode *top_node = get_node(start_region);
 #ifdef DEBUG_HIGH_LEVEL
-      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, true/*premap*/, rm.sanitizing);
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, true/*premap*/, rm.sanitizing, false/*closing*/);
 #endif
       top_node->register_physical_region(user, rm);
 #ifdef DEBUG_HIGH_LEVEL
-      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, false/*premap*/, rm.sanitizing);
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, false/*premap*/, rm.sanitizing, false/*closing*/);
 #endif
     }
 
@@ -889,7 +889,13 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(closer.upper_targets.back()->logical_region == close_node);
 #endif
+#ifdef DEBUG_HIGH_LEVEL
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, close_node, rm.ctx, true/*premap*/, false/*sanitizing*/, true/*closing*/);
+#endif
       close_node->issue_final_close_operation(user, closer);
+#ifdef DEBUG_HIGH_LEVEL
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, close_node, rm.ctx, false/*premap*/, false/*sanitizing*/, true/*closing*/);
+#endif
       // Now get the event for when the close is done
       return ref.view->perform_final_close(field_mask);
     }
@@ -1379,9 +1385,9 @@ namespace RegionRuntime {
       derez.deserialize(handle);
       InstanceView *view = find_view(InstanceKey(mid, handle));
       if (copy)
-        view->remove_copy(ready_event);
+        view->remove_copy(ready_event, false/*strict*/);
       else
-        view->remove_user(uid, 1/*number of references*/);
+        view->remove_user(uid, 1/*number of references*/, false/*strict*/);
     }
 
     //--------------------------------------------------------------------------
@@ -2393,7 +2399,7 @@ namespace RegionRuntime {
         unsigned references;
         derez.deserialize(references);
         InstanceView *view = find_view(user.view_key);
-        view->remove_user(user.user, references);
+        view->remove_user(user.user, references, false/*strict*/);
       }
       size_t num_escaped_copies;
       derez.deserialize(num_escaped_copies);
@@ -2402,7 +2408,7 @@ namespace RegionRuntime {
         EscapedCopy copy;
         derez.deserialize(copy);
         InstanceView *view = find_view(copy.view_key);
-        view->remove_copy(copy.copy_event);
+        view->remove_copy(copy.copy_event, false/*strict*/);
       }
     }
 
@@ -7225,14 +7231,15 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_user(UniqueID uid, unsigned refs)
+    void InstanceView::remove_user(UniqueID uid, unsigned refs, bool strict)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
-      if (it == added_users.end())
+      if ((it == added_users.end()) && !strict)
         return;
 #ifdef DEBUG_HIGH_LEVEL
+      assert(it != added_users.end());
       assert(it->second.references > 0);
 #endif
       it->second.references--;
@@ -7243,7 +7250,10 @@ namespace RegionRuntime {
 #else
         // If we're doing legion spy debugging, then keep it in the epoch users
         // and move it over to the deleted users 
-        deleted_users.insert(*it);
+        if (!strict)
+          deleted_users.insert(*it);
+        else
+          epoch_users.erase(uid);
 #endif
         added_users.erase(it);
         if (added_users.empty())
@@ -7252,19 +7262,25 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_copy(Event copy_e)
+    void InstanceView::remove_copy(Event copy_e, bool strict)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<Event,ReductionOpID>::iterator it = added_copy_users.find(copy_e);
-      if (it == added_copy_users.end())
+      if ((it == added_copy_users.end()) && !strict)
         return;
+#ifdef DEBUG_HIGH_LEVEL
+      assert(it != added_copy_users.end());
+#endif
 #ifndef LEGION_SPY
       epoch_copy_users.erase(copy_e);
 #else
       // If we're doing legion spy then don't keep it in the epoch users
       // and move it over to the deleted users
-      deleted_copy_users.insert(*it);
+      if (!strict)
+        deleted_copy_users.insert(*it);
+      else
+        epoch_copy_users.erase(copy_e);
 #endif
       added_copy_users.erase(it);
       if (added_copy_users.empty())
@@ -7383,7 +7399,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(dominated);
 #endif
-      return Event::merge_events(wait_on);
+      Event result = Event::merge_events(wait_on);
+#ifdef LEGION_SPY
+      LegionSpy::log_event_dependences(wait_on, result);
+#endif
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -8926,7 +8946,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceRef::remove_reference(UniqueID uid)
+    void InstanceRef::remove_reference(UniqueID uid, bool strict)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -8935,9 +8955,9 @@ namespace RegionRuntime {
       // Remove the reference and set the view to NULL so
       // we can't accidentally remove the reference again
       if (copy)
-        view->remove_copy(ready_event);
+        view->remove_copy(ready_event, strict);
       else
-        view->remove_user(uid, 1/*single reference*/);
+        view->remove_user(uid, 1/*single reference*/, strict);
       view = NULL;
     }
 
