@@ -468,78 +468,76 @@ reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \Rightarrow reduces_{id}(r) \in 
 
 Core Legion's operational semantics rules have the following form:
 $$\opsenv{e}{v}{E}$$
-where: 
-\begin{itemize}
-\item $M$ is a mapping from logical regions $r_i$ to {\em physical regions} $\rho_i$, which are sets of concrete memory locations.
-We write $\hat x = M \llbracket x \rrbracket$ for the application of $M$ to other objects (e.g., types), 
-replacing all free logical region names $r_i$ in $x$ with corresponding physical regions $\rho_i$.  
-(Note $M \llbracket x \rrbracket$ is ill-formed if $x$ contains a free logical region name $r_j \not\in dom(M)$.)
+and specify that, given a certain environment, the evaluation of expression $e$ yields a value $v$ and a
+{\em dynamic memory trace} $E$ which is a sequence of all heap operations (reads, writes, reductions) performed
+during the evaluation, including their location and the value read or written.
 
-\item $L$ is a mapping of local variables to (immutable) values.  
+In addition to the usual value mappings for local variables $L$ and store (i.e. heap) locations $S$, the Legion
+operational semantics environments includes an immutable heap typing $H$ that maps locations to types, and a region
+mapping $M$ that maps logical regions $r_i$ to physical regions $\rho_i$, which are sets of concrete memory
+locations.
 
-\item $H$ is a {\em heap typing}, assigning an invariant type to every memory location.  The heap typing
-serves two important roles.  First, it is used to bound the values that can be used for reads when 
-concurrent operation may make the exact value uncertain.  Second, it greatly simplifies the consistency
-check of pointer values, allowing a simple test against the heap typing for a location in lieu of a
-potentially unbounded walk through the store for complicated pointer data structures.
+The final element of the environtment is the {\em clobber set} $C$.  Our goal is to show that parallel Legion
+programs can
+be scheduled in a hierarchical (and therefore scalable) fashion, we require a formulation of operational semantics
+that is both parallel and hierarchical.  Because Legion allows constrained nondeterminism (in the order in which
+reductions are applied and in cases of relaxed coherence), it is possible for the heap accesses performed by
+one expression's evaluation to observe interference from other concurrent evaluations.  The traditional way of
+handling this in operational semantics \cite{XYZ} is to use a top-down approach with small-step semantics and
+a global view of all
+partially-evaluated expressions.  Rules are specified for which expression(s) are valid choices for the next small
+step of execution.  This approach has the benefit of being constructive but the implicit global ``scheduler'' is
+difficult to map into a hierarchical one in which decisions must necessarily be made with limited information.
 
-\item $S$ is a store, mapping memory locations $l_i$ to values.
+Instead we use a bottom-up approach with large-step semantics in which each expression is evaluated with limited 
+information about the overall environment.  The information consists of the initial state of the heap $S$, and a
+set of memory locations that might be modified by other concurrent evaluations.  This is the clobber set $C$,
+and is used to relax the constraints the evaluation of an expression.  Whereas the requirement for locations not
+in the clobber set is the usual one of {\em consistency} (i.e. a read from a location observes the effect of all 
+previous modifications applied in order), the value read from a location in the clobber set may be hypothesized
+to be any value at all.  The validation of these hypotheses is deferred until all potentially-concurrent
+modifications to a location can be observed (i.e. the evaluation of a parent expression whose clobber set does
+not include the location) and a consistent interleaving of the subexpressions' memory traces can be determined.
+With this formulation, the criteria for when a hierarchical scheduler may execute subexpressions in parallel can be
+made clear, but they are no longer constructive.  Instead, we will have to show that the scheduling algorithms
+used by the Legion runtime satisfy these constraints, guaranteeing the soundness of the Legion programming model.
 
-\item $C$ is a {\em clobber set}, memory locations that may be accessed by concurrently executing operations.
+The complete operational semantics rules can be found in \cite{LegionTypes12} - we show the most interesting ones
+in Figure~\ref{fig:semantics}.  The rules for the {\em read}, {\em write}, and {\em reduce} show how dynamic memory
+traces are constructed and how the result of a read expression is relaxed when the location falls within the
+clobber set.  Additionally, the write and reduce operations, with their two subexpressions, demonstrate how the
+traces of subexpressions are interleaved within the environment (and clobber set) of the parent expression.
 
-\item $e$ is an expression.
+The first use of the region mapping $M$ occurs in the {\em new} and {\em downregion} expressions.  The new
+expression is constrained to select a location (with the right heap typing) from the set that the specified logical
+region has been mapped to.  (Although one would expect the new expression to also return a location that is not
+currently in use, our soundness result does not require this additional constraint, so we have omitted it for
+simplicity.)  Similarly, the downregion expression checks whether a location is within the set of locations the
+logical region(s) have been mapped to, returning {\em null} if not.  As discussed above, the corresponding 
+{\em upregion} expression checks are performed statically.
 
-\item $v$ is the result of evaluating $e$.
+The general form of a coloring being an abitrary mapping of locations to ``colors'' (integers) is shown in the
+operational semantics rules for the {\em newcolor} and {\em color} expressions.  The color expression accepts an
+existing coloring and returns one in which the specified location is given the specified color, replacing an
+existing coloring for that location (if present).  The behavior of the newcolor expression is a bit trickier.
+Since Legion supports the {\em partition-then-allocate} model in which the {\em new} expression may be called
+on subregions, each subregion that results from a partitioning may need an arbitrary number of locations for which
+the program does not know the name at partitioning time.  The semantics for the newcolor expression allow this while
+guaranteeing that any explicit colorings performed by the program are honored.
 
-\item $E$ is a {\em memory trace} of the execution, a list of {\em memory operations}
-in the order performed.  A memory operation $\epsilon$ is either
-$read(l, c, v)$ (a read of location $l$ with coherence mode $c$, returning value $v$),
-$write(l, c, v)$ (a write to location $l$ with coherence mode $c$, storing value $v$),
-or $reduce_{id}(l, c, v)$ (a reduction into location $l$ with coherence mode $c$ using an
-associative function $id$ with value $v$).  Coherence modes are one of ({\em excl}, {\em atomic}, {\em simult}).
-\end{itemize}
+The semantics for the {\em pack} and {\em unpack} expressions are straightforward.  Packing a region relationship
+is just a matter of capturing the physical regions to which the logical regions are currently mapped, whereas 
+unpacking takes those physical regions and gives them fresh logical names within the evaluation of the body.
 
-Helper functions are used in some rules:
-\begin{itemize}
-\item $apply(S, E)$ computes the store that results from applying memory trace $E$ to initial store $S$.
-
-\item $mark\_coh(E, \hat Q)$ records the coherence of operations in trace $E$ according to coherence annotations $\hat Q$. 
-
-\item $valid\_interleave(S, C, E', \oton{E})$ is true if $E'$ is a valid interleaving
-of the memory traces $\oton{E}$.
-\end{itemize}
-Figure~\ref{fig:opsemfns} defines {\em apply} and {\em mark\_coherence}.  The precise definition of
-{\em valid\_interleave} is given in Section~\ref{sec:coherence}.  For now, we need only that a valid interleaving
-is at least an interleaving, containing each constituent trace as a subsequence and no other operations.
-
-Some rules modeling concurrent execution are locally
-non-deterministic, guessing values that result from
-concurrent tasks.  For example, the rule for {\tt read(e)} returns an
-arbitrary value $v'$ of the correct type if the location being read is
-in the clobber set $C$, the set of locations concurrent tasks may
-clobber (i.e., update).  The guess is eventually checked for
-consistency by the $valid\_interleave$ predicate of some enclosing
-expression, at a point where the task that wrote $v'$ is also local to
-the expression being evaluated.
-
-Another prescient operation is {\tt newcolor r}, which guesses initial
-memory locations and their colors for a partition.  These locations
-support partition-then-allocate, ensuring the memory mapping $M$ has
-locations for the new subregions that can be allocated by {\tt new}.
-As is usual, memory allocation is also non-deterministic, choosing any
-location of the correct type in the region.  For simplicity we do not
-require locations to be ``fresh''; our soundness results hold even if
-{\tt new T@r} returns locations already in use, provided the heap
-typing of the location is correct.
-
-The most involved rule in Core Legion's semantics is for function calls.
-The only regions accessible to the callee (through $M'$) are the region arguments.
-Also, if any regions are used with relaxed coherence (either {\em atomic} or {\em simult} instead of
-{\em excl}), those locations are added to the clobber set, allowing the
-impact of concurrent modifications of the store to be handled by the caller.  
-%This is done by
-%annotating the called function's memory trace with the relaxed coherence on a per-location basis
-%and using the {\em valid\_interleave} predicate to control what parallel execution is allowed.
+Finally, although the semantics for calls to subtasks appear complicated at first glance, the bulk of the rules
+are just handling the evaluation of each actual argument expression and the creation of the called subtask's 
+environment (with potentially different names for logical regions).  The key difference in Legion task calls is the
+handling of relaxed coherence.  Any location that falls within
+a logical region whose coherence has been relaxed (via {\em atomic} or {\em simult}) is added to the clobber set
+$C'$, allowing non-deterministic evaluation within the subtask with respect to those locations.  All actual accesses
+to those locations within the resulting memory trace ($E_{n+1}$) are marked with the corresponding coherence mode,
+allowing the {\em valid\_interleave} check within the caller's environment to verify the consistency of the overall
+memory trace.
 
 \begin{figure*}
 \centering{
