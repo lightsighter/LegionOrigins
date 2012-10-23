@@ -181,6 +181,24 @@ namespace RegionRuntime {
           return ERROR_FIELD_SPACE_FIELD_MISMATCH;
         }
       }
+
+      // Make sure that the requested node is a valid request
+      if (req.handle_type == SINGULAR)
+      {
+        if (!forest_ctx->has_node(req.region, false/*strict*/))
+        {
+          unlock_context();
+          return ERROR_INVALID_REGION_HANDLE;
+        }
+      }
+      else
+      {
+        if (!forest_ctx->has_node(req.partition, false/*strict*/))
+        {
+          unlock_context();
+          return ERROR_INVALID_PARTITION_HANDLE;
+        }
+      }
       unlock_context();
 
       // Then check that any instance fields are included in the privilege fields
@@ -201,7 +219,7 @@ namespace RegionRuntime {
         }
         inst_duplicates.insert(*it);
       }
-      
+
       // If this is a projection requirement and the child region selected will 
       // need to be in exclusive mode then the partition must be disjoint
       if ((req.handle_type == PROJECTION) && 
@@ -657,6 +675,12 @@ namespace RegionRuntime {
       {
         case NO_ERROR:
           break;
+        case ERROR_INVALID_REGION_HANDLE:
+          {
+            log_region(LEVEL_ERROR,"Requirest for invalid region handle (%x,%d,%d) for inline mapping (ID %d)",
+                requirement.region.index_space.id, requirement.region.field_space.id, requirement.region.tree_id, get_unique_id());
+            exit (ERROR_INVALID_REGION_HANDLE);
+          }
         case ERROR_FIELD_SPACE_FIELD_MISMATCH:
           {
             FieldSpace sp = (requirement.handle_type == SINGULAR) ? requirement.region.field_space : requirement.partition.field_space;
@@ -1242,6 +1266,20 @@ namespace RegionRuntime {
           {
             case NO_ERROR:
               break;
+            case ERROR_INVALID_REGION_HANDLE:
+              {
+                log_region(LEVEL_ERROR, "Invalid region handle (%x,%d,%d) for region requirement %d of task %s (ID %d)",
+                    regions[idx].region.index_space.id, regions[idx].region.field_space.id, regions[idx].region.tree_id,
+                    idx, variants->name, get_unique_id());
+                exit(ERROR_INVALID_REGION_HANDLE);
+              }
+            case ERROR_INVALID_PARTITION_HANDLE:
+              {
+                log_region(LEVEL_ERROR, "Invalid partition handle (%x,%d,%d) for partition requirement %d of task %s (ID %d)",
+                    regions[idx].partition.index_partition, regions[idx].partition.field_space.id, regions[idx].partition.tree_id,
+                    idx, variants->name, get_unique_id());
+                exit(ERROR_INVALID_PARTITION_HANDLE);
+              }
             case ERROR_BAD_PROJECTION_USE:
               {
                 log_region(LEVEL_ERROR,"Projection region requirement %d used in non-index space task %s",

@@ -2616,17 +2616,39 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool RegionTreeForest::has_node(LogicalRegion handle) const
+    bool RegionTreeForest::has_node(LogicalRegion handle, bool strict /*= true*/) const
     //--------------------------------------------------------------------------
     {
-      return (region_nodes.find(handle) != region_nodes.end());
+      if (region_nodes.find(handle) != region_nodes.end())
+        return true;
+      else if (!strict)
+      {
+        // Otherwise check to see if we could make it
+        if (index_nodes.find(handle.index_space) == index_nodes.end())
+          return false;
+        if (field_nodes.find(handle.field_space) == field_nodes.end())
+          return false;
+        return true;
+      }
+      return false;
     }
 
     //--------------------------------------------------------------------------
-    bool RegionTreeForest::has_node(LogicalPartition handle) const
+    bool RegionTreeForest::has_node(LogicalPartition handle, bool strict /*= true*/) const
     //--------------------------------------------------------------------------
     {
-      return (part_nodes.find(handle) != part_nodes.end());
+      if (part_nodes.find(handle) != part_nodes.end())
+        return true;
+      else if (!strict)
+      {
+        // Otherwise check to see if we could make it
+        if (index_parts.find(handle.index_partition) == index_parts.end())
+          return false;
+        if (field_nodes.find(handle.field_space) == field_nodes.end())
+          return false;
+        return true;
+      }
+      return false;
     }
 
     //--------------------------------------------------------------------------

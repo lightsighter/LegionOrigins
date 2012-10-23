@@ -176,8 +176,8 @@ namespace RegionRuntime {
       bool has_node(IndexSpace space) const;
       bool has_node(IndexPartition part) const;
       bool has_node(FieldSpace space) const;
-      bool has_node(LogicalRegion handle) const;
-      bool has_node(LogicalPartition handle) const;
+      bool has_node(LogicalRegion handle, bool strict = true) const;
+      bool has_node(LogicalPartition handle, bool strict = true) const;
     public:
       InstanceView* create_view(InstanceManager *manager, InstanceView *par, RegionNode *reg, bool made_local);
       InstanceManager* create_manager(Memory location, PhysicalInstance inst, 
