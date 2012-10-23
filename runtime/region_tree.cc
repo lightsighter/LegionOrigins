@@ -1266,7 +1266,7 @@ namespace RegionRuntime {
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
-        top_node->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
+        top_node->initialize_physical_context(ctx, unpacking_mask, true/*top*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
 #ifdef DEBUG_HIGH_LEVEL
         TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, false/*pack*/, true/*send*/);
@@ -1275,7 +1275,7 @@ namespace RegionRuntime {
       else
       {
         PartitionNode *top_node = get_node(req.partition);
-        top_node->parent->initialize_physical_context(ctx, FieldMask(FIELD_ALL_ONES), true/*top*/);
+        top_node->parent->initialize_physical_context(ctx, unpacking_mask, true/*top*/);
         top_node->parent->unpack_physical_state(ctx, derez, false/*recurse*/);
         top_node->unpack_physical_state(ctx, derez, true/*recurse*/);
 #ifdef DEBUG_HIGH_LEVEL
@@ -8300,7 +8300,8 @@ namespace RegionRuntime {
           escaped_users[EscapedUser(get_key(), finder->first)] = finder->second.references;
         }
 #ifdef LEGION_SPY
-        else
+        // make sure it is not a user before sending it back
+        else if (users.find(it->first) == users.end())
         {
           finder = deleted_users.find(it->first);
 #ifdef DEBUG_HIGH_LEVEL
@@ -8342,7 +8343,8 @@ namespace RegionRuntime {
           escaped_copies.insert(EscapedCopy(get_key(), finder->first));
         }
 #ifdef LEGION_SPY
-        else
+        // make sure it is not a user before sending it back
+        else if(copy_users.find(it->first) == copy_users.end())
         {
           finder = deleted_copy_users.find(it->first);
 #ifdef DEBUG_HIGH_LEVEL
