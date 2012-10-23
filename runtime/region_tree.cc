@@ -7253,12 +7253,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_user(UniqueID uid, unsigned refs, bool strict)
+    void InstanceView::remove_user(UniqueID uid, unsigned refs, bool force)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
-      if ((it == added_users.end()) && !strict)
+      if ((it == added_users.end()) && !force)
         return;
 #ifdef DEBUG_HIGH_LEVEL
       assert(it != added_users.end());
@@ -7272,7 +7272,7 @@ namespace RegionRuntime {
 #else
         // If we're doing legion spy debugging, then keep it in the epoch users
         // and move it over to the deleted users 
-        if (!strict)
+        if (!force)
           deleted_users.insert(*it);
         else
           epoch_users.erase(uid);
@@ -7284,12 +7284,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_copy(Event copy_e, bool strict)
+    void InstanceView::remove_copy(Event copy_e, bool force)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<Event,ReductionOpID>::iterator it = added_copy_users.find(copy_e);
-      if ((it == added_copy_users.end()) && !strict)
+      if ((it == added_copy_users.end()) && !force)
         return;
 #ifdef DEBUG_HIGH_LEVEL
       assert(it != added_copy_users.end());
@@ -7299,7 +7299,7 @@ namespace RegionRuntime {
 #else
       // If we're doing legion spy then don't keep it in the epoch users
       // and move it over to the deleted users
-      if (!strict)
+      if (!force)
         deleted_copy_users.insert(*it);
       else
         epoch_copy_users.erase(copy_e);

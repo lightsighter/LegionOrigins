@@ -882,8 +882,8 @@ namespace RegionRuntime {
       InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
       InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
       // These two are methods mark when a view is valid in the region tree
-      void remove_user(UniqueID uid, unsigned refs, bool strict);
-      void remove_copy(Event copy, bool strict);
+      void remove_user(UniqueID uid, unsigned refs, bool force);
+      void remove_copy(Event copy, bool force);
       void add_valid_reference(void);
       void remove_valid_reference(void);
       void mark_to_be_invalidated(void);
