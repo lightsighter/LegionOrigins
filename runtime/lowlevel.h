@@ -30,7 +30,15 @@ namespace RegionRuntime {
 
       id_t id;
       gen_t gen;
-      bool operator<(const Event& rhs) const { return  (id < rhs.id) || (gen < rhs.gen); }
+      bool operator<(const Event& rhs) const 
+      { 
+        if (id < rhs.id)
+          return true;
+        else if (id > rhs.id)
+          return false;
+        else
+          return (gen < rhs.gen);
+      }
       bool operator==(const Event& rhs) const { return (id == rhs.id) && (gen == rhs.gen); }
       bool operator!=(const Event& rhs) const { return (id != rhs.id) || (gen != rhs.gen); }
 
