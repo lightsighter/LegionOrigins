@@ -8287,6 +8287,7 @@ namespace RegionRuntime {
         packing_sizes[1]++;
         result += sizeof(it->first);
         result += sizeof(it->second);
+        result += sizeof(bool); // returning
         // See if it is an added user that we need to get
         if (finder != added_users.end())
         {
@@ -8331,6 +8332,7 @@ namespace RegionRuntime {
         packing_sizes[2]++;
         result += sizeof(it->first);
         result += sizeof(it->second);
+        result += sizeof(bool); // returning
         if (finder != added_copy_users.end())
         {
           packing_sizes[4]++;
@@ -8485,11 +8487,19 @@ namespace RegionRuntime {
         rez.serialize(it->first);
         rez.serialize(it->second);
         if (finder != added_users.end())
+        {
           return_add_users.push_back(it->first);
+          rez.serialize(true); // has returning
+        }
 #ifdef LEGION_SPY
         else if (deleted_users.find(it->first) != deleted_users.end())
+        {
           return_deleted_users.push_back(it->first);
+          rez.serialize(true); // has returning
+        }
 #endif
+        else
+          rez.serialize(false); // has returning
       }
 #ifdef DEBUG_HIGH_LEVEL
 #ifndef LEGION_SPY
@@ -8518,11 +8528,19 @@ namespace RegionRuntime {
         rez.serialize(it->first);
         rez.serialize(it->second);
         if (finder != added_copy_users.end())
+        {
           return_copy_users.push_back(it->first);
+          rez.serialize(true); // has returning
+        }
 #ifdef LEGION_SPY
         else if (deleted_copy_users.find(it->first) != deleted_copy_users.end())
+        {
           return_deleted_copy_users.push_back(it->first);
+          rez.serialize(true); // has returning
+        }
 #endif
+        else
+          rez.serialize(false); // has returning
       }
 #ifdef DEBUG_HIGH_LEVEL
 #ifndef LEGION_SPY
@@ -8716,6 +8734,19 @@ namespace RegionRuntime {
         derez.deserialize(user);
         FieldMask valid_mask;
         derez.deserialize(valid_mask);
+        bool has_returning;
+        derez.deserialize(has_returning);
+        // It's possible that epoch users were removed locally while we were
+        // remote, in which case if this user isn't marked as returning
+        // we should check to still make sure that there is a user before putting
+        // it in the set of epoch users.  Note we don't need to do this for LEGION_SPY
+        // since we know that the user already exists in one of the sets of users
+        // (possibly the deleted ones).
+#ifndef LEGION_SPY
+        if (!has_returning && (result->users.find(user) == result->users.end())
+            && (result->added_users.find(user) == result->added_users.end()))
+          continue;
+#endif
         if (result->epoch_users.find(user) == result->epoch_users.end())
           result->epoch_users[user] = valid_mask;
         else
@@ -8729,6 +8760,14 @@ namespace RegionRuntime {
         derez.deserialize(copy_event);
         FieldMask valid_mask;
         derez.deserialize(valid_mask);
+        bool has_returning;
+        derez.deserialize(has_returning);
+        // See the note above about users.  The same thing applies here
+#ifndef LEGION_SPY
+        if (!has_returning && (result->copy_users.find(copy_event) == result->copy_users.end())
+            && (result->added_copy_users.find(copy_event) == result->added_copy_users.end()))
+          continue;
+#endif
         if (result->epoch_copy_users.find(copy_event) == result->epoch_copy_users.end())
           result->epoch_copy_users[copy_event] = valid_mask;
         else
@@ -8797,6 +8836,12 @@ namespace RegionRuntime {
           result->deleted_copy_users[copy_event] = redop;
 #endif
       }
+
+      // It's possible that users were removed locally while we were remote
+      // in which case we no longer need to include them in the set of epoch users.
+      // Not we don't need to do this if we're doing LEGION_SPY because these
+      // users will still be present in the deleted_users sets
+
 #ifdef DEBUG_HIGH_LEVEL
       // Big sanity check
       // Each valid event should have exactly one valid field
