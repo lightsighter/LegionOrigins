@@ -822,17 +822,13 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
     for (unsigned y = y_min; y < y_max; y++) {
       for (unsigned z = z_min; z < z_max; z++) {
         unsigned c = cell_id(x, y, z, nx, ny, nz);
-        log_app.debug("Owned cell has value %f, expected %f, diff %f",
-                      write.read(ptr_t<double>(c)), 1.2345678*c*field_write,
-                      fabs(write.read(ptr_t<double>(c)) - 1.2345678*c*field_write));
-        //assert(fabs(write.read(ptr_t<double>(c)) - 1.2345678*c*field_write) < 0.000001);
-        //assert(fabs(read1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
-        //assert(fabs(read2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
+        assert(fabs(write.read(ptr_t<double>(c)) - 1.2345678*c*field_write) < 0.000001);
+        assert(fabs(read1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
+        assert(fabs(read2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
       }
     }
   }
 
-  /*
   if (dim == DIM_X) {
     for (unsigned x = x_min; x < x_max; x++) {
       for (unsigned z = z_min; z < z_max; z++) {
@@ -883,7 +879,6 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
       }
     }
   }
-  */
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
