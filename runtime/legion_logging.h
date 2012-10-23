@@ -114,9 +114,9 @@ namespace RegionRuntime {
       }
 
       // TODO: figure out how to handle non-1-D points as well as points that aren't integers
-      static inline void log_task_events(unsigned unique_id, unsigned point, Event start_event, Event term_event)
+      static inline void log_task_events(unsigned unique_id, bool index_space, unsigned point, Event start_event, Event term_event)
       {
-        log_spy(LEVEL_INFO,"Task Events %d %d %d %d %d %d", unique_id, point, start_event.id, start_event.gen, term_event.id, term_event.gen);
+        log_spy(LEVEL_INFO,"Task Events %d %d %d %d %d %d %d", unique_id, index_space, point, start_event.id, start_event.gen, term_event.id, term_event.gen);
       }
 
       static inline void log_index_task_termination(unsigned unique_id, Event term_event)
@@ -126,10 +126,10 @@ namespace RegionRuntime {
 
       static inline void log_copy_operation(unsigned src_id, unsigned dst_id, unsigned src_loc, unsigned dst_loc, 
                                             unsigned index_handle, unsigned field_handle, unsigned tree_id,
-                                            Event start_event, Event term_event)
+                                            Event start_event, Event term_event, const char *mask)
       {
-        log_spy(LEVEL_INFO,"Copy Events %d %d %d %d %d %d %d %d %d %d %d", src_id, dst_id, src_loc, dst_loc, 
-          index_handle, field_handle, tree_id, start_event.id, start_event.gen, term_event.id, term_event.gen);
+        log_spy(LEVEL_INFO,"Copy Events %d %d %d %d %d %d %d %d %d %d %d %s", src_id, dst_id, src_loc, dst_loc, 
+          index_handle, field_handle, tree_id, start_event.id, start_event.gen, term_event.id, term_event.gen, mask);
       }
 
       static inline void log_map_events(unsigned unique_id, Event start_event, Event term_event)

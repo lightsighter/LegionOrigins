@@ -7393,10 +7393,14 @@ namespace RegionRuntime {
         new_copy_post.trigger();
         copy_post = new_copy_post;
       }
-      LegionSpy::log_copy_operation(src_view->manager->get_instance().id, manager->get_instance().id, 
-                                    src_view->manager->get_location().id, manager->get_location().id,
-                                    logical_region->handle.index_space.id, logical_region->handle.field_space.id, 
-                                    logical_region->handle.tree_id, copy_pre, copy_post);
+      {
+        char *string_mask = copy_mask.to_string();
+        LegionSpy::log_copy_operation(src_view->manager->get_instance().id, manager->get_instance().id, 
+                                      src_view->manager->get_location().id, manager->get_location().id,
+                                      logical_region->handle.index_space.id, logical_region->handle.field_space.id, 
+                                      logical_region->handle.tree_id, copy_pre, copy_post, string_mask);
+        free(string_mask);
+      }
 #endif
       // If this is a write copy, update the valid event, otherwise
       // add it as a reduction copy to this instance
