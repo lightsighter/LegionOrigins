@@ -202,13 +202,13 @@ namespace RegionRuntime {
       {
         delete it->second;
       }
-      for (std::map<UniqueManagerID,InstanceManager*>::iterator it = managers.begin();
-            it != managers.end(); it++)
+      for (std::map<InstanceKey,InstanceView*>::iterator it = views.begin();
+            it != views.end(); it++)
       {
         delete it->second;
       }
-      for (std::map<InstanceKey,InstanceView*>::iterator it = views.begin();
-            it != views.end(); it++)
+      for (std::map<UniqueManagerID,InstanceManager*>::iterator it = managers.begin();
+            it != managers.end(); it++)
       {
         delete it->second;
       }
@@ -868,11 +868,11 @@ namespace RegionRuntime {
       PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
       RegionNode *top_node = get_node(start_region);
 #ifdef DEBUG_HIGH_LEVEL
-      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, true/*premap*/, rm.sanitizing);
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, true/*premap*/, rm.sanitizing, false/*closing*/);
 #endif
       top_node->register_physical_region(user, rm);
 #ifdef DEBUG_HIGH_LEVEL
-      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, false/*premap*/, rm.sanitizing);
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, top_node, rm.ctx, false/*premap*/, rm.sanitizing, false/*closing*/);
 #endif
     }
 
@@ -885,12 +885,17 @@ namespace RegionRuntime {
       PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
       RegionNode *close_node = get_node(rm.req.region);
       PhysicalCloser closer(user, rm, close_node, false/*leave open*/); 
-      closer.targets_selected = true;
-      closer.upper_targets.push_back(ref.view);
+      closer.add_upper_target(ref.view);
 #ifdef DEBUG_HIGH_LEVEL
       assert(closer.upper_targets.back()->logical_region == close_node);
 #endif
+#ifdef DEBUG_HIGH_LEVEL
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, close_node, rm.ctx, true/*premap*/, false/*sanitizing*/, true/*closing*/);
+#endif
       close_node->issue_final_close_operation(user, closer);
+#ifdef DEBUG_HIGH_LEVEL
+      TreeStateLogger::capture_state(runtime, &rm.req, rm.idx, rm.task->variants->name, close_node, rm.ctx, false/*premap*/, false/*sanitizing*/, true/*closing*/);
+#endif
       // Now get the event for when the close is done
       return ref.view->perform_final_close(field_mask);
     }
@@ -1380,9 +1385,9 @@ namespace RegionRuntime {
       derez.deserialize(handle);
       InstanceView *view = find_view(InstanceKey(mid, handle));
       if (copy)
-        view->remove_copy(ready_event);
+        view->remove_copy(ready_event, false/*strict*/);
       else
-        view->remove_user(uid, 1/*number of references*/);
+        view->remove_user(uid, 1/*number of references*/, false/*strict*/);
     }
 
     //--------------------------------------------------------------------------
@@ -1398,11 +1403,6 @@ namespace RegionRuntime {
       {
         (*it)->find_new_partitions(new_index_part_nodes);
       }
-      for (std::list<RegionNode*>::const_iterator it = top_logical_trees.begin();
-            it != top_logical_trees.end(); it++)
-      {
-        (*it)->find_new_partitions(new_partition_nodes);
-      }
 
       // Then compute the size of the computed partitions, the created nodes,
       // and the handles for the deleted nodes
@@ -1411,13 +1411,6 @@ namespace RegionRuntime {
       result += (new_index_part_nodes.size() * sizeof(IndexSpace)); // parent handles
       for (std::vector<IndexPartNode*>::const_iterator it = new_index_part_nodes.begin();
             it != new_index_part_nodes.end(); it++)
-      {
-        result += (*it)->compute_tree_size(true/*returning*/);
-      }
-      result += sizeof(size_t); // number of new logical partitions
-      result += (new_partition_nodes.size() * sizeof(LogicalRegion)); // parent handles
-      for (std::vector<PartitionNode*>::const_iterator it = new_partition_nodes.begin();
-            it != new_partition_nodes.end(); it++)
       {
         result += (*it)->compute_tree_size(true/*returning*/);
       }
@@ -1485,16 +1478,6 @@ namespace RegionRuntime {
       rez.serialize(new_index_part_nodes.size());
       for (std::vector<IndexPartNode*>::const_iterator it = new_index_part_nodes.begin();
             it != new_index_part_nodes.end(); it++)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        assert((*it)->parent != NULL);
-#endif
-        rez.serialize((*it)->parent->handle);
-        (*it)->serialize_tree(rez,true/*returning*/);
-      }
-      rez.serialize(new_partition_nodes.size());
-      for (std::vector<PartitionNode*>::const_iterator it = new_partition_nodes.begin();
-            it != new_partition_nodes.end(); it++)
       {
 #ifdef DEBUG_HIGH_LEVEL
         assert((*it)->parent != NULL);
@@ -1577,7 +1560,6 @@ namespace RegionRuntime {
       send_field_nodes.clear();
       send_logical_nodes.clear();
       new_index_part_nodes.clear();
-      new_partition_nodes.clear();
     }
 
     //--------------------------------------------------------------------------
@@ -1599,18 +1581,6 @@ namespace RegionRuntime {
         assert(parent_node != NULL);
 #endif
         IndexPartNode::deserialize_tree(derez, parent_node, this, true/*returning*/);
-      }
-      size_t new_partition_nodes;
-      derez.deserialize(new_partition_nodes);
-      for (unsigned idx = 0; idx < new_partition_nodes; idx++)
-      {
-        LogicalRegion parent_handle;
-        derez.deserialize(parent_handle);
-        RegionNode *parent_node = get_node(parent_handle);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(parent_node != NULL);
-#endif
-        PartitionNode::deserialize_tree(derez, parent_node, this, true/*returning*/);
       }
 
       // Unpack created nodes
@@ -2646,17 +2616,39 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool RegionTreeForest::has_node(LogicalRegion handle) const
+    bool RegionTreeForest::has_node(LogicalRegion handle, bool strict /*= true*/) const
     //--------------------------------------------------------------------------
     {
-      return (region_nodes.find(handle) != region_nodes.end());
+      if (region_nodes.find(handle) != region_nodes.end())
+        return true;
+      else if (!strict)
+      {
+        // Otherwise check to see if we could make it
+        if (index_nodes.find(handle.index_space) == index_nodes.end())
+          return false;
+        if (field_nodes.find(handle.field_space) == field_nodes.end())
+          return false;
+        return true;
+      }
+      return false;
     }
 
     //--------------------------------------------------------------------------
-    bool RegionTreeForest::has_node(LogicalPartition handle) const
+    bool RegionTreeForest::has_node(LogicalPartition handle, bool strict /*= true*/) const
     //--------------------------------------------------------------------------
     {
-      return (part_nodes.find(handle) != part_nodes.end());
+      if (part_nodes.find(handle) != part_nodes.end())
+        return true;
+      else if (!strict)
+      {
+        // Otherwise check to see if we could make it
+        if (index_parts.find(handle.index_partition) == index_parts.end())
+          return false;
+        if (field_nodes.find(handle.field_space) == field_nodes.end())
+          return false;
+        return true;
+      }
+      return false;
     }
 
     //--------------------------------------------------------------------------
@@ -4669,6 +4661,16 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       added = false;
+      // Also go through all of the physical states and invalidate
+      // the valid physical instances
+      for (std::map<ContextID,PhysicalState>::const_iterator it = physical_states.begin();
+            it != physical_states.end(); it++)
+      {
+        invalidate_instance_views(it->first, FieldMask(FIELD_ALL_ONES), false/*clean*/);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(it->second.valid_views.empty());
+#endif
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -4849,7 +4851,7 @@ namespace RegionRuntime {
           // If we mapped the region close up any partitions below that
           // might have valid data that we need for our instance
           PhysicalCloser closer(user, rm, this, IS_READ_ONLY(user.usage));
-          closer.upper_targets.push_back(new_view);
+          closer.add_upper_target(new_view);
           closer.targets_selected = true;
           siphon_open_children(closer, state, user, user.field_mask);
 #ifdef DEBUG_HIGH_LEVEL
@@ -6636,6 +6638,8 @@ namespace RegionRuntime {
       for (std::list<FieldState>::const_iterator it = state.added_states.begin();
             it != state.added_states.end(); it++)
       {
+        if (it->valid_fields * pack_mask)
+          continue;
         it->pack_physical_state(pack_mask, rez);
       }
     }
@@ -7143,6 +7147,18 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    InstanceView::~InstanceView(void)
+    //--------------------------------------------------------------------------
+    {
+      if (!manager->is_remote() && !manager->is_clone() && (valid_references > 0))
+      {
+        log_leak(LEVEL_WARNING,"Instance View for Instace %x from Logical Region (%x,%d,%d) still has %d valid references",
+            manager->get_instance().id, logical_region->handle.index_space.id, logical_region->handle.field_space.id,
+            logical_region->handle.tree_id, valid_references);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     InstanceView* InstanceView::get_subview(Color pc, Color rc)
     //--------------------------------------------------------------------------
     {
@@ -7237,12 +7253,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_user(UniqueID uid, unsigned refs, bool strict /*= true*/)
+    void InstanceView::remove_user(UniqueID uid, unsigned refs, bool force)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<UniqueID,TaskUser>::iterator it = added_users.find(uid);
-      if ((it == added_users.end()) && !strict)
+      if ((it == added_users.end()) && !force)
         return;
 #ifdef DEBUG_HIGH_LEVEL
       assert(it != added_users.end());
@@ -7256,7 +7272,10 @@ namespace RegionRuntime {
 #else
         // If we're doing legion spy debugging, then keep it in the epoch users
         // and move it over to the deleted users 
-        deleted_users.insert(*it);
+        if (!force)
+          deleted_users.insert(*it);
+        else
+          epoch_users.erase(uid);
 #endif
         added_users.erase(it);
         if (added_users.empty())
@@ -7265,12 +7284,12 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::remove_copy(Event copy_e, bool strict /*= true*/)
+    void InstanceView::remove_copy(Event copy_e, bool force)
     //--------------------------------------------------------------------------
     {
       // deletions should only come out of the added users
       std::map<Event,ReductionOpID>::iterator it = added_copy_users.find(copy_e);
-      if ((it == added_copy_users.end()) && !strict)
+      if ((it == added_copy_users.end()) && !force)
         return;
 #ifdef DEBUG_HIGH_LEVEL
       assert(it != added_copy_users.end());
@@ -7280,7 +7299,10 @@ namespace RegionRuntime {
 #else
       // If we're doing legion spy then don't keep it in the epoch users
       // and move it over to the deleted users
-      deleted_copy_users.insert(*it);
+      if (!force)
+        deleted_copy_users.insert(*it);
+      else
+        epoch_copy_users.erase(copy_e);
 #endif
       added_copy_users.erase(it);
       if (added_copy_users.empty())
@@ -7399,7 +7421,11 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(dominated);
 #endif
-      return Event::merge_events(wait_on);
+      Event result = Event::merge_events(wait_on);
+#ifdef LEGION_SPY
+      LegionSpy::log_event_dependences(wait_on, result);
+#endif
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -8207,6 +8233,9 @@ namespace RegionRuntime {
             std::map<EscapedUser,unsigned> &escaped_users, std::set<EscapedCopy> &escaped_copies)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!manager->is_clone());
+#endif
       // Pack all the valid events, the epoch users, and the epoch copy users,
       // also pack any added users that need to be sent back
       for (unsigned idx = 0; idx < 5; idx++)
@@ -8333,6 +8362,9 @@ namespace RegionRuntime {
                 std::set<EscapedCopy> &escaped_copies, bool already_returning)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!manager->is_clone());
+#endif
       // Zero out the packing sizes
       size_t result = 0;
       // Check to see if we've returned before 
@@ -8936,7 +8968,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceRef::remove_reference(UniqueID uid)
+    void InstanceRef::remove_reference(UniqueID uid, bool strict)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -8945,9 +8977,9 @@ namespace RegionRuntime {
       // Remove the reference and set the view to NULL so
       // we can't accidentally remove the reference again
       if (copy)
-        view->remove_copy(ready_event);
+        view->remove_copy(ready_event, strict);
       else
-        view->remove_user(uid, 1/*single reference*/);
+        view->remove_user(uid, 1/*single reference*/, strict);
       view = NULL;
     }
 
@@ -9093,7 +9125,26 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       if (targets_selected)
+      {
         upper_targets = rhs.lower_targets;
+        for (std::vector<InstanceView*>::const_iterator it = upper_targets.begin();
+              it != upper_targets.end(); it++)
+        {
+          (*it)->add_valid_reference();
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    PhysicalCloser::~PhysicalCloser(void)
+    //--------------------------------------------------------------------------
+    {
+      // Remove valid references from any physical targets
+      for (std::vector<InstanceView*>::const_iterator it = upper_targets.begin();
+            it != upper_targets.end(); it++)
+      {
+        (*it)->remove_valid_reference();
+      }
     }
     
     //--------------------------------------------------------------------------
@@ -9176,7 +9227,7 @@ namespace RegionRuntime {
           FieldMask need_update = user.field_mask - best_mask;
           if (!!need_update)
             close_target->issue_update_copy(best, rm, need_update);
-          upper_targets.push_back(best);
+          add_upper_target(best);
         }
         // Now see if we want to try to create any new instances
         for (std::vector<Memory>::const_iterator it = to_create.begin();
@@ -9188,7 +9239,7 @@ namespace RegionRuntime {
           {
             // Update all the fields
             close_target->issue_update_copy(new_view, rm, user.field_mask);
-            upper_targets.push_back(new_view);
+            add_upper_target(new_view);
             // If we were only supposed to make one, then we're done
             if (create_one)
               break;
@@ -9261,6 +9312,15 @@ namespace RegionRuntime {
       assert(partition_valid);
 #endif
       partition_valid = false;
+    }
+
+    //--------------------------------------------------------------------------
+    void PhysicalCloser::add_upper_target(InstanceView *target)
+    //--------------------------------------------------------------------------
+    {
+      targets_selected = true;
+      target->add_valid_reference();
+      upper_targets.push_back(target);
     }
 
     /////////////////////////////////////////////////////////////

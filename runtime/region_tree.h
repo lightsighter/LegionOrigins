@@ -176,8 +176,8 @@ namespace RegionRuntime {
       bool has_node(IndexSpace space) const;
       bool has_node(IndexPartition part) const;
       bool has_node(FieldSpace space) const;
-      bool has_node(LogicalRegion handle) const;
-      bool has_node(LogicalPartition handle) const;
+      bool has_node(LogicalRegion handle, bool strict = true) const;
+      bool has_node(LogicalPartition handle, bool strict = true) const;
     public:
       InstanceView* create_view(InstanceManager *manager, InstanceView *par, RegionNode *reg, bool made_local);
       InstanceManager* create_manager(Memory location, PhysicalInstance inst, 
@@ -226,7 +226,6 @@ namespace RegionRuntime {
       std::set<FieldSpaceNode*>     send_field_nodes;
       std::set<RegionNode*>         send_logical_nodes;
       std::vector<IndexPartNode*>  new_index_part_nodes;
-      std::vector<PartitionNode*>   new_partition_nodes;
       std::set<InstanceManager*>        unique_managers;
       std::map<InstanceView*,FieldMask> unique_views; // points to the top instance view
       std::vector<InstanceView*>        ordered_views;
@@ -753,6 +752,7 @@ namespace RegionRuntime {
       }
       inline const FieldMask& get_allocated_fields(void) const { return allocated_fields; }
       inline bool is_remote(void) const { return remote; }
+      inline bool is_clone(void) const { return clone; }
       inline Lock get_lock(void) const { return lock; }
       inline UniqueManagerID get_unique_id(void) const { return unique_id; }
       inline LowLevel::RegionAccessor<LowLevel::AccessorGeneric> get_accessor(void) const
@@ -799,6 +799,7 @@ namespace RegionRuntime {
     private:
       friend class RegionTreeForest;
       friend class InstanceView;
+      friend class RegionNode; // for sanity checks only
       RegionTreeForest *const context;
       unsigned references;
       const UniqueManagerID unique_id;
@@ -873,6 +874,7 @@ namespace RegionRuntime {
     public:
       InstanceView(InstanceManager *man, InstanceView *par,  
                     RegionNode *reg, RegionTreeForest *ctx, bool made_local);
+      ~InstanceView(void);
     public:
       InstanceView* get_subview(Color pc, Color rc);
       void add_child_view(Color pc, Color rc, InstanceView *child);
@@ -880,8 +882,8 @@ namespace RegionRuntime {
       InstanceRef add_user(UniqueID uid, const PhysicalUser &user);
       InstanceRef add_copy_user(ReductionOpID redop, Event copy_term, const FieldMask &mask);
       // These two are methods mark when a view is valid in the region tree
-      void remove_user(UniqueID uid, unsigned refs, bool strict = true);
-      void remove_copy(Event copy, bool strict = true);
+      void remove_user(UniqueID uid, unsigned refs, bool force);
+      void remove_copy(Event copy, bool force);
       void add_valid_reference(void);
       void remove_valid_reference(void);
       void mark_to_be_invalidated(void);
@@ -992,7 +994,7 @@ namespace RegionRuntime {
       inline Lock get_required_lock(void) const { return required_lock; }
       inline PhysicalInstance get_instance(void) const { return instance; }
       inline InstanceManager* get_manager(void) const { return view->get_manager(); }
-      void remove_reference(UniqueID uid);
+      void remove_reference(UniqueID uid, bool strict);
     private:
       friend class RegionTreeForest;
       Event ready_event;
@@ -1079,6 +1081,7 @@ namespace RegionRuntime {
     public:
       PhysicalCloser(const PhysicalUser &u, RegionMapper &rm, RegionNode *close_target, bool leave_open);
       PhysicalCloser(const PhysicalCloser &rhs, RegionNode *close_target);
+      ~PhysicalCloser(void);
     public:
       virtual void pre_siphon(void);
       virtual void post_siphon(void);
@@ -1090,6 +1093,8 @@ namespace RegionRuntime {
     public:
       void pre_partition(Color partition_color);
       void post_partition(void);
+    public:
+      void add_upper_target(InstanceView *target);
     public:
       const PhysicalUser &user;
       RegionMapper &rm;

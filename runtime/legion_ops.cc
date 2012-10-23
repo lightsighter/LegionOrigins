@@ -181,6 +181,24 @@ namespace RegionRuntime {
           return ERROR_FIELD_SPACE_FIELD_MISMATCH;
         }
       }
+
+      // Make sure that the requested node is a valid request
+      if (req.handle_type == SINGULAR)
+      {
+        if (!forest_ctx->has_node(req.region, false/*strict*/))
+        {
+          unlock_context();
+          return ERROR_INVALID_REGION_HANDLE;
+        }
+      }
+      else
+      {
+        if (!forest_ctx->has_node(req.partition, false/*strict*/))
+        {
+          unlock_context();
+          return ERROR_INVALID_PARTITION_HANDLE;
+        }
+      }
       unlock_context();
 
       // Then check that any instance fields are included in the privilege fields
@@ -201,7 +219,7 @@ namespace RegionRuntime {
         }
         inst_duplicates.insert(*it);
       }
-      
+
       // If this is a projection requirement and the child region selected will 
       // need to be in exclusive mode then the partition must be disjoint
       if ((req.handle_type == PROJECTION) && 
@@ -460,7 +478,7 @@ namespace RegionRuntime {
       unmapped_event.trigger();
       // Now we can go about removing our references
       parent_ctx->lock_context();
-      physical_instance.remove_reference(unique_id); 
+      physical_instance.remove_reference(unique_id, false/*strict*/); 
       parent_ctx->unlock_context();
       physical_instance = InstanceRef(); // virtual ref
 
@@ -657,6 +675,12 @@ namespace RegionRuntime {
       {
         case NO_ERROR:
           break;
+        case ERROR_INVALID_REGION_HANDLE:
+          {
+            log_region(LEVEL_ERROR,"Requirest for invalid region handle (%x,%d,%d) for inline mapping (ID %d)",
+                requirement.region.index_space.id, requirement.region.field_space.id, requirement.region.tree_id, get_unique_id());
+            exit (ERROR_INVALID_REGION_HANDLE);
+          }
         case ERROR_FIELD_SPACE_FIELD_MISMATCH:
           {
             FieldSpace sp = (requirement.handle_type == SINGULAR) ? requirement.region.field_space : requirement.partition.field_space;
@@ -1242,6 +1266,20 @@ namespace RegionRuntime {
           {
             case NO_ERROR:
               break;
+            case ERROR_INVALID_REGION_HANDLE:
+              {
+                log_region(LEVEL_ERROR, "Invalid region handle (%x,%d,%d) for region requirement %d of task %s (ID %d)",
+                    regions[idx].region.index_space.id, regions[idx].region.field_space.id, regions[idx].region.tree_id,
+                    idx, variants->name, get_unique_id());
+                exit(ERROR_INVALID_REGION_HANDLE);
+              }
+            case ERROR_INVALID_PARTITION_HANDLE:
+              {
+                log_region(LEVEL_ERROR, "Invalid partition handle (%x,%d,%d) for partition requirement %d of task %s (ID %d)",
+                    regions[idx].partition.index_partition, regions[idx].partition.field_space.id, regions[idx].partition.tree_id,
+                    idx, variants->name, get_unique_id());
+                exit(ERROR_INVALID_PARTITION_HANDLE);
+              }
             case ERROR_BAD_PROJECTION_USE:
               {
                 log_region(LEVEL_ERROR,"Projection region requirement %d used in non-index space task %s",
@@ -2291,7 +2329,7 @@ namespace RegionRuntime {
         if (!clone_instances[idx].is_virtual_ref())
         {
           physical_region_impls[idx]->invalidate();
-          clone_instances[idx].remove_reference(unique_id);
+          clone_instances[idx].remove_reference(unique_id, false/*strict*/);
           clone_instances[idx] = InstanceRef(); // make it a virtual ref now
         }
         unlock();
@@ -2804,7 +2842,7 @@ namespace RegionRuntime {
         lock();
         for (unsigned idx = 0; idx < physical_instances.size(); idx++)
         {
-          physical_instances[idx].remove_reference(unique_id);
+          physical_instances[idx].remove_reference(unique_id, true/*strict*/);
         }
         forest_ctx->unlock_context();
         physical_instances.clear();
@@ -2947,7 +2985,7 @@ namespace RegionRuntime {
     {
       for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
       {
-        source_copy_instances[idx].remove_reference(unique_id);
+        source_copy_instances[idx].remove_reference(unique_id, false/*strict*/);
       }
       source_copy_instances.clear();
     }
@@ -2982,13 +3020,17 @@ namespace RegionRuntime {
           // Only need to do the close if there is a possiblity of dirty data
           if (HAS_WRITE(regions[idx]))
           {
-            ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
-            RegionMapper rm(this, unique_id, phy_ctx, idx, regions[idx], NULL/*shouldn't need it*/, mapper_lock,
+            // This should be our physical context since we mapped the region
+            RegionMapper rm(this, unique_id, ctx_id, idx, regions[idx], NULL/*shouldn't need it*/, mapper_lock,
                             Processor::NO_PROC, single_event, multi_event,
                             tag, false/*sanitizing*/, false/*inline mapping*/, source_copy_instances);
             // First remove our reference so we don't accidentally end up waiting on ourself
-            physical_instances[idx].remove_reference(unique_id);
-            Event close_event = forest_ctx->close_to_instance(physical_instances[idx], rm);
+            InstanceRef clone_ref = clone_instances[idx];
+            clone_instances[idx].remove_reference(unique_id, true/*strict*/);
+            Event close_event = forest_ctx->close_to_instance(clone_ref, rm);
+#ifdef DEBUG_HIGH_LEVEL
+            assert(close_event != get_termination_event());
+#endif
             wait_on_events.insert(close_event);
           }
         }
@@ -4080,6 +4122,14 @@ namespace RegionRuntime {
         }
       }
 
+      // Now can invalidate any valid physical instances our context for
+      // all the regions which we had as region requirements.  We can't invalidate
+      // virtual mapped regions since that information has escaped our context.
+      // Note we don't need to worry about doing this for leaf tasks since there
+      // are no mappings performed in a leaf task context.  We also don't have to
+      // do this for any created regions since either they are explicitly deleted
+      // or their state is passed back in finish_task to the enclosing context.
+
       // Figure out whether we need to wait to launch the finish task
       Event wait_on_event = Event::merge_events(cleanup_events);
       if (!wait_on_event.exists())
@@ -4147,14 +4197,14 @@ namespace RegionRuntime {
         {
           if (!physical_instances[idx].is_virtual_ref())
           {
-            physical_instances[idx].remove_reference(unique_id);
+            physical_instances[idx].remove_reference(unique_id, false/*strict*/);
           }
         }
         // We also remove the source copy instances that got generated by
         // any close copies that were performed
         for (unsigned idx = 0; idx < close_copy_instances.size(); idx++)
         {
-          close_copy_instances[idx].remove_reference(unique_id);
+          close_copy_instances[idx].remove_reference(unique_id, false/*strict*/);
         }
         unlock_context();
         physical_instances.clear();
@@ -4582,6 +4632,7 @@ namespace RegionRuntime {
       result += sizeof(index_element_size);
       result += sizeof(index_dimensions);
       result += (index_element_size*index_dimensions);
+      result += sizeof(point_termination_event);
 #ifdef DEBUG_HIGH_LEVEL
       assert(local_point_argument != NULL);
 #endif
@@ -4609,6 +4660,7 @@ namespace RegionRuntime {
       rez.serialize<size_t>(index_element_size);
       rez.serialize<unsigned>(index_dimensions);
       rez.serialize(index_point,index_element_size*index_dimensions);
+      rez.serialize<UserEvent>(point_termination_event);
       rez.serialize<size_t>(local_point_argument_len);
       rez.serialize(local_point_argument,local_point_argument_len);
       rez.serialize<bool>(is_leaf);
@@ -4635,6 +4687,7 @@ namespace RegionRuntime {
 #endif
       index_point = malloc(index_element_size*index_dimensions);
       derez.deserialize(index_point,index_element_size*index_dimensions);
+      derez.deserialize<UserEvent>(point_termination_event);
       derez.deserialize<size_t>(local_point_argument_len);
 #ifdef DEBUG_HIGH_LEVEL
       assert(local_point_argument == NULL);
@@ -4747,12 +4800,12 @@ namespace RegionRuntime {
         {
           if (!physical_instances[idx].is_virtual_ref())
           {
-            physical_instances[idx].remove_reference(unique_id);
+            physical_instances[idx].remove_reference(unique_id, false/*strict*/);
           }
         }
         for (unsigned idx = 0; idx < close_copy_instances.size(); idx++)
         {
-          close_copy_instances[idx].remove_reference(unique_id);
+          close_copy_instances[idx].remove_reference(unique_id, false/*strict*/);
         }
         unlock_context();
         physical_instances.clear();
@@ -5341,7 +5394,7 @@ namespace RegionRuntime {
       {
         for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
         {
-          source_copy_instances[idx].remove_reference(unique_id);
+          source_copy_instances[idx].remove_reference(unique_id, false/*strict*/);
         }
         source_copy_instances.clear();
       }

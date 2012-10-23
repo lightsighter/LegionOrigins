@@ -93,6 +93,8 @@ namespace RegionRuntime {
       ERROR_NON_DISJOINT_PARTITION = 58,
       ERROR_BAD_PROJECTION_USE = 59,
       ERROR_INDEPENDENT_SLICES_VIOLATION = 60,
+      ERROR_INVALID_REGION_HANDLE = 61,
+      ERROR_INVALID_PARTITION_HANDLE = 62,
     };
 
     // enum and namepsaces don't really get along well
