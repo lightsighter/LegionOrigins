@@ -769,7 +769,7 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 #endif
   //runtime->replace_default_mapper(new DebugMapper(machine, runtime, local));
   //runtime->replace_default_mapper(new SequoiaMapper(machine, runtime, local));
-  runtime->replace_default_mapper(new TestMapper(machine, runtime, local));
+  //runtime->replace_default_mapper(new TestMapper(machine, runtime, local));
 }
 
 int main(int argc, char **argv) {
