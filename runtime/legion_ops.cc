@@ -4352,15 +4352,16 @@ namespace RegionRuntime {
       {
         size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
         // Only need to send this stuff back if we're not a leaf task
+        lock_context();
         if (!is_leaf)
         {
           buffer_size += compute_privileges_return_size();
           buffer_size += compute_deletions_return_size();
-          lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
           buffer_size += forest_ctx->compute_created_state_return(ctx_id);
-          buffer_size += forest_ctx->compute_leaked_return_size();
         }
+        // Always need to send back the leaked references
+        buffer_size += forest_ctx->compute_leaked_return_size();
         buffer_size += sizeof(remote_future_len);
         buffer_size += remote_future_len;
         // Now pack everything up
@@ -4373,9 +4374,9 @@ namespace RegionRuntime {
           pack_deletions_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
           forest_ctx->pack_created_state_return(ctx_id, rez);
-          forest_ctx->pack_leaked_return(rez);
-          unlock_context();
         }
+        forest_ctx->pack_leaked_return(rez);
+        unlock_context();
         rez.serialize<size_t>(remote_future_len);
         rez.serialize(remote_future,remote_future_len);
         // Send this back to the utility processor.  The event we wait on
@@ -4604,6 +4605,12 @@ namespace RegionRuntime {
         forest_ctx->unpack_region_tree_updates_return(derez);
         ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
         forest_ctx->unpack_created_state_return(phy_ctx, derez);
+        forest_ctx->unpack_leaked_return(derez);
+        unlock_context();
+      }
+      else
+      {
+        lock_context();
         forest_ctx->unpack_leaked_return(derez);
         unlock_context();
       }
@@ -5645,6 +5652,12 @@ namespace RegionRuntime {
         forest_ctx->unpack_region_tree_updates_return(derez);
         ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
         forest_ctx->unpack_created_state_return(phy_ctx, derez);
+        forest_ctx->unpack_leaked_return(derez);
+        unlock_context();
+      }
+      else
+      {
+        lock_context();
         forest_ctx->unpack_leaked_return(derez);
         unlock_context();
       }
@@ -7334,15 +7347,16 @@ namespace RegionRuntime {
         // Need to send back the results to the enclosing context
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner) + sizeof(is_leaf);
         // Need to send back the tasks for which we have privileges
+        lock_context();
         if (!is_leaf)
         {
           buffer_size += compute_privileges_return_size();
           buffer_size += compute_deletions_return_size();
-          lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
           buffer_size += forest_ctx->compute_created_state_return(ctx_id); 
-          buffer_size += forest_ctx->compute_leaked_return_size();
         }
+        // Always need to send back the leaked return state
+        buffer_size += forest_ctx->compute_leaked_return_size();
         buffer_size += sizeof(size_t); // number of points
         if (has_reduction)
         {
@@ -7376,9 +7390,9 @@ namespace RegionRuntime {
           pack_deletions_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
           forest_ctx->pack_created_state_return(ctx_id, rez);
-          forest_ctx->pack_leaked_return(rez);
-          unlock_context();
         }
+        forest_ctx->pack_leaked_return(rez);
+        unlock_context();
         // Pack up the future(s)
         rez.serialize<size_t>(points.size());
         if (has_reduction)

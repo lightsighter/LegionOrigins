@@ -2639,9 +2639,6 @@ namespace RegionRuntime {
     void RegionTreeForest::destroy_node(IndexSpaceNode *node, bool top)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(node->logical_nodes.empty());
-#endif
       // destroy any child nodes, then do ourselves
       for (std::map<Color,IndexPartNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
@@ -2657,9 +2654,6 @@ namespace RegionRuntime {
     void RegionTreeForest::destroy_node(IndexPartNode *node, bool top)
     //--------------------------------------------------------------------------
     {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(node->logical_nodes.empty());
-#endif
       // destroy any child nodes, then do ourselves
       for (std::map<Color,IndexSpaceNode*>::const_iterator it = node->color_map.begin();
             it != node->color_map.end(); it++)
@@ -2674,7 +2668,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(node->logical_nodes.empty());
       assert(field_nodes.find(node->handle) != field_nodes.end());
 #endif
       node->mark_destroyed();
@@ -6862,6 +6855,7 @@ namespace RegionRuntime {
     InstanceManager::~InstanceManager(void)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
       if (!remote && !clone && instance.exists())
       {
         log_leak(LEVEL_WARNING,"Leaking physical instance %x in memory %x",
@@ -6873,6 +6867,7 @@ namespace RegionRuntime {
                     "in memory %x (runtime bug)", remote_frac.get_num(),
                     remote_frac.get_denom(), instance.id, location.id);
       }
+#endif
     }
 
     //--------------------------------------------------------------------------
@@ -7263,12 +7258,30 @@ namespace RegionRuntime {
     InstanceView::~InstanceView(void)
     //--------------------------------------------------------------------------
     {
-      if (!manager->is_remote() && !manager->is_clone() && (valid_references > 0))
+#ifdef DEBUG_HIGH_LEVEL
+      if (!manager->is_remote() && !manager->is_clone())
       {
-        log_leak(LEVEL_WARNING,"Instance View for Instace %x from Logical Region (%x,%d,%d) still has %d valid references",
-            manager->get_instance().id, logical_region->handle.index_space.id, logical_region->handle.field_space.id,
-            logical_region->handle.tree_id, valid_references);
+        if (valid_references > 0)
+          log_leak(LEVEL_WARNING,"Instance View for Instace %x from Logical Region (%x,%d,%d) still has %d valid references",
+              manager->get_instance().id, logical_region->handle.index_space.id, logical_region->handle.field_space.id,
+              logical_region->handle.tree_id, valid_references);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(users.empty());
+#endif
+        if (!added_users.empty())
+        {
+          log_leak(LEVEL_WARNING,"Instance View for Instance %x from Logical Region (%x,%d,%d) still has %ld added users",
+              manager->get_instance().id, logical_region->handle.index_space.id, logical_region->handle.field_space.id,
+              logical_region->handle.tree_id, added_users.size());
+          for (std::map<UniqueID,TaskUser>::const_iterator it = added_users.begin();
+                it != added_users.end(); it++)
+          {
+            log_leak(LEVEL_WARNING,"Instance View for Instance %x has user %d with %d references",
+                manager->get_instance().id, it->first, it->second.references);
+          }
+        }
       }
+#endif
     }
 
     //--------------------------------------------------------------------------
