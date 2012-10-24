@@ -479,8 +479,13 @@ namespace RegionRuntime {
       // Now we can go about removing our references
       parent_ctx->lock_context();
       physical_instance.remove_reference(unique_id, false/*strict*/); 
+      for (unsigned idx = 0; idx < source_copy_instances.size(); idx++)
+      {
+        source_copy_instances[idx].remove_reference(unique_id, false/*strict*/);
+      }
       parent_ctx->unlock_context();
       physical_instance = InstanceRef(); // virtual ref
+      source_copy_instances.clear();
 
       deactivate_base();
       Context parent = parent_ctx;
