@@ -397,6 +397,22 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void RegionTreeForest::get_destroyed_regions(IndexSpace space, std::vector<LogicalRegion> &new_deletions)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      IndexSpaceNode *target_node = get_node(space);
+      // First destroy all the logical regions trees that use this index space  
+      for (std::list<RegionNode*>::const_iterator it = target_node->logical_nodes.begin();
+            it != target_node->logical_nodes.end(); it++)
+      {
+        new_deletions.push_back((*it)->handle);
+      }
+    }
+
+    //--------------------------------------------------------------------------
     Color RegionTreeForest::create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint,
                                 int color, const std::map<Color,IndexSpace> &coloring)
     //--------------------------------------------------------------------------
@@ -439,6 +455,21 @@ namespace RegionRuntime {
       // Now we delete the index partition
       deleted_index_parts.push_back(target_node->handle);
       destroy_node(target_node, true/*top*/);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::get_destroyed_partitions(IndexPartition pid, std::vector<LogicalPartition> &new_deletions)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      IndexPartNode *target_node = get_node(pid);
+      for (std::list<PartitionNode*>::const_iterator it = target_node->logical_nodes.begin();
+            it != target_node->logical_nodes.end(); it++)
+      {
+        new_deletions.push_back((*it)->handle);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -527,6 +558,21 @@ namespace RegionRuntime {
       {
         created_field_spaces.erase(finder);
         deleted_field_spaces.pop_back();
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::get_destroyed_regions(FieldSpace space, std::vector<LogicalRegion> &new_deletions)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      FieldSpaceNode *target_node = get_node(space);
+      for (std::list<RegionNode*>::const_iterator it = target_node->logical_nodes.begin();
+            it != target_node->logical_nodes.end(); it++)
+      {
+        new_deletions.push_back((*it)->handle);
       }
     }
 
@@ -880,6 +926,9 @@ namespace RegionRuntime {
     Event RegionTreeForest::close_to_instance(const InstanceRef &ref, RegionMapper &rm)
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
       FieldSpaceNode *field_node = get_node(rm.req.region.field_space);
       FieldMask field_mask = field_node->get_field_mask(rm.req.instance_fields);
       PhysicalUser user(field_mask, RegionUsage(rm.req), rm.single_term, rm.multi_term);
@@ -898,6 +947,74 @@ namespace RegionRuntime {
 #endif
       // Now get the event for when the close is done
       return ref.view->perform_final_close(field_mask);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::invalidate_physical_context(const RegionRequirement &req,
+        const std::vector<FieldID> &new_fields, ContextID ctx, bool new_only)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+      assert(req.handle_type == SINGULAR);
+#endif
+      // Compute the field mask to be used
+      FieldSpaceNode *field_node = get_node(req.region.field_space);
+      FieldMask invalidate_mask = field_node->get_field_mask(new_fields);
+      if (!new_only)
+        invalidate_mask |= field_node->get_field_mask(req.privilege_fields);
+      // If no invalidate mask, then we're done
+      if (!invalidate_mask)
+        return;
+      // Otherwise get the region node and do the invalidation
+      RegionNode *top_node = get_node(req.region);
+      top_node->recursive_invalidate_views(ctx, invalidate_mask);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::invalidate_physical_context(LogicalRegion handle, ContextID ctx)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      // Only do this if the node actually exists
+      if (has_node(handle))
+      {
+        RegionNode *top_node = get_node(handle);
+        top_node->recursive_invalidate_views(ctx, FieldMask(FIELD_ALL_ONES));
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::invalidate_physical_context(LogicalPartition handle, ContextID ctx)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      // Only do this if the node actually exists
+      if (has_node(handle))
+      {
+        PartitionNode *top_node = get_node(handle);
+        top_node->recursive_invalidate_views(ctx, FieldMask(FIELD_ALL_ONES));
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::invalidate_physical_context(LogicalRegion handle, ContextID ctx, const std::vector<FieldID> &fields)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      if (has_node(handle))
+      {
+        FieldSpaceNode *field_node = get_node(handle.field_space);
+        FieldMask invalidate_mask = field_node->get_field_mask(fields);
+        RegionNode *top_node = get_node(handle);
+        top_node->recursive_invalidate_views(ctx, invalidate_mask);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -4661,16 +4778,6 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       added = false;
-      // Also go through all of the physical states and invalidate
-      // the valid physical instances
-      for (std::map<ContextID,PhysicalState>::const_iterator it = physical_states.begin();
-            it != physical_states.end(); it++)
-      {
-        invalidate_instance_views(it->first, FieldMask(FIELD_ALL_ONES), false/*clean*/);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(it->second.valid_views.empty());
-#endif
-      }
     }
 
     //--------------------------------------------------------------------------
@@ -5369,11 +5476,14 @@ namespace RegionRuntime {
     void RegionNode::recursive_invalidate_views(ContextID ctx, const FieldMask &invalid_mask)
     //--------------------------------------------------------------------------
     {
-      invalidate_instance_views(ctx, invalid_mask, false/*clean*/);
-      for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
-            it != color_map.end(); it++)
+      if (physical_states.find(ctx) != physical_states.end())
       {
-        it->second->recursive_invalidate_views(ctx, invalid_mask);
+        invalidate_instance_views(ctx, invalid_mask, false/*clean*/);
+        for (std::map<Color,PartitionNode*>::const_iterator it = color_map.begin();
+              it != color_map.end(); it++)
+        {
+          it->second->recursive_invalidate_views(ctx, invalid_mask);
+        }
       }
     }
 
@@ -6679,10 +6789,13 @@ namespace RegionRuntime {
     void PartitionNode::recursive_invalidate_views(ContextID ctx, const FieldMask &mask)
     //--------------------------------------------------------------------------
     {
-      for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
-            it != color_map.end(); it++)
+      if (physical_states.find(ctx) != physical_states.end())
       {
-        it->second->recursive_invalidate_views(ctx, mask);
+        for (std::map<Color,RegionNode*>::const_iterator it = color_map.begin();
+              it != color_map.end(); it++)
+        {
+          it->second->recursive_invalidate_views(ctx, mask);
+        }
       }
     }
 
@@ -8836,11 +8949,6 @@ namespace RegionRuntime {
           result->deleted_copy_users[copy_event] = redop;
 #endif
       }
-
-      // It's possible that users were removed locally while we were remote
-      // in which case we no longer need to include them in the set of epoch users.
-      // Not we don't need to do this if we're doing LEGION_SPY because these
-      // users will still be present in the deleted_users sets
 
 #ifdef DEBUG_HIGH_LEVEL
       // Big sanity check

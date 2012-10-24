@@ -36,15 +36,18 @@ namespace RegionRuntime {
       // Index Space operations
       void create_index_space(IndexSpace space);
       void destroy_index_space(IndexSpace space);
+      void get_destroyed_regions(IndexSpace space, std::vector<LogicalRegion> &new_deletions);
       Color create_index_partition(IndexPartition pid, IndexSpace parent, bool disjoint, int color,
                                   const std::map<Color,IndexSpace> &coloring); 
       void destroy_index_partition(IndexPartition pid);
+      void get_destroyed_partitions(IndexPartition pid, std::vector<LogicalPartition> &new_deletions);
       IndexPartition get_index_partition(IndexSpace parent, Color color);
       IndexSpace get_index_subspace(IndexPartition p, Color color);
     public:
       // Field Space operations
       void create_field_space(FieldSpace space);
       void destroy_field_space(FieldSpace space);
+      void get_destroyed_regions(FieldSpace space, std::vector<LogicalRegion> &new_deletions);
       void allocate_fields(FieldSpace space, const std::map<FieldID,size_t> &field_allocations);
       void free_fields(FieldSpace space, const std::set<FieldID> &to_free);
       bool has_field(FieldSpace space, FieldID fid);
@@ -74,6 +77,10 @@ namespace RegionRuntime {
       InstanceRef initialize_physical_context(const RegionRequirement &req, InstanceRef ref, UniqueID uid, ContextID ctx);
       void map_region(RegionMapper &rm, LogicalRegion start_region);
       Event close_to_instance(const InstanceRef &ref, RegionMapper &rm);
+      void invalidate_physical_context(const RegionRequirement &req, const std::vector<FieldID> &new_fields, ContextID ctx, bool new_only);
+      void invalidate_physical_context(LogicalRegion handle, ContextID ctx);
+      void invalidate_physical_context(LogicalPartition handle, ContextID ctx);
+      void invalidate_physical_context(LogicalRegion handle, ContextID ctx, const std::vector<FieldID> &fields);
     public:
       // Packing and unpacking send
       size_t compute_region_forest_shape_size(const std::vector<IndexSpaceRequirement> &indexes,

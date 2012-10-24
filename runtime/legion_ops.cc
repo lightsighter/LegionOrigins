@@ -1096,6 +1096,9 @@ namespace RegionRuntime {
       created_field_spaces.clear();
       created_regions.clear();
       created_fields.clear();
+      deleted_regions.clear();
+      deleted_partitions.clear();
+      deleted_fields.clear();
       launch_preconditions.clear();
       mapped_preconditions.clear();
       map_dependent_waiters.clear();
@@ -1413,17 +1416,17 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void TaskContext::return_privileges(const std::list<IndexSpace> &new_indexes,
-                                        const std::list<FieldSpace> &new_fields,
-                                        const std::list<LogicalRegion> &new_regions,
-                                        const std::list<FieldID> &new_field_ids)
+    void TaskContext::return_privileges(const std::set<IndexSpace> &new_indexes,
+                                        const std::set<FieldSpace> &new_fields,
+                                        const std::set<LogicalRegion> &new_regions,
+                                        const std::map<FieldID,FieldSpace> &new_field_ids)
     //--------------------------------------------------------------------------
     {
       lock();
-      created_index_spaces.insert(created_index_spaces.end(),new_indexes.begin(),new_indexes.end());
-      created_field_spaces.insert(created_field_spaces.end(),new_fields.begin(),new_fields.end());
-      created_regions.insert(created_regions.end(),new_regions.begin(),new_regions.end());
-      created_fields.insert(created_fields.end(),new_field_ids.begin(),new_field_ids.end());
+      created_index_spaces.insert(new_indexes.begin(),new_indexes.end());
+      created_field_spaces.insert(new_fields.begin(),new_fields.end());
+      created_regions.insert(new_regions.begin(),new_regions.end());
+      created_fields.insert(new_field_ids.begin(),new_field_ids.end());
       unlock();
     }
 
@@ -1431,52 +1434,28 @@ namespace RegionRuntime {
     bool TaskContext::has_created_index_space(IndexSpace handle) const
     //--------------------------------------------------------------------------
     {
-      for (std::list<IndexSpace>::const_iterator it = created_index_spaces.begin();
-            it != created_index_spaces.end(); it++)
-      {
-        if (handle == (*it))
-          return true;
-      }
-      return false;
+      return (created_index_spaces.find(handle) != created_index_spaces.end());
     }
 
     //--------------------------------------------------------------------------
     bool TaskContext::has_created_field_space(FieldSpace handle) const
     //--------------------------------------------------------------------------
     {
-      for (std::list<FieldSpace>::const_iterator it = created_field_spaces.begin();
-            it != created_field_spaces.end(); it++)
-      {
-        if (handle == (*it))
-          return true;
-      }
-      return false;
+      return (created_field_spaces.find(handle) != created_field_spaces.end());
     }
 
     //--------------------------------------------------------------------------
     bool TaskContext::has_created_region(LogicalRegion handle) const
     //--------------------------------------------------------------------------
     {
-      for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
-            it != created_regions.end(); it++)
-      {
-        if (handle == (*it))
-          return true;
-      }
-      return false;
+      return (created_regions.find(handle) != created_regions.end());
     }
 
     //--------------------------------------------------------------------------
     bool TaskContext::has_created_field(FieldID fid) const
     //--------------------------------------------------------------------------
     {
-      for (std::list<FieldID>::const_iterator it = created_fields.begin();
-            it != created_fields.end(); it++)
-      {
-        if (fid == (*it))
-          return true;
-      }
-      return false;
+      return (created_fields.find(fid) != created_fields.end());
     }
 
     //--------------------------------------------------------------------------
@@ -1620,7 +1599,7 @@ namespace RegionRuntime {
       result += (created_index_spaces.size() * sizeof(IndexSpace));
       result += (created_field_spaces.size() * sizeof(FieldSpace));
       result += (created_regions.size() * sizeof(LogicalRegion));
-      result += (created_fields.size() * sizeof(FieldID));
+      result += (created_fields.size() * (sizeof(FieldID) + sizeof(FieldSpace)));
       return result;
     }
 
@@ -1630,28 +1609,29 @@ namespace RegionRuntime {
     {
       // No need to hold the lock here since we know the task is done
       rez.serialize<size_t>(created_index_spaces.size());
-      for (std::list<IndexSpace>::const_iterator it = created_index_spaces.begin();
+      for (std::set<IndexSpace>::const_iterator it = created_index_spaces.begin();
             it != created_index_spaces.end(); it++)
       {
         rez.serialize<IndexSpace>(*it);
       }
       rez.serialize<size_t>(created_field_spaces.size());
-      for (std::list<FieldSpace>::const_iterator it = created_field_spaces.begin();
+      for (std::set<FieldSpace>::const_iterator it = created_field_spaces.begin();
             it != created_field_spaces.end(); it++)
       {
         rez.serialize<FieldSpace>(*it);
       }
       rez.serialize<size_t>(created_regions.size());
-      for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
+      for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
             it != created_regions.end(); it++)
       {
         rez.serialize<LogicalRegion>(*it);
       }
       rez.serialize(created_fields.size());
-      for (std::list<FieldID>::const_iterator it = created_fields.begin();
+      for (std::map<FieldID,FieldSpace>::const_iterator it = created_fields.begin();
             it != created_fields.end(); it++)
       {
-        rez.serialize<FieldID>(*it);
+        rez.serialize<FieldID>(it->first);
+        rez.serialize<FieldSpace>(it->second);
       }
     }
 
@@ -1668,32 +1648,92 @@ namespace RegionRuntime {
       {
         IndexSpace space;
         derez.deserialize<IndexSpace>(space);
-        created_index_spaces.push_back(space);
+        created_index_spaces.insert(space);
       }
       derez.deserialize<size_t>(num_elmts);
       for (unsigned idx = 0; idx < num_elmts; idx++)
       {
         FieldSpace space;
         derez.deserialize<FieldSpace>(space);
-        created_field_spaces.push_back(space);
+        created_field_spaces.insert(space);
       }
       derez.deserialize<size_t>(num_elmts);
       for (unsigned idx = 0; idx < num_elmts; idx++)
       {
         LogicalRegion region;
         derez.deserialize<LogicalRegion>(region);
-        created_regions.push_back(region);
+        created_regions.insert(region);
       }
       derez.deserialize<size_t>(num_elmts);
       for (unsigned idx = 0; idx < num_elmts; idx++)
       {
         FieldID fid;
         derez.deserialize<FieldID>(fid);
-        created_fields.push_back(fid);
+        FieldSpace handle;
+        derez.deserialize<FieldSpace>(handle);
+        created_fields[fid] = handle;
       }
       unlock();
       // Return the number of new regions
       return num_elmts;
+    }
+
+    //--------------------------------------------------------------------------
+    size_t TaskContext::compute_deletions_return_size(void)
+    //--------------------------------------------------------------------------
+    {
+      // No need to hold the lock since we know the task is done 
+      size_t result = 0;
+      result += sizeof(size_t); // number of regions
+      result += sizeof(size_t); // number of partitions
+      result += (deleted_regions.size() * sizeof(LogicalRegion));
+      result += (deleted_partitions.size() * sizeof(LogicalPartition));
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::pack_deletions_return(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(deleted_regions.size());
+      for (std::vector<LogicalRegion>::const_iterator it = deleted_regions.begin();
+            it != deleted_regions.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+      rez.serialize(deleted_partitions.size());
+      for (std::vector<LogicalPartition>::const_iterator it = deleted_partitions.begin();
+            it != deleted_partitions.end(); it++)
+      {
+        rez.serialize(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::unpack_deletions_return(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      // hold the lock to make sure there is no interference from still
+      // executing children
+      lock();
+      size_t num_regions;
+      derez.deserialize(num_regions);
+      for (unsigned idx = 0; idx < num_regions; idx++)
+      {
+        LogicalRegion handle;
+        derez.deserialize(handle);
+        deleted_regions.push_back(handle);
+      }
+      size_t num_partitions;
+      derez.deserialize(num_partitions);
+      for (unsigned idx = 0; idx < num_partitions; idx++)
+      {
+        LogicalPartition handle;
+        derez.deserialize(handle);
+        deleted_partitions.push_back(handle);
+      }
+
+      unlock();
     }
 
     //--------------------------------------------------------------------------
@@ -1873,13 +1913,9 @@ namespace RegionRuntime {
         }
       }
       // Otherwise check the created regions
-      for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
-            it != created_regions.end(); it++)
+      if (created_regions.find(parent) != created_regions.end())
       {
-        if ((*it) == parent)
-        {
-          return find_outermost_physical_context();
-        }
+        return find_outermost_physical_context();
       }
       // otherwise this is really bad and indicates a runtime error
       assert(false);
@@ -1979,7 +2015,7 @@ namespace RegionRuntime {
       unlock_context();
       // Also add it the set of index spaces that we have privileges for
       lock();
-      created_index_spaces.push_back(space);
+      created_index_spaces.insert(space);
       unlock();
     }
 
@@ -1990,20 +2026,21 @@ namespace RegionRuntime {
       // Note we don't need to defer anything here since that has already
       // been handled by a DeletionOperation.  No need to hold the context
       // lock either since the enclosing deletion already has it.
+      std::vector<LogicalRegion> new_deletions;
+      // Have to call this before destroy index space
+      forest_ctx->get_destroyed_regions(space,new_deletions);
       forest_ctx->destroy_index_space(space);
       // Check to see if it is in the list of spaces that we created
       // and if it is then delete it
       lock();
-      for (std::list<IndexSpace>::iterator it = created_index_spaces.begin();
-            it != created_index_spaces.end(); it++)
-      {
-        if ((*it) == space)
-        {
-          created_index_spaces.erase(it);
-          break;
-        }
-      }
+      created_index_spaces.erase(space);
       unlock();
+      // Register the deletions locally
+      for (std::vector<LogicalRegion>::const_iterator it = new_deletions.begin();
+            it != new_deletions.end(); it++)
+      {
+        register_deletion(*it);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2033,7 +2070,15 @@ namespace RegionRuntime {
       // No need to worry about deferring this, it's already been done
       // by the DeletionOperation.  The DeletionOperation already has
       // taken the context lock too.
+      std::vector<LogicalPartition> new_deletions;
+      // Have to call this before destroy_index_partition
+      forest_ctx->get_destroyed_partitions(pid,new_deletions);
       forest_ctx->destroy_index_partition(pid);
+      for (std::vector<LogicalPartition>::const_iterator it = new_deletions.begin();
+            it != new_deletions.end(); it++)
+      {
+        register_deletion(*it);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2089,7 +2134,7 @@ namespace RegionRuntime {
       unlock_context();
       // Also add this to the list of field spaces for which we have privileges
       lock();
-      created_field_spaces.push_back(space);
+      created_field_spaces.insert(space);
       unlock();
     }
 
@@ -2100,19 +2145,19 @@ namespace RegionRuntime {
       // No need to worry about deferring this, it's already been done
       // by the DeletionOperation.  The DeletionOperation has also taken
       // the context lock.
+      std::vector<LogicalRegion> new_deletions;
+      // Have to call this before destroy_field_space
+      forest_ctx->get_destroyed_regions(space, new_deletions);
       forest_ctx->destroy_field_space(space);
       // Also check to see if this is one of the field spaces we created
       lock();
-      for (std::list<FieldSpace>::iterator it = created_field_spaces.begin();
-            it != created_field_spaces.end(); it++)
-      {
-        if ((*it) == space)
-        {
-          created_field_spaces.erase(it);
-          break;
-        }
-      }
+      created_field_spaces.erase(space);
       unlock();
+      for (std::vector<LogicalRegion>::const_iterator it = new_deletions.begin();
+            it != new_deletions.end(); it++)
+      {
+        register_deletion(*it);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -2135,7 +2180,7 @@ namespace RegionRuntime {
       for (std::map<FieldID,size_t>::const_iterator it = field_allocations.begin();
             it != field_allocations.end(); it++)
       {
-        created_fields.push_back(it->first);
+        created_fields[it->first] = space;
       }
       unlock();
     }
@@ -2157,17 +2202,13 @@ namespace RegionRuntime {
       lock_context();
       forest_ctx->free_fields(space, to_free);
       unlock_context();
-      lock();
-      // Check to see if there are any fields that we created that we need to remove
-      for (std::list<FieldID>::iterator it = created_fields.begin();
-            it != created_fields.end(); /*nothing*/)
+      std::map<FieldID,FieldSpace> free_fields;
+      for (std::set<FieldID,FieldSpace>::const_iterator it = to_free.begin();
+            it != to_free.end(); it++)
       {
-        if (to_free.find(*it) != to_free.end())
-          it = created_fields.erase(it);
-        else
-          it++;
+        free_fields[*it] = space;
       }
-      unlock();
+      register_deletion(free_fields);
     }
 
     //--------------------------------------------------------------------------
@@ -2187,7 +2228,7 @@ namespace RegionRuntime {
       unlock_context();
       // Add this to the list of our created regions
       lock();
-      created_regions.push_back(handle);
+      created_regions.insert(handle);
       unlock();
     }
 
@@ -2208,16 +2249,9 @@ namespace RegionRuntime {
       forest_ctx->destroy_region(handle);
       // Also check to see if it is one of created regions so we can delete it
       lock();
-      for (std::list<LogicalRegion>::iterator it = created_regions.begin();
-            it != created_regions.end(); it++)
-      {
-        if ((*it) == handle)
-        {
-          created_regions.erase(it);
-          break;
-        }
-      }
+      created_regions.erase(handle);
       unlock();
+      register_deletion(handle);
     }
 
     //--------------------------------------------------------------------------
@@ -2235,6 +2269,7 @@ namespace RegionRuntime {
       // The DeletionOperation already took the context lock and has
       // deffered this operation to observe any dependences.
       forest_ctx->destroy_partition(handle);
+      register_deletion(handle);
     }
 
     //--------------------------------------------------------------------------
@@ -2401,24 +2436,20 @@ namespace RegionRuntime {
         }
       }
       // If we didn't find it here, we have to check the added index spaces that we have
-      for (std::list<IndexSpace>::const_iterator it = created_index_spaces.begin();
-            it != created_index_spaces.end(); it++)
+      if (created_index_spaces.find(req.parent) != created_index_spaces.end())
       {
-        if ((*it) == req.parent)
+        // Still need to check that there is a path between the two
+        std::vector<unsigned> path;
+        lock_context();
+        if (!forest_ctx->compute_index_path(req.parent, req.handle, path))
         {
-          // Still need to check that there is a path between the two
-          std::vector<unsigned> path;
-          lock_context();
-          if (!forest_ctx->compute_index_path(req.parent, req.handle, path))
-          {
-            unlock_context();
-            return ERROR_BAD_INDEX_PATH;
-          }
           unlock_context();
-          // No need to check privileges here since it is a created space
-          // which means that the parent has all privileges.
-          return NO_ERROR;
+          return ERROR_BAD_INDEX_PATH;
         }
+        unlock_context();
+        // No need to check privileges here since it is a created space
+        // which means that the parent has all privileges.
+        return NO_ERROR;
       }
       return ERROR_BAD_PARENT_INDEX;
     }
@@ -2444,15 +2475,11 @@ namespace RegionRuntime {
         }
       }
       // If we didn't find it here, we also need to check the added field spaces
-      for (std::list<FieldSpace>::const_iterator it = created_field_spaces.begin();
-            it != created_field_spaces.end(); it++)
+      if (created_field_spaces.find(req.handle) != created_field_spaces.end())
       {
-        if ((*it) == req.handle)
-        {
-          // No need to check the privileges since by definition of
-          // a created field space the parent has all privileges.
-          return NO_ERROR;
-        }
+        // No need to check the privileges since by definition of
+        // a created field space the parent has all privileges.
+        return NO_ERROR;
       }
       return ERROR_BAD_FIELD;
     }
@@ -2517,37 +2544,33 @@ namespace RegionRuntime {
         }
       }
       // Also check to see if it was a created region
-      for (std::list<LogicalRegion>::const_iterator it = created_regions.begin();
-            it != created_regions.end(); it++)
+      if (created_regions.find(req.parent) != created_regions.end())
       {
-        if ((*it) == req.parent)
+        // Check that there is a path between the parent and the child
+        lock_context();
+        if (req.handle_type == SINGULAR)
         {
-          // Check that there is a path between the parent and the child
-          lock_context();
-          if (req.handle_type == SINGULAR)
+          std::vector<unsigned> path;
+          if (!forest_ctx->compute_index_path(req.parent.index_space, req.region.index_space, path))
           {
-            std::vector<unsigned> path;
-            if (!forest_ctx->compute_index_path(req.parent.index_space, req.region.index_space, path))
-            {
-              unlock_context();
-              return ERROR_BAD_REGION_PATH;
-            }
+            unlock_context();
+            return ERROR_BAD_REGION_PATH;
           }
-          else
-          {
-            std::vector<unsigned> path;
-            if (!forest_ctx->compute_partition_path(req.parent.index_space, req.partition.index_partition, path))
-            {
-              unlock_context();
-              return ERROR_BAD_PARTITION_PATH;
-            }
-          }
-          unlock_context();
-          // No need to check the field privileges since we should have them all
-
-          // No need to check the privileges since we know we have them all
-          return NO_ERROR;
         }
+        else
+        {
+          std::vector<unsigned> path;
+          if (!forest_ctx->compute_partition_path(req.parent.index_space, req.partition.index_partition, path))
+          {
+            unlock_context();
+            return ERROR_BAD_PARTITION_PATH;
+          }
+        }
+        unlock_context();
+        // No need to check the field privileges since we should have them all
+
+        // No need to check the privileges since we know we have them all
+        return NO_ERROR;
       }
       return ERROR_BAD_PARENT_REGION;
     }
@@ -2645,6 +2668,124 @@ namespace RegionRuntime {
       assert(idx < regions.size());
 #endif
       return regions[idx];
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::register_deletion(LogicalRegion handle)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+      // To cut down on over approximation of the set of deleted regions
+      // if we find we were the ones that created the region and it hasn't
+      // been returned yet, then we no longer have to tell others to delete it
+      std::set<LogicalRegion>::iterator finder = created_regions.find(handle);
+      if (finder != created_regions.end())
+        created_regions.erase(finder);
+      else
+        deleted_regions.push_back(handle);
+      unlock();
+      // We should already hold the context lock here
+
+      // Invalidate the state in the this context.  Note if we were virtually
+      // mapped then this won't matter, but it would take too much to figure
+      // out whether we should have done it or not, so just do it.
+      forest_ctx->invalidate_physical_context(handle, ctx_id);
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::register_deletion(LogicalPartition handle)
+    //--------------------------------------------------------------------------
+    {
+      lock();
+      deleted_partitions.push_back(handle);
+      unlock();
+      // We should already hold the context lock here
+
+      // Invalidate the state in the this context.  Note if we were virtually
+      // mapped then this won't matter, but it would take too much to figure
+      // out whether we should have done it or not, so just do it.
+      forest_ctx->invalidate_physical_context(handle, ctx_id);
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::register_deletion(const std::map<FieldID,FieldSpace> &fields)
+    //--------------------------------------------------------------------------
+    {
+      // For each of our trees see if we have any deleted fields to handle
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        invalidate_matches(regions[idx].region, fields); 
+      }
+      for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        invalidate_matches(*it, fields);
+      }
+      // Now see if we can add the fields, or if we were the ones to create it
+      lock();
+      for (std::map<FieldID,FieldSpace>::const_iterator it = fields.begin();
+            it != fields.end(); it++)
+      {
+        std::map<FieldID,FieldSpace>::iterator finder = created_fields.find(it->first);
+        if (finder != created_fields.end())
+          created_fields.erase(finder);
+        else
+          deleted_fields.insert(*it);
+      }
+      unlock();
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::return_deletions(const std::vector<LogicalRegion> &handles)
+    //--------------------------------------------------------------------------
+    {
+      lock_context();
+      for (std::vector<LogicalRegion>::const_iterator it = handles.begin();
+            it != handles.end(); it++)
+      {
+        register_deletion(*it);
+      }
+      unlock_context();
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::return_deletions(const std::vector<LogicalPartition> &handles)
+    //--------------------------------------------------------------------------
+    {
+      lock_context();
+      for (std::vector<LogicalPartition>::const_iterator it = handles.begin();
+            it != handles.end(); it++)
+      {
+        register_deletion(*it);
+      }
+      unlock_context();
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::return_deletions(const std::map<FieldID,FieldSpace> &fields)
+    //--------------------------------------------------------------------------
+    {
+      register_deletion(fields);
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::invalidate_matches(LogicalRegion handle, const std::map<FieldID,FieldSpace> &fields)
+    //--------------------------------------------------------------------------
+    {
+      FieldSpace space = handle.field_space;
+      std::vector<FieldID> matched_fields;
+      for (std::map<FieldID,FieldSpace>::const_iterator it = fields.begin();
+            it != fields.end(); it++)
+      {
+        if (it->second == space)
+          matched_fields.push_back(it->first);
+      }
+      if (!matched_fields.empty())
+      {
+        lock_context();
+        forest_ctx->invalidate_physical_context(handle, ctx_id, matched_fields);
+        unlock_context();
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -3037,6 +3178,44 @@ namespace RegionRuntime {
       }
     }
 
+    //--------------------------------------------------------------------------
+    void SingleTask::invalidate_owned_contexts(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(regions.size() == physical_instances.size());
+      assert(regions.size() == physical_contexts.size());
+#endif
+      lock_context();
+      for (unsigned idx = 0; idx < physical_instances.size(); idx++)
+      {
+        std::vector<FieldID> added_fields;
+        // Get the set of new fields which we need to invalidate
+#ifdef DEBUG_HIGH_LEVEL
+        assert(regions[idx].handle_type == SINGULAR);
+#endif
+        FieldSpace target = regions[idx].region.field_space;
+        for (std::map<FieldID,FieldSpace>::const_iterator it = created_fields.begin();
+              it != created_fields.end(); it++)
+        {
+          if (it->second == target)
+            added_fields.push_back(it->first);
+        }
+        if (physical_instances[idx].is_virtual_ref())
+        {
+          if (!added_fields.empty())
+          {
+            forest_ctx->invalidate_physical_context(regions[idx], added_fields, physical_contexts[idx], true/*added only*/);
+          }
+        }
+        else
+        {
+          forest_ctx->invalidate_physical_context(regions[idx], added_fields, physical_contexts[idx], false/*added only*/);
+        }
+      }
+      unlock_context();
+    }
+
     /////////////////////////////////////////////////////////////
     // Multi Task 
     /////////////////////////////////////////////////////////////
@@ -3186,6 +3365,17 @@ namespace RegionRuntime {
         }
       }
       return success;
+    }
+
+    //--------------------------------------------------------------------------
+    void MultiTask::return_deletions(const std::vector<LogicalRegion> &region_handles,
+                                     const std::vector<LogicalPartition> &partition_handles,
+                                     const std::map<FieldID,FieldSpace> &fields)
+    //--------------------------------------------------------------------------
+    {
+      deleted_regions.insert(deleted_regions.end(),region_handles.begin(),region_handles.end());
+      deleted_partitions.insert(deleted_partitions.end(),partition_handles.begin(),partition_handles.end());
+      deleted_fields.insert(fields.begin(),fields.end());
     }
 
     //--------------------------------------------------------------------------
@@ -4129,6 +4319,7 @@ namespace RegionRuntime {
       // are no mappings performed in a leaf task context.  We also don't have to
       // do this for any created regions since either they are explicitly deleted
       // or their state is passed back in finish_task to the enclosing context.
+      invalidate_owned_contexts();
 
       // Figure out whether we need to wait to launch the finish task
       Event wait_on_event = Event::merge_events(cleanup_events);
@@ -4159,6 +4350,7 @@ namespace RegionRuntime {
         if (!is_leaf)
         {
           buffer_size += compute_privileges_return_size();
+          buffer_size += compute_deletions_return_size();
           lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
           buffer_size += forest_ctx->compute_created_state_return(ctx_id);
@@ -4173,6 +4365,7 @@ namespace RegionRuntime {
         if (!is_leaf)
         {
           pack_privileges_return(rez);
+          pack_deletions_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
           forest_ctx->pack_created_state_return(ctx_id, rez);
           forest_ctx->pack_leaked_return(rez);
@@ -4215,6 +4408,12 @@ namespace RegionRuntime {
         {
           parent_ctx->return_privileges(created_index_spaces,created_field_spaces,
                                         created_regions,created_fields);
+          if (!deleted_regions.empty())
+            parent_ctx->return_deletions(deleted_regions);
+          if (!deleted_partitions.empty())
+            parent_ctx->return_deletions(deleted_partitions);
+          if (!deleted_fields.empty())
+            parent_ctx->return_deletions(deleted_fields);
         }
         // Now we can trigger the termination event
         termination_event.trigger();
@@ -4384,6 +4583,18 @@ namespace RegionRuntime {
       if (!is_leaf)
       {
         unpack_privileges_return(derez);
+        unpack_deletions_return(derez);
+        if (parent_ctx != NULL)
+        {
+          parent_ctx->return_privileges(created_index_spaces, created_field_spaces,
+                                        created_regions, created_fields);
+          if (!deleted_regions.empty())
+            parent_ctx->return_deletions(deleted_regions);
+          if (!deleted_partitions.empty())
+            parent_ctx->return_deletions(deleted_partitions);
+          if (!deleted_fields.empty())
+            parent_ctx->return_deletions(deleted_fields);
+        }
         lock_context();
         forest_ctx->unpack_region_tree_updates_return(derez);
         ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
@@ -4764,6 +4975,16 @@ namespace RegionRuntime {
       unlock_context();
       // notify the slice owner that this task has been mapped
       slice_owner->point_task_mapped(this);
+
+      // Now can invalidate any valid physical instances our context for
+      // all the regions which we had as region requirements.  We can't invalidate
+      // virtual mapped regions since that information has escaped our context.
+      // Note we don't need to worry about doing this for leaf tasks since there
+      // are no mappings performed in a leaf task context.  We also don't have to
+      // do this for any created regions since either they are explicitly deleted
+      // or their state is passed back in finish_task to the enclosing context.
+      invalidate_owned_contexts();
+
       // Now figure out whether we need to wait to launch the finish task
       Event wait_on_event = Event::merge_events(cleanup_events);
       if (!wait_on_event.exists())
@@ -4789,6 +5010,7 @@ namespace RegionRuntime {
       // Return privileges to the slice owner
       slice_owner->return_privileges(created_index_spaces,created_field_spaces,
                                       created_regions,created_fields);
+      slice_owner->return_deletions(deleted_regions, deleted_partitions, deleted_fields);
       // If not remote, remove our physical instance usages
       if (!slice_owner->remote)
       {
@@ -5413,6 +5635,7 @@ namespace RegionRuntime {
       if (!slice_is_leaf)
       {
         unpack_privileges_return(derez);
+        unpack_deletions_return(derez);
         lock_context();
         forest_ctx->unpack_region_tree_updates_return(derez);
         ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
@@ -5802,6 +6025,12 @@ namespace RegionRuntime {
 #endif
         parent_ctx->return_privileges(created_index_spaces,created_field_spaces,
                                       created_regions,created_fields);
+        if (!deleted_regions.empty())
+          parent_ctx->return_deletions(deleted_regions);
+        if (!deleted_partitions.empty())
+          parent_ctx->return_deletions(deleted_partitions);
+        if (!deleted_fields.empty())
+          parent_ctx->return_deletions(deleted_fields);
         // We're done, trigger the termination event
         termination_event.trigger();
         runtime->notify_operation_complete(parent_ctx);
@@ -7103,6 +7332,7 @@ namespace RegionRuntime {
         if (!is_leaf)
         {
           buffer_size += compute_privileges_return_size();
+          buffer_size += compute_deletions_return_size();
           lock_context();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
           buffer_size += forest_ctx->compute_created_state_return(ctx_id); 
@@ -7138,6 +7368,7 @@ namespace RegionRuntime {
         if (!is_leaf)
         {
           pack_privileges_return(rez);
+          pack_deletions_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
           forest_ctx->pack_created_state_return(ctx_id, rez);
           forest_ctx->pack_leaked_return(rez);
@@ -7179,6 +7410,7 @@ namespace RegionRuntime {
         // Otherwise we're done, so pass back our privileges and then tell the owner
         index_owner->return_privileges(created_index_spaces,created_field_spaces,
                                         created_regions,created_fields);
+        index_owner->return_deletions(deleted_regions, deleted_partitions, deleted_fields);
         index_owner->slice_finished(points.size());
       }
 
