@@ -477,7 +477,7 @@ operational semantics environments includes an immutable heap typing $H$ that ma
 mapping $M$ that maps logical regions $r_i$ to physical regions $\rho_i$, which are sets of concrete memory
 locations.
 
-The final element of the environtment is the {\em clobber set} $C$.  Our goal is to show that parallel Legion
+The final element of the environment is the {\em clobber set} $C$.  Our goal is to show that parallel Legion
 programs can
 be scheduled in a hierarchical (and therefore scalable) fashion, we require a formulation of operational semantics
 that is both parallel and hierarchical.  Because Legion allows constrained nondeterminism (in the order in which
@@ -507,6 +507,8 @@ in Figure~\ref{fig:semantics}.  The rules for the {\em read}, {\em write}, and {
 traces are constructed and how the result of a read expression is relaxed when the location falls within the
 clobber set.  Additionally, the write and reduce operations, with their two subexpressions, demonstrate how the
 traces of subexpressions are interleaved within the environment (and clobber set) of the parent expression.
+(A formal definition of the {\em valid\_interleave} predicate can be found in Figure~\ref{fig:validinterleave}, and
+will be discussed in Section~\ref{sec:coherence}.)
 
 The first use of the region mapping $M$ occurs in the {\em new} and {\em downregion} expressions.  The new
 expression is constrained to select a location (with the right heap typing) from the set that the specified logical
@@ -1098,21 +1100,24 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 \label{sec:coherence}
 
 Theorem~\ref{thm:effects} guarantees that a function call produces a value of the
-correct type and does so within the regions of memory for which privileges are held.
-It does not, however, address {\em coherence}, what concurrent operations on the regions are permitted.
-An innovation in Legion is that programmers can control coherence on a per-region basis.  Intuitively,
-the different coherence modes permit different interleavings of memory traces.  For example,
-in addition to being an interleaving of the constituent traces, exclusive access requires interleaved memory traces to be:
+correct type and does so within the regions of memory for which privileges are held.  In fact, this results holds
+even if the {\em valid\_interleave} constraint is weakened to just require an arbitrary interleaving of the memory
+traces of subexpressions (i.e. the {\em any\_interleave} predicated defined in Figure~\ref{fig:opsecfns}).  The 
+additional constraints on {\em valid\_interleave} in Figure~\ref{fig:validinterleave} address the coherence of 
+heap accesses and allow for the per-region relaxation of coherence that is introduced in Legion.
+
+To determine whether an interleaving of two or more memory traces is valid, we consider three sets of addresses:
 \begin{itemize}
-\item {\em coherent} - a read of location $l$ should see the effect of all writes and reductions to $l$
-occurring earlier in the interleaved trace, and
-\item {\em sequentially equivalent} - the value read by each read 
-operation and the result of applying the interleaved trace to the original store should be the same as if each constituent trace
-was applied to the store in a valid sequential execution of the program.
+\item exclusive locations ($l \in L_{excl}$) are those which have at least once access in exclusive mode in the traces
+and are not in the clobber set.  For these locations, we require the standard {\em sequential consistency} - all
+reads to these locations see the effect of previous writes and reductions, and the resulting state of the store is
+as if all writes and reductions were applied from each trace in order
+\item atomic locations ($l \in L_{atomic}$) are those which have at least one access in atomic mode in the traces and
+are in neither $L_{excl}$ nor the clobber set.  For these locations, we allow permutations of the original
+subexpression trace order.
+\item for locations that have only access in {\em simult} mode or are in the clobber set, no constraints are
+enforced.  The validity of the interleaving of these accesses will be performed in the an enclosing expression.
 \end{itemize}
-These requirements are relaxed for either a non-empty clobber set (representing
-operations that may occur concurrently as part of evaluating other functions) or for coherence
-modes other than {\em excl}.
 
 \begin{figure*}
 $$
@@ -1142,55 +1147,18 @@ $$
 \vspace{-5mm}
 \end{figure*}
 
-Figure~\ref{fig:validinterleave} formally defines {\em
-valid\_interleave}, which we briefly explain.  Consider
-traces $\oton{E}$.  The {\em exclusive location set} $L_{excl}$ is the
-set of locations used in an operation with coherence mode $excl$ in
-some trace $E_i$, excepting any locations in the clobber set $C$.
-Similarly, the {\em atomic location set} $L_{atomic}$ is the set of
-locations in an operation with coherence mode $atomic$, but no
-operations with coherence mode $excl$, again excepting any location in
-the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all
-reads of locations in $L_2$, and any read of a location $l \in L_1$
-that comes after a write to $l$, return the value most recently written
-to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not 
-checked, but are deferred to a point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
-test verifies every read in $E'$ with a location in $L_1$ 
-is coherent if operations are performed in 
-program order and that the store that results from applying $E'$
-matches the store resulting from applying the
-constituent traces in program order for all locations in $L_1$.  Program order
-is implicitly defined in the operational semantics, and is equivalent to a 
-postorder traversal of an expression's tree.  For
-the atomic location set, we allow the constituent traces to be
-permuted, but all locations must be checked with the same permutation.
+Although it is our goal to enable parallel execution whenever possible, it will help to briefly
+consider serialized execution of a Legion program.  We will show that a serial execution trivially
+satisfies the interleaving criteria required by the Legion operational semantics.  In addition to
+serial execution being the fallback behavior of the hierarchical schedule, our proof of the
+soundness of the parallel scheduling will depend on this result.
 
-Flexibility in interleaving operations is the key to achieving parallel execution, but
-implementing the precise criteria for checking a valid interleaving is
-much too expensive.  We now consider practical mechanisms that generate valid interleavings and 
-under what conditions these approaches may be used.
-
-The first option is to serialize the evaluation of the subexpressions that
-make up an expression and attempt to generate a valid interleaving by simply
-concatenating the constituent traces in program order.  However, there is a
-complication related to the non-determinism that is allowed for reads.  Although
-each subexpression's trace will have been checked for coherence, the checking
-of some operations may have been deferred due to non-empty
-clobber sets.  It is possible that when an interleaving of these traces
-is attempted in the parent expression's context, there may no valid interleaving
-if the wrong guesses were made in the derivation of a subexpression.
-The solution in the case of serial execution is to not expand the clobber
-set for subexpressions, instead using the parent expression's clobber set.
-
-Only a single rule is modified for this alternate execution - $e_{n+1}$ in
-{\sc E-Call} uses the original $C$ instead of $C'$.  This change
-can result in there being no terminating execution for an expression in
-which the only terminating executions required a particular (non-program-)
-ordering of subexpression evaluation.  However, the Legion core language never
-guarantees parallel execution, so the evaluation of such an 
-expression is unlikely to terminate even under the original clobber set.
-We can, however, show that any terminating execution that results from using
-the restricted clobber set is a valid execution under the original:
+Serial execution is achieved by ignoring the coherence mode $Q$ in all function calls, using $Q' = \emptyset$
+instead, and by forming ``interleaved'' traces by simply concatenating the subexpressions' traces.  By ignoring
+the coherence modes, the clobber set remains empty, making the result of all {\em read} expressions fully
+determined.  The following lemma and theorem (proofs of which can be found in \cite{LegionTypes12}) show that the
+value and memory trace that result from a serialized execution of an expression are always valid executions of
+Legion programs.
 
 \begin{lem}
 \label{lem:clobberreduce}
@@ -1198,10 +1166,6 @@ the restricted clobber set is a valid execution under the original:
 Let $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$ and $\storeconsist{S}{H}$.  If $C \subseteq C'$, then
 $\opsenv[C=C']{e}{v}{E}$.
 \end{lem}
-
-The proof of this (and other lemmas in this section) is included in \cite{LegionTypes12}.
-We now show that the concatenation of the memory traces from these serially
-executed subexpressions is always a valid interleaving:
 
 \begin{thm}
 \label{thm:sequential}
@@ -1213,15 +1177,7 @@ where $S_i = apply(S_{i-1}, E_i)$.  If $E' = E_1 \dplus \ldots \dplus E_n$, then
 $valid\_interleave(S_0, C, E', \oton{E})$.
 \end{thm}
 
-\begin{proof}
-First, we must show that $any\_interleave(E', \oton{E})$.  This is done by
-induction on the length of $E_1$, followed by $E_2$, and so on.  Next, we must
-show that $E'$ is coherent for both $L_{excl}$ and $L_{atomic}$.  This is done by
-matching the structure of $E'$ with $\oton{E}$ and the use of the following
-lemma: $apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2)$.  With the
-question of coherence addressed, the sequential equivalence of $E'$ is trivial
-for both the exclusive and atomic cases.
-\end{proof}
+CURRENT EDIT POINT
 
 Next we examine how to modify the serialized interleaving to produce valid interleavings allowing parallel execution. 
 We consider when we may swap the order of two adjacent memory operations in a valid interleaving.

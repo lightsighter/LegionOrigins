@@ -121,7 +121,7 @@ enum dir_t {
 // Arguments to main_task.
 ////////////////////////////////////////////////////////////////////////
 const double DEFAULT_S = 1.0, DEFAULT_A = 10.0;
-const unsigned DEFAULT_NB = 1;
+const int DEFAULT_NB = 1;
 
 struct MainArgs {
   MainArgs()
@@ -132,9 +132,9 @@ struct MainArgs {
   // Number of cells per unit distance.
   double a;
   // Number of blocks.
-  unsigned nbx, nby, nbz;
+  int nbx, nby, nbz;
   // Number of cells.
-  unsigned nx, ny, nz;
+  int nx, ny, nz;
 };
 
 ////////////////////////////////////////////////////////////////////////
@@ -156,12 +156,12 @@ struct InitGlobalArgs {
 // Arguments to step_task.
 ////////////////////////////////////////////////////////////////////////
 struct StepGlobalArgs {
-  StepGlobalArgs(unsigned nx, unsigned ny, unsigned nz, dim_t dim, dir_t dir,
+  StepGlobalArgs(int nx, int ny, int nz, dim_t dim, dir_t dir,
                  FieldID field_write, FieldID field_read1, FieldID field_read2)
     : nx(nx), ny(ny), nz(nz), dim(dim), dir(dir),
       field_write(field_write), field_read1(field_read1), field_read2(field_read2) {}
   // Number of cells.
-  unsigned nx, ny, nz;
+  int nx, ny, nz;
   // Dimension to step.
   dim_t dim;
   // Direction to look for ghost cells.
@@ -171,27 +171,27 @@ struct StepGlobalArgs {
 };
 
 struct StepLocalArgs {
-  StepLocalArgs(std::pair<unsigned, unsigned> &x_span,
-                std::pair<unsigned, unsigned> &y_span,
-                std::pair<unsigned, unsigned> &z_span)
+  StepLocalArgs(std::pair<int, int> &x_span,
+                std::pair<int, int> &y_span,
+                std::pair<int, int> &z_span)
     : x_min(x_span.first), x_max(x_span.second),
       y_min(y_span.first), y_max(y_span.second),
       z_min(z_span.first), z_max(z_span.second) {}
-  unsigned x_min /* inclusive */, x_max /* exclusive */;
-  unsigned y_min /* inclusive */, y_max /* exclusive */;
-  unsigned z_min /* inclusive */, z_max /* exclusive */;
+  int x_min /* inclusive */, x_max /* exclusive */;
+  int y_min /* inclusive */, y_max /* exclusive */;
+  int z_min /* inclusive */, z_max /* exclusive */;
 };
 
 ////////////////////////////////////////////////////////////////////////
 // Addressing utility functions.
 ////////////////////////////////////////////////////////////////////////
-static inline unsigned block_id(unsigned bx, unsigned by, unsigned bz,
-                                unsigned nbx, unsigned nby, unsigned nbz) {
+static inline int block_id(int bx, int by, int bz,
+                           int nbx, int nby, int nbz) {
   return (bx*nby + by)*nbz + bz;
 }
 
-static inline unsigned cell_id(unsigned x, unsigned y, unsigned z,
-                               unsigned nx, unsigned ny, unsigned nz) {
+static inline int cell_id(int x, int y, int z,
+                          int nx, int ny, int nz) {
   return (x*(ny + 2) + y)*(nz + 2) + z;
 }
 
@@ -204,10 +204,10 @@ static inline unsigned cell_id(unsigned x, unsigned y, unsigned z,
 ////////////////////////////////////////////////////////////////////////
 class InitBlockColoring : public ColoringFunctor {
 public:
-  InitBlockColoring(unsigned nx, unsigned ny, unsigned nz,
-                    std::vector<std::pair<unsigned, unsigned> > x_divs,
-                    std::vector<std::pair<unsigned, unsigned> > y_divs,
-                    std::vector<std::pair<unsigned, unsigned> > z_divs)
+  InitBlockColoring(int nx, int ny, int nz,
+                    std::vector<std::pair<int, int> > x_divs,
+                    std::vector<std::pair<int, int> > y_divs,
+                    std::vector<std::pair<int, int> > z_divs)
     : nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
 
   virtual bool is_disjoint(void) { return true; }
@@ -215,22 +215,22 @@ public:
   virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
                                 std::map<Color,ColoredPoints<unsigned> > &coloring) {
     unsigned next_index = 0;
-    unsigned nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
+    int nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
-    for (unsigned id = 0; id < nbx*nby*nbz; id++) {
+    for (int id = 0; id < nbx*nby*nbz; id++) {
       coloring[id] = ColoredPoints<unsigned>();
     }
 
     // Color points in xyz cube.
-    for (unsigned bx = 0, x = 0; x < nx + 2; x++) {
+    for (int bx = 0, x = 0; x < nx + 2; x++) {
       if (x >= x_divs[bx].second && bx < nbx - 1) bx++;
 
       // Color points in yz plane.
-      for (unsigned by = 0, y = 0; y < ny + 2; y++) {
+      for (int by = 0, y = 0; y < ny + 2; y++) {
         if (y >= y_divs[by].second && by < nby - 1) by++;
 
-        for (unsigned bz = 0; bz < nbz; bz++) {
-          unsigned id = block_id(bx, by, bz, nbx, nby, nbz);
+        for (int bz = 0; bz < nbz; bz++) {
+          int id = block_id(bx, by, bz, nbx, nby, nbz);
           unsigned block_size = z_divs[bz].second - z_divs[bz].first;
           if (bz == 0) {
             block_size++;
@@ -249,12 +249,12 @@ public:
 
     log_app.info("Colored %d of %d points",
                  next_index, (nx + 2)*(ny + 2)*(nz + 2));
-    assert(next_index == (nx + 2)*(ny + 2)*(nz + 2));
+    assert(next_index == (unsigned)(nx + 2)*(ny + 2)*(nz + 2));
   }
 
 private:
-  const unsigned nx, ny, nz;
-  const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
+  const int nx, ny, nz;
+  const std::vector<std::pair<int, int> > x_divs, y_divs, z_divs;
 };
 
 ////////////////////////////////////////////////////////////////////////
@@ -265,10 +265,10 @@ private:
 ////////////////////////////////////////////////////////////////////////
 class OwnedBlockColoring : public ColoringFunctor {
 public:
-  OwnedBlockColoring(unsigned nx, unsigned ny, unsigned nz,
-                     std::vector<std::pair<unsigned, unsigned> > x_divs,
-                     std::vector<std::pair<unsigned, unsigned> > y_divs,
-                     std::vector<std::pair<unsigned, unsigned> > z_divs)
+  OwnedBlockColoring(int nx, int ny, int nz,
+                     std::vector<std::pair<int, int> > x_divs,
+                     std::vector<std::pair<int, int> > y_divs,
+                     std::vector<std::pair<int, int> > z_divs)
     : nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
 
   virtual bool is_disjoint(void) { return true; }
@@ -276,9 +276,9 @@ public:
   virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
                                 std::map<Color,ColoredPoints<unsigned> > &coloring) {
     unsigned next_index = 0;
-    unsigned nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
+    int nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
-    for (unsigned id = 0; id < nbx*nby*nbz; id++) {
+    for (int id = 0; id < nbx*nby*nbz; id++) {
       coloring[id] = ColoredPoints<unsigned>();
     }
 
@@ -287,7 +287,7 @@ public:
     next_index += x_plane_size;
 
     // Color rest of points in xyz cube.
-    for (unsigned bx = 0, x = 1; x < nx + 1; x++) {
+    for (int bx = 0, x = 1; x < nx + 1; x++) {
       if (x >= x_divs[bx].second) bx++;
 
       // Skip points for line of points at y == 0 boundary.
@@ -295,14 +295,14 @@ public:
       next_index += y_line_size;
 
       // Color rest of points in yz plane.
-      for (unsigned by = 0, y = 1; y < ny + 1; y++) {
+      for (int by = 0, y = 1; y < ny + 1; y++) {
         if (y >= y_divs[by].second) by++;
 
         // Skip point at z == 0 boundary.
         next_index++;
 
-        for (unsigned bz = 0; bz < nbz; bz++) {
-          unsigned id = block_id(bx, by, bz, nbx, nby, nbz);
+        for (int bz = 0; bz < nbz; bz++) {
+          int id = block_id(bx, by, bz, nbx, nby, nbz);
           unsigned block_size = z_divs[bz].second - z_divs[bz].first;
           log_app.debug("Assigning points %d..%d to block %d x %d x %d (id %d)",
                         next_index, next_index + block_size, bx, by, bz, id);
@@ -324,12 +324,12 @@ public:
 
     log_app.info("Colored %d of %d points",
                  next_index, (nx + 2)*(ny + 2)*(nz + 2));
-    assert(next_index == (nx + 2)*(ny + 2)*(nz + 2));
+    assert(next_index == (unsigned)(nx + 2)*(ny + 2)*(nz + 2));
   }
 
 private:
-  const unsigned nx, ny, nz;
-  const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
+  const int nx, ny, nz;
+  const std::vector<std::pair<int, int> > x_divs, y_divs, z_divs;
 };
 
 ////////////////////////////////////////////////////////////////////////
@@ -341,47 +341,47 @@ private:
 ////////////////////////////////////////////////////////////////////////
 class GhostBlockColoring : public ColoringFunctor {
 public:
-  GhostBlockColoring(dim_t dim, dir_t dir, unsigned nx, unsigned ny, unsigned nz,
-                     std::vector<std::pair<unsigned, unsigned> > x_divs,
-                     std::vector<std::pair<unsigned, unsigned> > y_divs,
-                     std::vector<std::pair<unsigned, unsigned> > z_divs)
+  GhostBlockColoring(dim_t dim, dir_t dir, int nx, int ny, int nz,
+                     std::vector<std::pair<int, int> > x_divs,
+                     std::vector<std::pair<int, int> > y_divs,
+                     std::vector<std::pair<int, int> > z_divs)
     : dim(dim), dir(dir), nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
 
   virtual bool is_disjoint(void) { return true; }
 
   virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
                                 std::map<Color,ColoredPoints<unsigned> > &coloring) {
-    unsigned nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
+    int nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
-    for (unsigned id = 0; id < nbx*nby*nbz; id++) {
+    for (int id = 0; id < nbx*nby*nbz; id++) {
       coloring[id] = ColoredPoints<unsigned>();
     }
 
-    for (unsigned bx = 0; bx < nbx; bx++) {
-      for (unsigned by = 0; by < nby; by++) {
-        for (unsigned bz = 0; bz < nbz; bz++) {
-          unsigned b = block_id(bx, by, bz, nbx, nby, nbz);
+    for (int bx = 0; bx < nbx; bx++) {
+      for (int by = 0; by < nby; by++) {
+        for (int bz = 0; bz < nbz; bz++) {
+          int b = block_id(bx, by, bz, nbx, nby, nbz);
           if (dim == DIM_X) {
-            unsigned x = dir == DIR_POS ? x_divs[bx].second : x_divs[bx].first - 1;
-            for (unsigned y = y_divs[by].first; y < y_divs[by].second; y++) {
-              for (unsigned z = z_divs[bz].first; z < z_divs[bz].second; z++) {
-                unsigned c = cell_id(x, y, z, nx, ny, nz);
+            int x = dir == DIR_POS ? x_divs[bx].second : x_divs[bx].first - 1;
+            for (int y = y_divs[by].first; y < y_divs[by].second; y++) {
+              for (int z = z_divs[bz].first; z < z_divs[bz].second; z++) {
+                int c = cell_id(x, y, z, nx, ny, nz);
                 coloring[b].points.insert(c);
               }
             }
           } else if (dim == DIM_Y) {
-            unsigned y = dir == DIR_POS ? y_divs[by].second : y_divs[by].first - 1;
-            for (unsigned x = x_divs[bx].first; x < x_divs[bx].second; x++) {
-              for (unsigned z = z_divs[bz].first; z < z_divs[bz].second; z++) {
-                unsigned c = cell_id(x, y, z, nx, ny, nz);
+            int y = dir == DIR_POS ? y_divs[by].second : y_divs[by].first - 1;
+            for (int x = x_divs[bx].first; x < x_divs[bx].second; x++) {
+              for (int z = z_divs[bz].first; z < z_divs[bz].second; z++) {
+                int c = cell_id(x, y, z, nx, ny, nz);
                 coloring[b].points.insert(c);
               }
             }
           } else /* dim == DIM_Z */ {
-            unsigned z = dir == DIR_POS ? z_divs[bz].second : z_divs[bz].first - 1;
-            for (unsigned x = x_divs[bx].first; x < x_divs[bx].second; x++) {
-              for (unsigned y = y_divs[by].first; y < y_divs[by].second; y++) {
-                unsigned c = cell_id(x, y, z, nx, ny, nz);
+            int z = dir == DIR_POS ? z_divs[bz].second : z_divs[bz].first - 1;
+            for (int x = x_divs[bx].first; x < x_divs[bx].second; x++) {
+              for (int y = y_divs[by].first; y < y_divs[by].second; y++) {
+                int c = cell_id(x, y, z, nx, ny, nz);
                 coloring[b].points.insert(c);
               }
             }
@@ -394,13 +394,13 @@ public:
 private:
   const dim_t dim;
   const dir_t dir;
-  const unsigned nx, ny, nz;
-  const std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
+  const int nx, ny, nz;
+  const std::vector<std::pair<int, int> > x_divs, y_divs, z_divs;
 };
 
-static inline unsigned find_block_containing(unsigned x, const std::vector<std::pair<unsigned, unsigned> > &divs) {
-  unsigned nb = divs.size();
-  for (unsigned b = 0; b < nb; b++) {
+static inline int find_block_containing(int x, const std::vector<std::pair<int, int> > &divs) {
+  int nb = divs.size();
+  for (int b = 0; b < nb; b++) {
     if (divs[b].first <= x && x < divs[b].second) {
       return b;
     }
@@ -426,8 +426,8 @@ void top_level_task(const void * /* input_args */, size_t /* input_arglen */,
 
   MainArgs args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
-  unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
-  unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
+  int &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
+  int &nx = args.nx, &ny = args.ny, &nz = args.nz;
 
   InputArgs input_args = HighLevelRuntime::get_input_args();
   int argc = input_args.argc;
@@ -464,9 +464,9 @@ void top_level_task(const void * /* input_args */, size_t /* input_arglen */,
   }
 
   // Total number of cells in each dimension.
-  nx = (unsigned)(sx*a + 0.5);
-  ny = (unsigned)(sy*a + 0.5);
-  nz = (unsigned)(sz*a + 0.5);
+  nx = (int)(sx*a + 0.5);
+  ny = (int)(sy*a + 0.5);
+  nz = (int)(sz*a + 0.5);
 
   // Create index and field spaces and logical region for cells.
   IndexSpace ispace = runtime->create_index_space(ctx, (nx + 2)*(ny + 2)*(nz + 2));
@@ -498,8 +498,8 @@ void main_task(const void *input_args, size_t input_arglen,
 
   MainArgs &args = *(MainArgs *)input_args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
-  unsigned &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
-  unsigned &nx = args.nx, &ny = args.ny, &nz = args.nz;
+  int &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
+  int &nx = args.nx, &ny = args.ny, &nz = args.nz;
 
   // Don't actually read or write any data in this task.
   LogicalRegion cells = regions[0].get_logical_region();
@@ -530,49 +530,49 @@ void main_task(const void *input_args, size_t input_arglen,
   alloc.alloc((nx + 2)*(ny + 2)*(nz + 2));
 
   // Decide how many cells to allocate to each block.
-  std::vector<std::pair<unsigned, unsigned> > x_divs, y_divs, z_divs;
-  unsigned x_cells_per_block = nx/nbx, x_cells_extra = nx%nbx;
-  unsigned y_cells_per_block = ny/nby, y_cells_extra = ny%nby;
-  unsigned z_cells_per_block = nz/nbz, z_cells_extra = nz%nbz;
-  for (unsigned bx = 0, x = 1; bx < nbx; bx++) {
-    unsigned size = x_cells_per_block;
+  std::vector<std::pair<int, int> > x_divs, y_divs, z_divs;
+  int x_cells_per_block = nx/nbx, x_cells_extra = nx%nbx;
+  int y_cells_per_block = ny/nby, y_cells_extra = ny%nby;
+  int z_cells_per_block = nz/nbz, z_cells_extra = nz%nbz;
+  for (int bx = 0, x = 1; bx < nbx; bx++) {
+    int size = x_cells_per_block;
     if (bx < x_cells_extra) {
       size++;
     }
-    x_divs.push_back(std::pair<unsigned, unsigned>(x, x + size));
+    x_divs.push_back(std::pair<int, int>(x, x + size));
     x += size;
   }
-  for (unsigned by = 0, y = 1; by < nby; by++) {
-    unsigned size = y_cells_per_block;
+  for (int by = 0, y = 1; by < nby; by++) {
+    int size = y_cells_per_block;
     if (by < y_cells_extra) {
       size++;
     }
-    y_divs.push_back(std::pair<unsigned, unsigned>(y, y + size));
+    y_divs.push_back(std::pair<int, int>(y, y + size));
     y += size;
   }
-  for (unsigned bz = 0, z = 1; bz < nbz; bz++) {
-    unsigned size = z_cells_per_block;
+  for (int bz = 0, z = 1; bz < nbz; bz++) {
+    int size = z_cells_per_block;
     if (bz < z_cells_extra) {
       size++;
     }
-    z_divs.push_back(std::pair<unsigned, unsigned>(z, z + size));
+    z_divs.push_back(std::pair<int, int>(z, z + size));
     z += size;
   }
 
   printf("  divisions in x      : ");
-  for (unsigned bx = 0; bx < nbx; bx++) {
+  for (int bx = 0; bx < nbx; bx++) {
     printf("%d..%d", x_divs[bx].first, x_divs[bx].second);
     if (bx + 1 < nbx) printf(", ");
   }
   printf("\n");
   printf("  divisions in y      : ");
-  for (unsigned by = 0; by < nby; by++) {
+  for (int by = 0; by < nby; by++) {
     printf("%d..%d", y_divs[by].first, y_divs[by].second);
     if (by + 1 < nby) printf(", ");
   }
   printf("\n");
   printf("  divisions in z      : ");
-  for (unsigned bz = 0; bz < nbz; bz++) {
+  for (int bz = 0; bz < nbz; bz++) {
     printf("%d..%d", z_divs[bz].first, z_divs[bz].second);
     if (bz + 1 < nbz) printf(", ");
   }
@@ -642,12 +642,12 @@ void main_task(const void *input_args, size_t input_arglen,
 
   // Preload argument map for step task.
   ArgumentMap position_arg_map = runtime->create_argument_map(ctx);
-  for (unsigned bx = 0; bx < nbx; bx++) {
-    for (unsigned by = 0; by < nby; by++) {
-      for (unsigned bz = 0; bz < nbz; bz++) {
-        unsigned point[1] = { block_id(bx, by, bz, nbx, nby, nbz) };
+  for (int bx = 0; bx < nbx; bx++) {
+    for (int by = 0; by < nby; by++) {
+      for (int bz = 0; bz < nbz; bz++) {
+        int point[1] = { block_id(bx, by, bz, nbx, nby, nbz) };
         StepLocalArgs step_args(x_divs[bx], y_divs[by], z_divs[bz]);
-        position_arg_map.set_point_arg<unsigned, 1>(point, TaskArgument(&step_args, sizeof(step_args)));
+        position_arg_map.set_point_arg<int, 1>(point, TaskArgument(&step_args, sizeof(step_args)));
       }
     }
   }
@@ -658,9 +658,9 @@ void main_task(const void *input_args, size_t input_arglen,
   RegionRuntime::DetailedTimer::clear_timers();
 
   // FIXME (Elliott): Figure out the real timestep here
-  unsigned timesteps = 10;
+  int timesteps = 10;
   std::vector<FutureMap> fs;
-  for (unsigned ts = 0; ts < timesteps; ts++) {
+  for (int ts = 0; ts < timesteps; ts++) {
     std::vector<IndexSpaceRequirement> indexes;
     indexes.push_back(IndexSpaceRequirement(ispace, NO_MEMORY, ispace));
 
@@ -750,7 +750,7 @@ void main_task(const void *input_args, size_t input_arglen,
 ////////////////////////////////////////////////////////////////////////
 void init_task(const void * input_global_args, size_t input_global_arglen,
                const void * /* input_local_args */, size_t /* input_local_arglen */,
-               const unsigned /* point */ [1],
+               const int /* point */ [1],
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime * /* runtime */) {
@@ -763,7 +763,7 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
   PhysicalRegion cells = regions[0];
 
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> accessor[NDIMS*2];
-  for (unsigned field = 0; field < NDIMS*2; field++) {
+  for (int field = 0; field < NDIMS*2; field++) {
     accessor[field] = cells.get_accessor<AccessorGeneric>(fields[field]);
   }
 
@@ -772,7 +772,7 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
   int position = 0, length = 0;
   while (enabled->get_next(position, length)) {
     for (int index = position; index < position + length; index++) {
-      for (unsigned field = 0; field < NDIMS*2; field++) {
+      for (int field = 0; field < NDIMS*2; field++) {
         accessor[field].write(ptr_t<double>(index), 1.2345678*index*fields[field]); // FIXME (Elliott): Debugging
       }
     }
@@ -784,13 +784,13 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
 ////////////////////////////////////////////////////////////////////////
 void step_task(const void * input_global_args, size_t input_global_arglen,
                const void *input_local_args, size_t input_local_arglen,
-               const unsigned /* point */ [1],
+               const int /* point */ [1],
                const std::vector<RegionRequirement> & /* reqs */,
                const std::vector<PhysicalRegion> &regions,
                Context ctx, HighLevelRuntime *runtime) {
   assert(input_global_args && input_global_arglen == sizeof(StepGlobalArgs));
   StepGlobalArgs &global_args = *(StepGlobalArgs *)input_global_args;
-  unsigned &nx = global_args.nx, &ny = global_args.ny, &nz = global_args.nz;
+  int &nx = global_args.nx, &ny = global_args.ny, &nz = global_args.nz;
   dim_t &dim = global_args.dim;
   dir_t &dir = global_args.dir;
   FieldID &field_write = global_args.field_write;
@@ -799,9 +799,9 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
 
   assert(input_local_args && input_local_arglen == sizeof(StepLocalArgs));
   StepLocalArgs &local_args = *(StepLocalArgs *)input_local_args;
-  unsigned &x_min = local_args.x_min, &x_max = local_args.x_max;
-  unsigned &y_min = local_args.y_min, &y_max = local_args.y_max;
-  unsigned &z_min = local_args.z_min, &z_max = local_args.z_max;
+  int &x_min = local_args.x_min, &x_max = local_args.x_max;
+  int &y_min = local_args.y_min, &y_max = local_args.y_max;
+  int &z_min = local_args.z_min, &z_max = local_args.z_max;
 
   log_app.info("In step_task cells %d..%d x %d..%d x %d..%d writing field %d reading fields %d, %d ...",
                x_min, x_max, y_min, y_max, z_min, z_max,
@@ -818,10 +818,10 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost1 = ghost1_cells.get_accessor<AccessorGeneric>(field_read1);
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost2 = ghost2_cells.get_accessor<AccessorGeneric>(field_read2);
 
-  for (unsigned x = x_min; x < x_max; x++) {
-    for (unsigned y = y_min; y < y_max; y++) {
-      for (unsigned z = z_min; z < z_max; z++) {
-        unsigned c = cell_id(x, y, z, nx, ny, nz);
+  for (int x = x_min; x < x_max; x++) {
+    for (int y = y_min; y < y_max; y++) {
+      for (int z = z_min; z < z_max; z++) {
+        int c = cell_id(x, y, z, nx, ny, nz);
         assert(fabs(write.read(ptr_t<double>(c)) - 1.2345678*c*field_write) < 0.000001);
         assert(fabs(read1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
         assert(fabs(read2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
@@ -830,51 +830,51 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   }
 
   if (dim == DIM_X) {
-    for (unsigned x = x_min; x < x_max; x++) {
-      for (unsigned z = z_min; z < z_max; z++) {
-        unsigned y = dir == DIR_POS ? y_max : y_min - 1;
-        unsigned c = cell_id(x, y, z, nx, ny, nz);
+    for (int x = x_min; x < x_max; x++) {
+      for (int z = z_min; z < z_max; z++) {
+        int y = dir == DIR_POS ? y_max : y_min - 1;
+        int c = cell_id(x, y, z, nx, ny, nz);
         assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
       }
     }
-    for (unsigned x = x_min; x < x_max; x++) {
-      for (unsigned y = y_min; y < y_max; y++) {
-        unsigned z = dir == DIR_POS ? z_max : z_min - 1;
-        unsigned c = cell_id(x, y, z, nx, ny, nz);
+    for (int x = x_min; x < x_max; x++) {
+      for (int y = y_min; y < y_max; y++) {
+        int z = dir == DIR_POS ? z_max : z_min - 1;
+        int c = cell_id(x, y, z, nx, ny, nz);
         assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
       }
     }
   }
 
   if (dim == DIM_Y) {
-    for (unsigned x = x_min; x < x_max; x++) {
-      for (unsigned y = y_min; y < y_max; y++) {
-        unsigned z = dir == DIR_POS ? z_max : z_min - 1;
-        unsigned c = cell_id(x, y, z, nx, ny, nz);
+    for (int x = x_min; x < x_max; x++) {
+      for (int y = y_min; y < y_max; y++) {
+        int z = dir == DIR_POS ? z_max : z_min - 1;
+        int c = cell_id(x, y, z, nx, ny, nz);
         assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
       }
     }
-    for (unsigned y = y_min; y < y_max; y++) {
-      for (unsigned z = z_min; z < z_max; z++) {
-        unsigned x = dir == DIR_POS ? x_max : x_min - 1;
-        unsigned c = cell_id(x, y, z, nx, ny, nz);
+    for (int y = y_min; y < y_max; y++) {
+      for (int z = z_min; z < z_max; z++) {
+        int x = dir == DIR_POS ? x_max : x_min - 1;
+        int c = cell_id(x, y, z, nx, ny, nz);
         assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
       }
     }
   }
 
   if (dim == DIM_Z) {
-    for (unsigned y = y_min; y < y_max; y++) {
-      for (unsigned z = z_min; z < z_max; z++) {
-        unsigned x = dir == DIR_POS ? x_max : x_min - 1;
-        unsigned c = cell_id(x, y, z, nx, ny, nz);
+    for (int y = y_min; y < y_max; y++) {
+      for (int z = z_min; z < z_max; z++) {
+        int x = dir == DIR_POS ? x_max : x_min - 1;
+        int c = cell_id(x, y, z, nx, ny, nz);
         assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
       }
     }
-    for (unsigned x = x_min; x < x_max; x++) {
-      for (unsigned z = z_min; z < z_max; z++) {
-        unsigned y = dir == DIR_POS ? y_max : y_min - 1;
-        unsigned c = cell_id(x, y, z, nx, ny, nz);
+    for (int x = x_min; x < x_max; x++) {
+      for (int z = z_min; z < z_max; z++) {
+        int y = dir == DIR_POS ? y_max : y_min - 1;
+        int c = cell_id(x, y, z, nx, ny, nz);
         assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
       }
     }
@@ -891,8 +891,8 @@ int main(int argc, char **argv) {
   HighLevelRuntime::set_top_level_task_id(TOP_LEVEL_TASK);
   HighLevelRuntime::register_single_task<top_level_task>(TOP_LEVEL_TASK, Processor::LOC_PROC, false, "top_level_task");
   HighLevelRuntime::register_single_task<main_task>(MAIN_TASK, Processor::LOC_PROC, false, "main_task");
-  HighLevelRuntime::register_index_task<unsigned, 1, init_task>(INIT_TASK, Processor::LOC_PROC, false, "init_task");
-  HighLevelRuntime::register_index_task<unsigned, 1, step_task>(STEP_TASK, Processor::LOC_PROC, false, "step_task");
+  HighLevelRuntime::register_index_task<int, 1, init_task>(INIT_TASK, Processor::LOC_PROC, false, "init_task");
+  HighLevelRuntime::register_index_task<int, 1, step_task>(STEP_TASK, Processor::LOC_PROC, false, "step_task");
 
   return HighLevelRuntime::start(argc, argv);
 }
