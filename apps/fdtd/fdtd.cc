@@ -195,6 +195,11 @@ static inline int cell_id(int x, int y, int z,
   return (x*(ny + 2) + y)*(nz + 2) + z;
 }
 
+static inline unsigned cell_stride(unsigned x, unsigned y, unsigned z,
+                                   unsigned nx, unsigned ny, unsigned nz) {
+  return cell_id(x, y, z, nx, ny, nz) - cell_id(0, 0, 0, nx, ny, nz);
+}
+
 ////////////////////////////////////////////////////////////////////////
 // This coloring is only used for initialization of the grid
 // contents. In this scheme each block on the outer surface of the
@@ -818,64 +823,30 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost1 = ghost1_cells.get_accessor<AccessorGeneric>(field_read1);
   RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost2 = ghost2_cells.get_accessor<AccessorGeneric>(field_read2);
 
+  // hx[x, y, z] += (ez[x, y + 1, z] - ez[x, y, z]) -
+  //                (ey[x, y, z + 1] - ey[x, y, z])
+  int d = dir == DIR_POS ? 1 : -1;
+  int s1 = 0, s2 = 0;
+  if (dim == DIM_X) {
+    s1 = cell_stride(0, d, 0, nx, ny, nz);
+    s2 = cell_stride(0, 0, d, nx, ny, nz);
+  } else if (dim == DIM_Y) {
+    s1 = cell_stride(0, 0, d, nx, ny, nz);
+    s2 = cell_stride(d, 0, 0, nx, ny, nz);
+  } else if (dim == DIM_Z) {
+    s1 = cell_stride(d, 0, 0, nx, ny, nz);
+    s2 = cell_stride(0, d, 0, nx, ny, nz);
+  } else {
+    assert(0 && "unreachable");
+  }
+
   for (int x = x_min; x < x_max; x++) {
     for (int y = y_min; y < y_max; y++) {
       for (int z = z_min; z < z_max; z++) {
-        int c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(write.read(ptr_t<double>(c)) - 1.2345678*c*field_write) < 0.000001);
-        assert(fabs(read1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
-        assert(fabs(read2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
-      }
-    }
-  }
-
-  if (dim == DIM_X) {
-    for (int x = x_min; x < x_max; x++) {
-      for (int z = z_min; z < z_max; z++) {
-        int y = dir == DIR_POS ? y_max : y_min - 1;
-        int c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
-      }
-    }
-    for (int x = x_min; x < x_max; x++) {
-      for (int y = y_min; y < y_max; y++) {
-        int z = dir == DIR_POS ? z_max : z_min - 1;
-        int c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
-      }
-    }
-  }
-
-  if (dim == DIM_Y) {
-    for (int x = x_min; x < x_max; x++) {
-      for (int y = y_min; y < y_max; y++) {
-        int z = dir == DIR_POS ? z_max : z_min - 1;
-        int c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
-      }
-    }
-    for (int y = y_min; y < y_max; y++) {
-      for (int z = z_min; z < z_max; z++) {
-        int x = dir == DIR_POS ? x_max : x_min - 1;
-        int c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
-      }
-    }
-  }
-
-  if (dim == DIM_Z) {
-    for (int y = y_min; y < y_max; y++) {
-      for (int z = z_min; z < z_max; z++) {
-        int x = dir == DIR_POS ? x_max : x_min - 1;
-        int c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost1.read(ptr_t<double>(c)) - 1.2345678*c*field_read1) < 0.000001);
-      }
-    }
-    for (int x = x_min; x < x_max; x++) {
-      for (int z = z_min; z < z_max; z++) {
-        int y = dir == DIR_POS ? y_max : y_min - 1;
-        int c = cell_id(x, y, z, nx, ny, nz);
-        assert(fabs(ghost2.read(ptr_t<double>(c)) - 1.2345678*c*field_read2) < 0.000001);
+        ptr_t<double> f = cell_id(x, y, z, nx, ny, nz);
+        ptr_t<double> g1 = f + s1, g2 = f + s2;
+        // FIXME (Elliott): Wrong, won't get ghost cells from correct region.
+        write.write(f, write.read(f) + (read1.read(g1) - read1.read(f)) - (read2.read(g2) - read2.read(f)));
       }
     }
   }
