@@ -242,10 +242,10 @@ namespace RegionRuntime {
       virtual void finish_task_unpack(void) = 0;
     public:
       // For returning privileges (stored in create_* lists)
-      void return_privileges(const std::list<IndexSpace> &new_indexes,
-                             const std::list<FieldSpace> &new_fields,
-                             const std::list<LogicalRegion> &new_regions,
-                             const std::list<FieldID> &new_field_ids);
+      void return_privileges(const std::set<IndexSpace> &new_indexes,
+                             const std::set<FieldSpace> &new_fields,
+                             const std::set<LogicalRegion> &new_regions,
+                             const std::map<FieldID,FieldSpace> &new_field_ids);
       bool has_created_index_space(IndexSpace handle) const;
       bool has_created_field_space(FieldSpace handle) const;
       bool has_created_region(LogicalRegion handle) const;
@@ -258,6 +258,10 @@ namespace RegionRuntime {
       size_t compute_privileges_return_size(void);
       void pack_privileges_return(Serializer &rez);
       size_t unpack_privileges_return(Deserializer &derez); // return number of new regions
+    protected:
+      size_t compute_deletions_return_size(void);
+      void pack_deletions_return(Serializer &rez);
+      void unpack_deletions_return(Deserializer &derez);
     protected:
       bool invoke_mapper_locally_mapped(void);
       bool invoke_mapper_stealable(void);
@@ -283,10 +287,14 @@ namespace RegionRuntime {
       friend class MappingOperation;
       friend class DeletionOperation;
       // Keep track of created objects that we have privileges for
-      std::list<IndexSpace> created_index_spaces;
-      std::list<FieldSpace> created_field_spaces;
-      std::list<LogicalRegion> created_regions;
-      std::list<FieldID>    created_fields;
+      std::set<IndexSpace>            created_index_spaces;
+      std::set<FieldSpace>            created_field_spaces;
+      std::set<LogicalRegion>         created_regions;
+      std::map<FieldID,FieldSpace>    created_fields;
+      // Keep track of deletions which have been performed
+      std::vector<LogicalRegion>      deleted_regions; 
+      std::vector<LogicalPartition>   deleted_partitions;
+      std::map<FieldID,FieldSpace>    deleted_fields;
     protected:
       // Any other conditions needed for launching the task
       std::set<Event> launch_preconditions;
@@ -399,6 +407,14 @@ namespace RegionRuntime {
     public:
       const RegionRequirement& get_region_requirement(unsigned idx);
     public:
+      void register_deletion(LogicalRegion handle);
+      void register_deletion(LogicalPartition handle);
+      void register_deletion(const std::map<FieldID,FieldSpace> &fields);
+      void return_deletions(const std::vector<LogicalRegion> &handles);
+      void return_deletions(const std::vector<LogicalPartition> &handles);
+      void return_deletions(const std::map<FieldID,FieldSpace> &fields);
+      void invalidate_matches(LogicalRegion handle, const std::map<FieldID,FieldSpace> &fields);
+    public:
       size_t compute_source_copy_instances_return(void);
       void pack_source_copy_instances_return(Serializer &derez);
       static void unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest, UniqueID uid);
@@ -414,6 +430,7 @@ namespace RegionRuntime {
       void release_source_copy_instances(void);
       void flush_deletions(void);
       void issue_restoring_copies(std::set<Event> &wait_on_events, Event single, Event multi);
+      void invalidate_owned_contexts(void);
     protected:
       unsigned unmapped; // number of regions still unmapped
       std::vector<bool> non_virtual_mapped_region;
@@ -494,6 +511,10 @@ namespace RegionRuntime {
       virtual void remote_start(const void *args, size_t arglen) = 0;
       virtual void remote_children_mapped(const void *args, size_t arglen) = 0;
       virtual void remote_finish(const void *args, size_t arglen) = 0; 
+    public:
+      void return_deletions(const std::vector<LogicalRegion> &region_handles,
+                            const std::vector<LogicalPartition> &partition_handles,
+                            const std::map<FieldID,FieldSpace> &fields);
     protected:
       // New functions for slicing that need to be done for multi-tasks
       bool is_sliced(void);

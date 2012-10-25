@@ -107,6 +107,8 @@ void top_level_task(const void *args, size_t arglen,
   runtime->destroy_logical_region(ctx, main_args.r_x);
   runtime->destroy_logical_region(ctx, main_args.r_y);
   runtime->destroy_logical_region(ctx, main_args.r_z);
+  runtime->destroy_index_space(ctx, main_args.ispace);
+  runtime->destroy_field_space(ctx, main_args.fspace);
 }
 
 void main_task(const void *args, size_t arglen,
@@ -288,6 +290,7 @@ void main_task(const void *args, size_t arglen,
     //runtime->unmap_region(ctx, r_x);
     //runtime->unmap_region(ctx, r_y);
     //runtime->unmap_region(ctx, r_z);
+    runtime->destroy_index_space(ctx, colors); 
   }
 }
 
@@ -766,7 +769,7 @@ void create_mappers(Machine *machine, HighLevelRuntime *runtime,
 #endif
   //runtime->replace_default_mapper(new DebugMapper(machine, runtime, local));
   //runtime->replace_default_mapper(new SequoiaMapper(machine, runtime, local));
-  runtime->replace_default_mapper(new TestMapper(machine, runtime, local));
+  //runtime->replace_default_mapper(new TestMapper(machine, runtime, local));
 }
 
 int main(int argc, char **argv) {

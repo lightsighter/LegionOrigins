@@ -3061,12 +3061,15 @@ namespace RegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 	active = false;
 	num_elmts = 0;
+        // Mike: The High Level Runtime is responsible for deleting instances!
+#if 0
 	for (std::set<RegionInstance>::iterator it = instances.begin();
 		it != instances.end(); it++)
 	{
 		RegionInstance::Impl *instance = Runtime::get_runtime()->get_instance_impl(*it);
 		instance->deactivate();
 	}	
+#endif
 	instances.clear();
 	lock->deactivate();
 	lock = NULL;
