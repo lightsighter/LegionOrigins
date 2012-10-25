@@ -78,6 +78,8 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 
 using namespace RegionRuntime::HighLevel;
 
+typedef RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> Accessor;
+
 RegionRuntime::Logger::Category log_app("app");
 
 ////////////////////////////////////////////////////////////////////////
@@ -116,6 +118,46 @@ enum dir_t {
   DIR_NEG = 1,
   NDIRS = 2, // Must be last entry in enum.
 };
+
+static inline int sign(dir_t dir) {
+  return dir == DIR_POS ? 1 : -1;
+}
+
+////////////////////////////////////////////////////////////////////////
+// 3D vector class. Makes certain code easier to write (e.g. some code
+// can be made invariant with respect to dimension by rotating the
+// coordinate system around the origin).
+////////////////////////////////////////////////////////////////////////
+class vec3 {
+public:
+  vec3(int a, int b, int c) { x[0] = a; x[1] = b; x[2] = c; }
+  int operator[] (int i) { return x[i]; }
+private:
+  int x[3];
+};
+
+const vec3 zero3(0, 0, 0);
+
+////////////////////////////////////////////////////////////////////////
+// Rotates the vector around the origin such that:
+//
+//  rot3(vec3(x, y, z), 0) => vec3(x, y, z)
+//  rot3(vec3(x, y, z), 1) => vec3(y, z, x)
+//  rot3(vec3(x, y, z), 2) => vec3(z, x, y)
+//
+//  rot3(vec3(x, y, z), -1) => vec3(z, x, y)
+//  rot3(vec3(x, y, z), -2) => vec3(y, z, x)
+//
+// Useful for transforming coordinate systems such that the code to
+// handle all cases is effectively the same.
+////////////////////////////////////////////////////////////////////////
+static inline vec3 rot3(vec3 v, int dim) {
+  dim = dim % NDIMS;
+  if (dim < 0) {
+    dim += NDIMS;
+  }
+  return vec3(v[dim], v[(dim + 1)%NDIMS], v[(dim + 2)%NDIMS]);
+}
 
 ////////////////////////////////////////////////////////////////////////
 // Arguments to main_task.
@@ -158,10 +200,10 @@ struct InitGlobalArgs {
 struct StepGlobalArgs {
   StepGlobalArgs(int nx, int ny, int nz, dim_t dim, dir_t dir,
                  FieldID field_write, FieldID field_read1, FieldID field_read2)
-    : nx(nx), ny(ny), nz(nz), dim(dim), dir(dir),
+    : n(nx, ny, nz), dim(dim), dir(dir),
       field_write(field_write), field_read1(field_read1), field_read2(field_read2) {}
   // Number of cells.
-  int nx, ny, nz;
+  vec3 n;
   // Dimension to step.
   dim_t dim;
   // Direction to look for ghost cells.
@@ -174,12 +216,9 @@ struct StepLocalArgs {
   StepLocalArgs(std::pair<int, int> &x_span,
                 std::pair<int, int> &y_span,
                 std::pair<int, int> &z_span)
-    : x_min(x_span.first), x_max(x_span.second),
-      y_min(y_span.first), y_max(y_span.second),
-      z_min(z_span.first), z_max(z_span.second) {}
-  int x_min /* inclusive */, x_max /* exclusive */;
-  int y_min /* inclusive */, y_max /* exclusive */;
-  int z_min /* inclusive */, z_max /* exclusive */;
+    : min(x_span.first, y_span.first, z_span.first),
+      max(x_span.second, y_span.second, z_span.second) {}
+  vec3 min /* inclusive */, max /* exclusive */;
 };
 
 ////////////////////////////////////////////////////////////////////////
@@ -195,9 +234,12 @@ static inline int cell_id(int x, int y, int z,
   return (x*(ny + 2) + y)*(nz + 2) + z;
 }
 
-static inline unsigned cell_stride(unsigned x, unsigned y, unsigned z,
-                                   unsigned nx, unsigned ny, unsigned nz) {
-  return cell_id(x, y, z, nx, ny, nz) - cell_id(0, 0, 0, nx, ny, nz);
+static inline int cell_id(vec3 v, vec3 n) {
+  return cell_id(v[0], v[1], v[2], n[0], n[1], n[2]);
+}
+
+static inline int cell_stride(vec3 v, vec3 n) {
+  return cell_id(v, n) - cell_id(zero3, n);
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -402,16 +444,6 @@ private:
   const int nx, ny, nz;
   const std::vector<std::pair<int, int> > x_divs, y_divs, z_divs;
 };
-
-static inline int find_block_containing(int x, const std::vector<std::pair<int, int> > &divs) {
-  int nb = divs.size();
-  for (int b = 0; b < nb; b++) {
-    if (divs[b].first <= x && x < divs[b].second) {
-      return b;
-    }
-  }
-  return -1;
-}
 
 template <typename T>
 static inline std::set<T> as_set(std::vector<T> &v) {
@@ -778,10 +810,20 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
   while (enabled->get_next(position, length)) {
     for (int index = position; index < position + length; index++) {
       for (int field = 0; field < NDIMS*2; field++) {
-        accessor[field].write(ptr_t<double>(index), 1.2345678*index*fields[field]); // FIXME (Elliott): Debugging
+        accessor[field].write(ptr_t<double>(index), 0.0);
       }
     }
   }
+}
+
+static inline bool is_boundary(dir_t dir, int x, int x_min, int x_max) {
+  if (dir == DIR_POS && x >= x_max) {
+    return true;
+  }
+  if (dir == DIR_NEG && x < x_min) {
+    return true;
+  }
+  return false;
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -795,7 +837,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
                Context ctx, HighLevelRuntime *runtime) {
   assert(input_global_args && input_global_arglen == sizeof(StepGlobalArgs));
   StepGlobalArgs &global_args = *(StepGlobalArgs *)input_global_args;
-  int &nx = global_args.nx, &ny = global_args.ny, &nz = global_args.nz;
+  vec3 &n = global_args.n;
   dim_t &dim = global_args.dim;
   dir_t &dir = global_args.dir;
   FieldID &field_write = global_args.field_write;
@@ -804,12 +846,10 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
 
   assert(input_local_args && input_local_arglen == sizeof(StepLocalArgs));
   StepLocalArgs &local_args = *(StepLocalArgs *)input_local_args;
-  int &x_min = local_args.x_min, &x_max = local_args.x_max;
-  int &y_min = local_args.y_min, &y_max = local_args.y_max;
-  int &z_min = local_args.z_min, &z_max = local_args.z_max;
+  vec3 &min = local_args.min, &max = local_args.max;
 
   log_app.info("In step_task cells %d..%d x %d..%d x %d..%d writing field %d reading fields %d, %d ...",
-               x_min, x_max, y_min, y_max, z_min, z_max,
+               min[0], max[0], min[1], max[1], min[2], max[2],
                field_write, field_read1, field_read2);
 
   PhysicalRegion write_cells = regions[0];
@@ -817,36 +857,31 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   PhysicalRegion ghost1_cells = regions[2];
   PhysicalRegion ghost2_cells = regions[3];
 
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> write = write_cells.get_accessor<AccessorGeneric>(field_write);
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read1 = read_cells.get_accessor<AccessorGeneric>(field_read1);
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> read2 = read_cells.get_accessor<AccessorGeneric>(field_read2);
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost1 = ghost1_cells.get_accessor<AccessorGeneric>(field_read1);
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> ghost2 = ghost2_cells.get_accessor<AccessorGeneric>(field_read2);
+  Accessor write = write_cells.get_accessor<AccessorGeneric>(field_write);
+  Accessor read1 = read_cells.get_accessor<AccessorGeneric>(field_read1);
+  Accessor read2 = read_cells.get_accessor<AccessorGeneric>(field_read2);
+  Accessor ghost1 = ghost1_cells.get_accessor<AccessorGeneric>(field_read1);
+  Accessor ghost2 = ghost2_cells.get_accessor<AccessorGeneric>(field_read2);
 
-  // hx[x, y, z] += (ez[x, y + 1, z] - ez[x, y, z]) -
-  //                (ey[x, y, z + 1] - ey[x, y, z])
-  int d = dir == DIR_POS ? 1 : -1;
-  int s1 = 0, s2 = 0;
-  if (dim == DIM_X) {
-    s1 = cell_stride(0, d, 0, nx, ny, nz);
-    s2 = cell_stride(0, 0, d, nx, ny, nz);
-  } else if (dim == DIM_Y) {
-    s1 = cell_stride(0, 0, d, nx, ny, nz);
-    s2 = cell_stride(d, 0, 0, nx, ny, nz);
-  } else if (dim == DIM_Z) {
-    s1 = cell_stride(d, 0, 0, nx, ny, nz);
-    s2 = cell_stride(0, d, 0, nx, ny, nz);
-  } else {
-    assert(0 && "unreachable");
-  }
+  int d = sign(dir);
+  int s1 = cell_stride(rot3(vec3(0, d, 0), dim), n);
+  int s2 = cell_stride(rot3(vec3(0, 0, d), dim), n);
 
-  for (int x = x_min; x < x_max; x++) {
-    for (int y = y_min; y < y_max; y++) {
-      for (int z = z_min; z < z_max; z++) {
-        ptr_t<double> f = cell_id(x, y, z, nx, ny, nz);
-        ptr_t<double> g1 = f + s1, g2 = f + s2;
-        // FIXME (Elliott): Wrong, won't get ghost cells from correct region.
-        write.write(f, write.read(f) + (read1.read(g1) - read1.read(f)) - (read2.read(g2) - read2.read(f)));
+  // Rotate the coordinate system so that we can do region checks on
+  // the two outer loops.
+  vec3 rmin = rot3(min, dim + 1);
+  vec3 rmax = rot3(max, dim + 1);
+  Accessor &f = write;
+  for (int x = rmin[0]; x < rmax[0]; x++) {
+    Accessor &g1a = is_boundary(dir, x, rmin[0], rmax[0]) ? ghost1 : read1;
+    Accessor &g1b = is_boundary(dir, x + d, rmin[0], rmax[0]) ? ghost1 : read1;
+    for (int y = rmin[1]; y < rmax[1]; y++) {
+      Accessor &g2a = is_boundary(dir, y, rmin[1], rmax[1]) ? ghost2 : read2;
+      Accessor &g2b = is_boundary(dir, y + d, rmin[1], rmax[1]) ? ghost2 : read2;
+      for (int z = rmin[2]; z < rmax[2]; z++) {
+        vec3 v = rot3(vec3(x, y, z), -(dim + 1));
+        ptr_t<double> i = cell_id(v, n);
+        f.write(i, f.read(i) + (g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
       }
     }
   }
