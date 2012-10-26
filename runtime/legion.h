@@ -1156,7 +1156,7 @@ namespace RegionRuntime {
         // In case they fail
         void requeue_op(GeneralizedOperation *op);
         void requeue_task(TaskContext *task);
-      private:
+      public:
         // Keep track of whether this queue has something executing or not
         bool eligible;
         std::list<std::pair<GeneralizedOperation*,bool/*is task*/> > order_queue;
@@ -1164,6 +1164,9 @@ namespace RegionRuntime {
       std::map<Context,InorderQueue*> inorder_queues;
       // For slice and point tasks
       std::vector<TaskContext*> drain_queue;
+#ifdef DEBUG_HIGH_LEVEL
+      void dump_inorder_queues(void);
+#endif
 #endif // INORDER_EXECUTION
     private:
       // Keep track of how to do partition numbering

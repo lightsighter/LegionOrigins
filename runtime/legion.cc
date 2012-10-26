@@ -2788,6 +2788,21 @@ namespace RegionRuntime {
     {
       order_queue.push_front(std::pair<GeneralizedOperation*,bool>(task,true));
     }
+
+#ifdef DEBUG_HIGH_LEVEL
+    //--------------------------------------------------------------------------
+    void HighLevelRuntime::dump_inorder_queues(void)
+    //--------------------------------------------------------------------------
+    {
+      printf("Inorder Queues: %ld\n",inorder_queues.size());
+      for (std::map<Context,InorderQueue*>::const_iterator it = inorder_queues.begin();
+            it != inorder_queues.end(); it++)
+      {
+        printf("Queue for task %s has state %d and size %ld\n",
+                it->first->variants->name, it->second->eligible, it->second->order_queue.size());
+      }
+    }
+#endif
 #endif // INORDER_EXECUTION
 
     /////////////////////////////////////////////////////////////
@@ -3281,7 +3296,7 @@ namespace RegionRuntime {
           if (!strcmp(argv[i],"-hl:inorder"))
           {
             log_run(LEVEL_WARNING,"WARNING: Inorder execution is disabled.  To enable inorder execution compile with "
-                            " the -DINORDER_EXECUTION flag.");
+                            "the -DINORDER_EXECUTION flag.");
           }
 #endif
           INT_ARG("-hl:sched", max_tasks_per_schedule_request);
@@ -3292,7 +3307,7 @@ namespace RegionRuntime {
           if (!strcmp(argv[i],"-hl:tree"))
           {
             log_run(LEVEL_WARNING,"WARNING: Region tree state logging is disabled.  To enable region tree state logging "
-                              " compile in debug mode.");
+                              "compile in debug mode.");
           }
 #endif
         }

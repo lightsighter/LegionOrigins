@@ -488,7 +488,9 @@ namespace RegionRuntime {
       source_copy_instances.clear();
 
       deactivate_base();
+#ifndef INORDER_EXECUTION
       Context parent = parent_ctx;
+#endif
       parent_ctx = NULL;
       mapper = NULL;
 #ifdef LOW_LEVEL_LOCKS
@@ -498,7 +500,9 @@ namespace RegionRuntime {
 #endif
       tag = 0;
       map_dependent_waiters.clear();
+#ifndef INORDER_EXECUTION
       runtime->notify_operation_complete(parent);
+#endif
       runtime->free_mapping(this);
     }
 
@@ -638,6 +642,9 @@ namespace RegionRuntime {
           (*it)->notify();
         }
         map_dependent_waiters.clear();
+#ifdef INORDER_EXECUTION
+        runtime->notify_operation_complete(parent_ctx);
+#endif
       }
       else
       {
@@ -979,46 +986,12 @@ namespace RegionRuntime {
       lock_context();
       // Lock to test if the operation has been performed yet 
       lock();
+      Context parent = parent_ctx; // copy this while holding the lock
       if (!performed)
       {
-        switch (handle_tag)
-        {
-          case DESTROY_INDEX_SPACE:
-            {
-              parent_ctx->destroy_index_space(index.space);
-              break;
-            }
-          case DESTROY_INDEX_PARTITION:
-            {
-              parent_ctx->destroy_index_partition(index.partition);
-              break;
-            }
-          case DESTROY_FIELD_SPACE:
-            {
-              parent_ctx->destroy_field_space(field_space);
-              break;
-            }
-          case DESTROY_FIELD:
-            {
-              parent_ctx->free_fields(field_space, free_fields);
-              break;
-            }
-          case DESTROY_REGION:
-            {
-              parent_ctx->destroy_region(region);
-              break;
-            }
-          case DESTROY_PARTITION:
-            {
-              parent_ctx->destroy_partition(partition);
-              break;
-            }
-          default:
-            assert(false); // should never get here
-        }
+        perform_internal();
         // Mark that this has been performed and unlock
         performed = true;
-        Context parent = parent_ctx; // copy this while holding the lock
         unlock();
         unlock_context();
         runtime->notify_operation_complete(parent);
@@ -1027,6 +1000,9 @@ namespace RegionRuntime {
       {
         unlock();
         unlock_context();
+#ifdef INORDER_EXECUTION
+        runtime->notify_operation_complete(parent);
+#endif
         // The deletion was already performed, so we can now deactivate the operation 
         deactivate();
       }
@@ -1040,6 +1016,82 @@ namespace RegionRuntime {
     {
       // Enqueue this operation with the runtime
       runtime->add_to_ready_queue(this);
+    }
+
+    //--------------------------------------------------------------------------
+    bool DeletionOperation::flush(void)
+    //--------------------------------------------------------------------------
+    {
+      // Looks very similar to the one above, except in the INORDER_EXECUTION case
+      // we don't notify that the operation is complete
+      lock_context();
+      // Lock to test if the operation has been performed yet 
+      lock();
+      if (!performed)
+      {
+        perform_internal();
+#ifndef INORDER_EXECUTION
+        Context parent = parent_ctx; // copy this while holding the lock
+#endif
+        // Mark that this has been performed and unlock
+        performed = true;
+        unlock();
+        unlock_context();
+#ifndef INORDER_EXECUTION
+        runtime->notify_operation_complete(parent);
+#endif
+      }
+      else
+      {
+        unlock();
+        unlock_context();
+        // The deletion was already performed, so we can now deactivate the operation 
+        deactivate();
+      }
+      // Deletion operations never fail
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOperation::perform_internal(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should be holding the lock
+      switch (handle_tag)
+      {
+        case DESTROY_INDEX_SPACE:
+          {
+            parent_ctx->destroy_index_space(index.space);
+            break;
+          }
+        case DESTROY_INDEX_PARTITION:
+          {
+            parent_ctx->destroy_index_partition(index.partition);
+            break;
+          }
+        case DESTROY_FIELD_SPACE:
+          {
+            parent_ctx->destroy_field_space(field_space);
+            break;
+          }
+        case DESTROY_FIELD:
+          {
+            parent_ctx->free_fields(field_space, free_fields);
+            break;
+          }
+        case DESTROY_REGION:
+          {
+            parent_ctx->destroy_region(region);
+            break;
+          }
+        case DESTROY_PARTITION:
+          {
+            parent_ctx->destroy_partition(partition);
+            break;
+          }
+        default:
+          assert(false); // should never get here
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -3403,7 +3455,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         bool result = 
 #endif
-        (*it)->perform_operation();
+        (*it)->flush();
 #ifdef DEBUG_HIGH_LEVEL
         assert(result);
 #endif

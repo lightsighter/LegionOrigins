@@ -155,6 +155,10 @@ namespace RegionRuntime {
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void);
       virtual void trigger(void);
+    public:
+      bool flush(void);
+    private:
+      void perform_internal(void);
     private:
       enum DeletionKind {
         DESTROY_INDEX_SPACE,
