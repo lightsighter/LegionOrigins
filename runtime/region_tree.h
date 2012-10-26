@@ -175,12 +175,6 @@ namespace RegionRuntime {
                                             , const char *task_name
 #endif
                                           );
-#if 0
-    public:
-      size_t compute_created_state_return(ContextID ctx);
-      void pack_created_state_return(ContextID ctx, Serializer &rez);
-      void unpack_created_state_return(ContextID ctx, Deserializer &derez);
-#endif
     public:
       // Packing and unpacking leaked references
       size_t compute_leaked_return_size(void);
