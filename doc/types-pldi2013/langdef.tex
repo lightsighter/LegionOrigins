@@ -1147,6 +1147,9 @@ $$
 \vspace{-5mm}
 \end{figure*}
 
+\subsection{Serial Execution}
+\label{subsec:coherenceserial}
+
 Although it is our goal to enable parallel execution whenever possible, it will help to briefly
 consider serialized execution of a Legion program.  We will show that a serial execution trivially
 satisfies the interleaving criteria required by the Legion operational semantics.  In addition to
@@ -1176,6 +1179,72 @@ $M, L, H, S_{i-1},\linebreak C \vdash e_i \mapsto v_i, E_i$,
 where $S_i = apply(S_{i-1}, E_i)$.  If $E' = E_1 \dplus \ldots \dplus E_n$, then
 $valid\_interleave(S_0, C, E', \oton{E})$.
 \end{thm}
+
+\subsection{Parallel Execution}
+\label{subsec:coherenceparallel}
+
+To determine when parallel execution is safe, we start from the serial execution trace and allow the reordering of 
+adjacent heap operations that do not change the behavior of the application.  If we can show that reordering is allowed
+between any two operations that come from different constituent traces, any interleaving of the constituent traces will
+be equivalent to the serialized execution and parallel execution was safe.  Finally, to allow the safety of parallel
+execution to be determined {\em before} the execution is actually performed, we show that a test based on the subtask
+privileges and the current region mapping can soundly predict when this property will hold.
+
+We define a {\em non-interference} operator $\epsilon_1 \nonint \epsilon_2$ on two memory operations as follows:
+$$
+\begin{array}{l@{ }l}
+op_1(l_1, c_1,& v_1)\ \nonint\ op_2(l_2, c_2, v_2) \Leftrightarrow l_1 \not= l_2 \vee \\
+& (op_1 = read \wedge op_2 = read)\ \vee \\
+& (op_1 = reduce_{id_1} \wedge op_2 = reduce_{id_2} \wedge id_1 = id_2)
+\end{array}
+$$
+Accesses to different locations cannot effect each other, and reads have no side-effects.  The safety of the third case
+follows from the requirement that reduction operations be commutative.  
+
+The next step is to show that this non-interference operator is strong enough to preserve the validity of an interleaving
+of two or more traces when reordering a pair of memory operations.
+\begin{lem}
+\label{lem:nonintswap}
+\rm
+Let $S$ be a store, $C$ a clobber set, $\oton{E}, E'_a, E'_b$ memory traces, and
+$\epsilon_1, \epsilon_2$ be two memory operations from $E_i$ and $E_j$ ($i \not= j$).  Then,
+$$\begin{array}{l@{}l}
+valid\_interleave&(S, C, E'_a \dplus [ \epsilon_1, \epsilon_2 ] \dplus E'_b, \oton{E}) \wedge \epsilon_1 \nonint \epsilon_2 \Rightarrow \\
+ & valid\_interleave(S, C, E'_a \dplus [ \epsilon_2, \epsilon_1 ] \dplus E'_b, \oton{E}).
+\end{array}$$
+\end{lem}
+The proof follows from the definitions of {\em coherent} and {\em seq\_equiv} in Figure~\ref{fig:validinterleave}.
+
+We now extend the notion of non-interference to whole memory traces, with two traces being non-interfering if no operation from one
+trace interferes with any operation from the other:
+$$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
+
+If whole memory traces are non-interfering, then any interleaving of them can be sorted via pairwise swaps to match the serial memory
+trace and we get the result that shows parallel execution is safe:
+
+\begin{lem}
+\label{lem:noninteffects}
+\rm
+Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces such that $E_i \nonint E_j$
+for every $1 \leq i < j \leq n$.  Then,
+$any\_interleave(E', \oton{E}) \Rightarrow$ \\
+\hspace*{0pt} \hfill $valid\_interleave(S, C, E', \oton{E})$.
+\end{lem}
+
+The final piece is to turn this test into something that can be performed before the subtasks are executed, ideally as efficiently as
+possible.  The key to this is the privileges on Legion tasks and their ability to provide bounds on the accesses that may be performed
+during execution.  Our non-interference operator is extended to work on privileges and sets of privileges:
+$
+\begin{array}{l@{}l}
+\multicolumn{2}{l}{priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow} \\
+& (priv_1 = reads \wedge priv_2 = reads)\ \vee \\
+& (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)\ \vee \\
+& (r_1 * r_2)\ \vee \\
+& (M(r_1) \cap M(r_2) = \emptyset) \\
+\\
+\multicolumn{2}{l}{\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2}
+\end{array}$
+Note although the
 
 CURRENT EDIT POINT
 
