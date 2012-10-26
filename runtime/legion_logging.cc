@@ -237,6 +237,31 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void TreeStateLogger::capture_state(HighLevelRuntime *rt, LogicalRegion handle, const char *task_name,
+                                        RegionNode *node, ContextID ctx, bool pack, unsigned shift)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (HighLevelRuntime::logging_region_tree_state)
+      {
+        TreeStateLogger *logger = rt->get_tree_state_logger();
+        assert(logger != NULL);
+
+        if (pack)
+          logger->start_block("PACK RETURN OF CREATED STATE for REGION (%x,%d,%d) of task %s in context %d",
+              handle.index_space.id, handle.field_space.id, handle.tree_id, task_name, ctx);
+        else
+          logger->start_block("UNPACK RETURN OF CREATED STATE for REGION (%x,%d,%d) of task %s in context %d with shift %d",
+              handle.index_space.id, handle.field_space.id, handle.tree_id, task_name, ctx, shift);
+
+        node->print_physical_context(ctx, logger);
+
+        logger->finish_block();
+      }
+#endif
+    }
+
+    //--------------------------------------------------------------------------
     void TreeStateLogger::println(const char *fmt, va_list args)
     //--------------------------------------------------------------------------
     {

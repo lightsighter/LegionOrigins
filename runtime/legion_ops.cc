@@ -1431,7 +1431,14 @@ namespace RegionRuntime {
       created_index_spaces.insert(new_indexes.begin(),new_indexes.end());
       created_field_spaces.insert(new_fields.begin(),new_fields.end());
       created_regions.insert(new_regions.begin(),new_regions.end());
-      created_fields.insert(new_field_ids.begin(),new_field_ids.end());
+      // For the return fields, if they are in a field space we created
+      // we no longer need to track them as uniquely created fields
+      for (std::map<FieldID,FieldSpace>::const_iterator it = new_field_ids.begin();
+            it != new_field_ids.end(); it++)
+      {
+        if (created_field_spaces.find(it->second) == created_field_spaces.end())
+          created_fields.insert(*it);
+      }
       unlock();
     }
 
@@ -1691,8 +1698,10 @@ namespace RegionRuntime {
       size_t result = 0;
       result += sizeof(size_t); // number of regions
       result += sizeof(size_t); // number of partitions
+      result += sizeof(size_t); // number of fields
       result += (deleted_regions.size() * sizeof(LogicalRegion));
       result += (deleted_partitions.size() * sizeof(LogicalPartition));
+      result += (deleted_fields.size() * (sizeof(FieldID) + sizeof(FieldSpace)));
       return result;
     }
 
@@ -1712,6 +1721,13 @@ namespace RegionRuntime {
       {
         rez.serialize(*it);
       }
+      rez.serialize(deleted_fields.size());
+      for (std::map<FieldID,FieldSpace>::const_iterator it = deleted_fields.begin();
+            it != deleted_fields.end(); it++)
+      {
+        rez.serialize(it->first);
+        rez.serialize(it->second);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -1727,7 +1743,13 @@ namespace RegionRuntime {
       {
         LogicalRegion handle;
         derez.deserialize(handle);
-        deleted_regions.push_back(handle);
+        std::set<LogicalRegion>::iterator finder = created_regions.find(handle);
+        // Check to see if we created it, if so just remove it from this list
+        // of created regions
+        if (finder != created_regions.end())
+          created_regions.erase(finder);
+        else
+          deleted_regions.push_back(handle);
       }
       size_t num_partitions;
       derez.deserialize(num_partitions);
@@ -1737,7 +1759,20 @@ namespace RegionRuntime {
         derez.deserialize(handle);
         deleted_partitions.push_back(handle);
       }
-
+      size_t num_fields;
+      derez.deserialize(num_fields);
+      for (unsigned idx = 0; idx < num_fields; idx++)
+      {
+        FieldID fid;
+        derez.deserialize(fid);
+        FieldSpace space;
+        derez.deserialize(space);
+        std::map<FieldID,FieldSpace>::iterator finder = deleted_fields.find(fid);
+        if (finder != deleted_fields.end())
+          deleted_fields.erase(finder);
+        else
+          deleted_fields[fid] = space;
+      }
       unlock();
     }
 
@@ -2157,6 +2192,22 @@ namespace RegionRuntime {
       // Also check to see if this is one of the field spaces we created
       lock();
       created_field_spaces.erase(space);
+      // Also go through and see if there were any created fields that we had
+      // for this field space that we can now also destroy
+      {
+        std::vector<FieldID> to_delete;
+        for (std::map<FieldID,FieldSpace>::const_iterator it = created_fields.begin();
+              it != created_fields.end(); it++)
+        {
+          if (it->second == space)
+            to_delete.push_back(it->first);
+        }
+        for (std::vector<FieldID>::const_iterator it = to_delete.begin();
+              it != to_delete.end(); it++)
+        {
+          created_fields.erase(*it);
+        }
+      }
       unlock();
       for (std::vector<LogicalRegion>::const_iterator it = new_deletions.begin();
             it != new_deletions.end(); it++)
@@ -2229,7 +2280,7 @@ namespace RegionRuntime {
       }
 #endif
       lock_context();
-      forest_ctx->create_region(handle);
+      forest_ctx->create_region(handle, find_outermost_physical_context());
       unlock_context();
       // Add this to the list of our created regions
       lock();
@@ -2794,6 +2845,212 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    void SingleTask::return_created_field_contexts(SingleTask *enclosing)
+    //--------------------------------------------------------------------------
+    {
+      // go through all of our pre-existing regions and find ones which have newly
+      // created field states
+      std::vector<FieldID> new_fields;
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(regions[idx].handle_type == SINGULAR);
+#endif
+        // Only need to do this if it was not virtual mapped
+        if (non_virtual_mapped_region[idx])
+        {
+          FieldSpace space = regions[idx].region.field_space;
+          for (std::map<FieldID,FieldSpace>::const_iterator it = created_fields.begin();
+                it != created_fields.end(); it++)
+          {
+            if (it->second == space)
+              new_fields.push_back(it->first);
+          }
+          // See if we have anything to return
+          if (!new_fields.empty())
+          {
+            lock_context();
+            enclosing->return_field_context(regions[idx].region, ctx_id/*our context*/,
+                                            new_fields);
+            // Now we can invalidate the new fields in our context
+            forest_ctx->invalidate_physical_context(regions[idx], new_fields, 
+                                                    physical_contexts[idx], true/*added only*/);
+            unlock_context();
+            new_fields.clear();
+          }
+        }
+      }
+    }
+    
+    //--------------------------------------------------------------------------
+    void SingleTask::return_field_context(LogicalRegion handle, ContextID inner_ctx,
+                                          const std::vector<FieldID> &fields)
+    //--------------------------------------------------------------------------
+    {
+      // Go through our pre-existing regions, either ones we had or ones we
+      // created and unpack the field state into the right context, note
+      // the context better already exist.  There's no reason it shouldn't
+      // other than a bug.
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        // Just need to find a region in the same tree for which we know the context
+        if (regions[idx].region.tree_id == handle.tree_id)
+        {
+          forest_ctx->merge_field_context(handle, physical_contexts[idx], inner_ctx, fields); 
+          return;
+        }
+      }
+      // Otherwise just assume that it is a created region and return it
+      ContextID phy_ctx = find_outermost_physical_context();
+      forest_ctx->merge_field_context(handle, phy_ctx, inner_ctx, fields);
+    }
+
+    //--------------------------------------------------------------------------
+    size_t SingleTask::compute_return_created_contexts(void)
+    //--------------------------------------------------------------------------
+    {
+      size_t result = 0;
+      // Go through the pre-existing trees and see if they have any fields
+      // that need to be packed up.  Note we need to do this regardless
+      // of whether it was virtual mapped or not since even the virtual
+      // mapping ones need to be passed back.
+      result += (2*sizeof(size_t)); // number of returning tree instances + number of returning new contexts
+      std::vector<FieldID> new_fields;
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(regions[idx].handle_type == SINGULAR);
+#endif
+        FieldSpace space = regions[idx].region.field_space; 
+        for (std::map<FieldID,FieldSpace>::const_iterator it = created_fields.begin();
+              it != created_fields.end(); it++)
+        {
+          if (it->second == space)
+            new_fields.push_back(it->first);
+        }
+        if (!new_fields.empty())
+        {
+          need_pack_created_fields[idx] = new_fields;
+#ifdef DEBUG_HIGH_LEVEL
+          assert(physical_contexts[idx] == ctx_id);
+#endif
+          result += sizeof(regions[idx].region);
+          result += forest_ctx->compute_created_field_state_return(regions[idx].region,
+                               new_fields, ctx_id/*should always be our context*/ 
+#ifdef DEBUG_HIGH_LEVEL
+                                , this->variants->name
+#endif
+                                );
+        }
+      }
+      // Now pack up any of the created region tree contexts
+      for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
+            it != created_regions.end(); it++)
+      {
+        result += sizeof(*it); 
+        result += forest_ctx->compute_created_state_return(*it, ctx_id
+#ifdef DEBUG_HIGH_LEVEL
+                                    , this->variants->name
+#endif
+                                    );
+      }
+      return result;
+    }
+    
+    //--------------------------------------------------------------------------
+    void SingleTask::pack_return_created_contexts(Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize(need_pack_created_fields.size());
+      rez.serialize(created_regions.size());
+      if (!need_pack_created_fields.empty())
+      {
+        for (std::map<unsigned, std::vector<FieldID> >::const_iterator it = need_pack_created_fields.begin();
+              it != need_pack_created_fields.end(); it++)
+        {
+          rez.serialize(regions[it->first].region);
+          // Recall that the act of packing return will automatically invalidate
+          // these instances so we don't need to do it manually.
+          forest_ctx->pack_created_field_state_return(regions[it->first].region,
+                                              it->second, ctx_id, rez);
+        }
+        for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
+              it != created_regions.end(); it++)
+        {
+          rez.serialize(*it);
+          forest_ctx->pack_created_state_return(*it, ctx_id, rez);
+        }
+        need_pack_created_fields.clear();
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void SingleTask::unpack_return_created_contexts(Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t num_returning_field_contexts; 
+      derez.deserialize(num_returning_field_contexts);
+      size_t num_returning_new_contexts;
+      derez.deserialize(num_returning_new_contexts);
+      if ((num_returning_field_contexts > 0) || (num_returning_new_contexts > 0))
+      {
+        ContextID outermost_ctx = find_outermost_physical_context();
+        for (unsigned idx = 0; idx < num_returning_field_contexts; idx++)
+        {
+          // Unpack the logical region handle and find on of our trees
+          // with the same tree id so we can get the context
+          LogicalRegion handle;
+          derez.deserialize(handle);
+          bool found = false;
+          for (unsigned ridx = 0; ridx < regions.size(); ridx++)
+          {
+            if (regions[ridx].region.tree_id == handle.tree_id)
+            {
+              // Get the right context
+              found = true;
+              ContextID phy_ctx = physical_contexts[ridx];
+              forest_ctx->unpack_created_field_state_return(handle, phy_ctx, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                            , this->variants->name
+#endif
+                                                            );
+              break;
+            }
+          }
+          if (found)
+            continue;
+          // Not in a pre-existing tree, try the created trees
+          for (std::set<LogicalRegion>::const_iterator it = created_regions.begin();
+                it != created_regions.end(); it++)
+          {
+            if (it->tree_id == handle.tree_id)
+            {
+              found = true;
+              forest_ctx->unpack_created_field_state_return(handle, outermost_ctx, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                            , this->variants->name
+#endif
+                                                            );
+              break;
+            }
+          }
+          if (!found)
+            assert(false); // should never happen
+        }
+        for (unsigned idx = 0; idx < num_returning_new_contexts; idx++)
+        {
+          LogicalRegion handle;
+          derez.deserialize(handle);
+          forest_ctx->unpack_created_state_return(handle, outermost_ctx, derez
+#ifdef DEBUG_HIGH_LEVEL
+                                                  , this->variants->name
+#endif
+                                                  );
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
     size_t SingleTask::compute_source_copy_instances_return(void)
     //--------------------------------------------------------------------------
     {
@@ -3191,29 +3448,16 @@ namespace RegionRuntime {
       assert(regions.size() == physical_instances.size());
       assert(regions.size() == physical_contexts.size());
 #endif
+      // Only invalidate the contexts which were pre-existing and are not
+      // going to be sent back.  Any created state will get invalidated later.
+      std::vector<FieldID> added_fields;
       lock_context();
       for (unsigned idx = 0; idx < physical_instances.size(); idx++)
       {
-        std::vector<FieldID> added_fields;
-        // Get the set of new fields which we need to invalidate
-#ifdef DEBUG_HIGH_LEVEL
+ #ifdef DEBUG_HIGH_LEVEL
         assert(regions[idx].handle_type == SINGULAR);
-#endif
-        FieldSpace target = regions[idx].region.field_space;
-        for (std::map<FieldID,FieldSpace>::const_iterator it = created_fields.begin();
-              it != created_fields.end(); it++)
-        {
-          if (it->second == target)
-            added_fields.push_back(it->first);
-        }
-        if (physical_instances[idx].is_virtual_ref())
-        {
-          if (!added_fields.empty())
-          {
-            forest_ctx->invalidate_physical_context(regions[idx], added_fields, physical_contexts[idx], true/*added only*/);
-          }
-        }
-        else
+#endif       
+        if (non_virtual_mapped_region[idx])
         {
           forest_ctx->invalidate_physical_context(regions[idx], added_fields, physical_contexts[idx], false/*added only*/);
         }
@@ -3797,7 +4041,7 @@ namespace RegionRuntime {
                                               );
             }
           }
-          buffer_size += forest_ctx->post_compute_region_tree_state_return();
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(false/*created only*/);
           // Now pack everything up and send it back
           Serializer rez(buffer_size);
           rez.serialize<Processor>(orig_proc);
@@ -3807,7 +4051,7 @@ namespace RegionRuntime {
           {
             rez.serialize<bool>(non_virtual_mapped_region[idx]);
           }
-          forest_ctx->begin_pack_region_tree_state_return(rez);
+          forest_ctx->begin_pack_region_tree_state_return(rez, false/*created only*/);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (non_virtual_mapped_region[idx])
@@ -3816,7 +4060,7 @@ namespace RegionRuntime {
                 IS_WRITE(regions[idx]), RegionTreeForest::PHYSICAL, rez);
             }
           }
-          forest_ctx->end_pack_region_tree_state_return(rez);
+          forest_ctx->end_pack_region_tree_state_return(rez, false/*created only*/);
           unlock_context();
           // Now send it back on the utility processor
           Processor utility = orig_proc.get_utility_processor();
@@ -4254,7 +4498,7 @@ namespace RegionRuntime {
                                                 );
             }
           }
-          buffer_size += forest_ctx->post_compute_region_tree_state_return();
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(false/*created only*/);
           // Finally pack up our source copy instances to send back
           buffer_size += compute_source_copy_instances_return();
           // Now pack it all up
@@ -4262,7 +4506,7 @@ namespace RegionRuntime {
           rez.serialize<Processor>(orig_proc);
           rez.serialize<Context>(orig_ctx);
           forest_ctx->pack_region_tree_updates_return(rez);
-          forest_ctx->begin_pack_region_tree_state_return(rez);
+          forest_ctx->begin_pack_region_tree_state_return(rez, false/*created only*/);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (!non_virtual_mapped_region[idx])
@@ -4276,7 +4520,7 @@ namespace RegionRuntime {
                 IS_WRITE(regions[idx]), RegionTreeForest::DIFF, rez);
             }
           }
-          forest_ctx->end_pack_region_tree_state_return(rez);
+          forest_ctx->end_pack_region_tree_state_return(rez, false/*created only*/);
           // Pack up the source copy instances
           pack_source_copy_instances_return(rez);
           unlock_context();
@@ -4358,7 +4602,8 @@ namespace RegionRuntime {
           buffer_size += compute_privileges_return_size();
           buffer_size += compute_deletions_return_size();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
-          buffer_size += forest_ctx->compute_created_state_return(ctx_id);
+          buffer_size += compute_return_created_contexts();
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(true/*create only*/);
         }
         // Always need to send back the leaked references
         buffer_size += forest_ctx->compute_leaked_return_size();
@@ -4373,7 +4618,9 @@ namespace RegionRuntime {
           pack_privileges_return(rez);
           pack_deletions_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
-          forest_ctx->pack_created_state_return(ctx_id, rez);
+          forest_ctx->begin_pack_region_tree_state_return(rez, true/*created only*/);
+          pack_return_created_contexts(rez);
+          forest_ctx->end_pack_region_tree_state_return(rez, true/*created only*/);
         }
         forest_ctx->pack_leaked_return(rez);
         unlock_context();
@@ -4420,6 +4667,7 @@ namespace RegionRuntime {
             parent_ctx->return_deletions(deleted_partitions);
           if (!deleted_fields.empty())
             parent_ctx->return_deletions(deleted_fields);
+          return_created_field_contexts(parent_ctx);
         }
         // Now we can trigger the termination event
         termination_event.trigger();
@@ -4491,7 +4739,7 @@ namespace RegionRuntime {
       }
       unlock();
       lock_context();
-      forest_ctx->begin_unpack_region_tree_state_return(derez);
+      forest_ctx->begin_unpack_region_tree_state_return(derez, false/*created only*/);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         if (non_virtual_mapped_region[idx])
@@ -4505,7 +4753,7 @@ namespace RegionRuntime {
                                                                   ); 
         }
       }
-      forest_ctx->end_unpack_region_tree_state_return(derez);
+      forest_ctx->end_unpack_region_tree_state_return(derez, false/*created only*/);
       unlock_context();
       if (unmapped == 0)
       {
@@ -4525,7 +4773,7 @@ namespace RegionRuntime {
       Deserializer derez(args,arglen);
       lock_context();
       forest_ctx->unpack_region_tree_updates_return(derez);
-      forest_ctx->begin_unpack_region_tree_state_return(derez);
+      forest_ctx->begin_unpack_region_tree_state_return(derez, false/*created only*/);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
@@ -4548,7 +4796,7 @@ namespace RegionRuntime {
                                                                         );
         }
       }
-      forest_ctx->end_unpack_region_tree_state_return(derez);
+      forest_ctx->end_unpack_region_tree_state_return(derez, false/*created only*/);
       unpack_source_copy_instances_return(derez,forest_ctx,unique_id);
       // We can also release all the source copy waiters
       release_source_copy_instances();
@@ -4590,6 +4838,16 @@ namespace RegionRuntime {
       {
         unpack_privileges_return(derez);
         unpack_deletions_return(derez);
+        lock_context();
+        forest_ctx->unpack_region_tree_updates_return(derez);
+        forest_ctx->begin_unpack_region_tree_state_return(derez, true/*created only*/);
+        if (parent_ctx != NULL)
+          parent_ctx->unpack_return_created_contexts(derez);
+        else
+          unpack_return_created_contexts(derez); // only happens if top-level task runs remotely
+        forest_ctx->end_unpack_region_tree_state_return(derez, true/*created only*/);
+        forest_ctx->unpack_leaked_return(derez);
+        unlock_context();
         if (parent_ctx != NULL)
         {
           parent_ctx->return_privileges(created_index_spaces, created_field_spaces,
@@ -4601,12 +4859,6 @@ namespace RegionRuntime {
           if (!deleted_fields.empty())
             parent_ctx->return_deletions(deleted_fields);
         }
-        lock_context();
-        forest_ctx->unpack_region_tree_updates_return(derez);
-        ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
-        forest_ctx->unpack_created_state_return(phy_ctx, derez);
-        forest_ctx->unpack_leaked_return(derez);
-        unlock_context();
       }
       else
       {
@@ -5575,7 +5827,7 @@ namespace RegionRuntime {
       }
       lock_context();
       // Unpack any trees that were sent back because they were fully mapped
-      forest_ctx->begin_unpack_region_tree_state_return(derez);
+      forest_ctx->begin_unpack_region_tree_state_return(derez, false/*created only*/);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         if (non_virtual_mappings[idx] == num_points)
@@ -5584,7 +5836,7 @@ namespace RegionRuntime {
           unpack_tree_state_return(idx, phy_ctx, RegionTreeForest::PHYSICAL, derez);
         }
       }
-      forest_ctx->end_unpack_region_tree_state_return(derez);
+      forest_ctx->end_unpack_region_tree_state_return(derez, false/*created only*/);
       unlock_context();
       slice_start(denominator, num_points, non_virtual_mappings); 
     }
@@ -5601,7 +5853,7 @@ namespace RegionRuntime {
       }
       lock_context();
       forest_ctx->unpack_region_tree_updates_return(derez);
-      forest_ctx->begin_unpack_region_tree_state_return(derez);
+      forest_ctx->begin_unpack_region_tree_state_return(derez, false/*created only*/);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
@@ -5614,7 +5866,7 @@ namespace RegionRuntime {
           unpack_tree_state_return(idx, phy_ctx, RegionTreeForest::DIFF, derez);
         }
       }
-      forest_ctx->end_unpack_region_tree_state_return(derez);
+      forest_ctx->end_unpack_region_tree_state_return(derez, false/*created only*/);
       size_t num_points;
       derez.deserialize<size_t>(num_points);
       for (unsigned idx = 0; idx < num_points; idx++)
@@ -5642,6 +5894,8 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       Deserializer derez(args,arglen);
+      size_t num_points;
+      derez.deserialize<size_t>(num_points);
       bool slice_is_leaf;
       derez.deserialize<bool>(slice_is_leaf);
       if (!slice_is_leaf)
@@ -5650,8 +5904,12 @@ namespace RegionRuntime {
         unpack_deletions_return(derez);
         lock_context();
         forest_ctx->unpack_region_tree_updates_return(derez);
-        ContextID phy_ctx = parent_ctx->find_outermost_physical_context();
-        forest_ctx->unpack_created_state_return(phy_ctx, derez);
+        forest_ctx->begin_unpack_region_tree_state_return(derez, true/*created only*/);
+        for (unsigned idx = 0; idx < num_points; idx++)
+        {
+          parent_ctx->unpack_return_created_contexts(derez);
+        }
+        forest_ctx->end_unpack_region_tree_state_return(derez, true/*created only*/);
         forest_ctx->unpack_leaked_return(derez);
         unlock_context();
       }
@@ -5661,8 +5919,7 @@ namespace RegionRuntime {
         forest_ctx->unpack_leaked_return(derez);
         unlock_context();
       }
-      size_t num_points;
-      derez.deserialize<size_t>(num_points);
+      
       // Unpack the future(s)
       if (has_reduction)
       {
@@ -7185,7 +7442,7 @@ namespace RegionRuntime {
             buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::PHYSICAL);
           }
         }
-        buffer_size += forest_ctx->post_compute_region_tree_state_return();
+        buffer_size += forest_ctx->post_compute_region_tree_state_return(false/*created only*/);
         // Now pack everything up
         Serializer rez(buffer_size);
         rez.serialize(orig_proc);
@@ -7196,7 +7453,7 @@ namespace RegionRuntime {
         {
           rez.serialize<unsigned>(non_virtual_mappings[idx]);
         }
-        forest_ctx->begin_pack_region_tree_state_return(rez);
+        forest_ctx->begin_pack_region_tree_state_return(rez, false/*created only*/);
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           if ((non_virtual_mappings[idx] == points.size()) &&
@@ -7205,7 +7462,7 @@ namespace RegionRuntime {
             pack_tree_state_return(idx, ctx_id, RegionTreeForest::PHYSICAL, rez);
           }
         }
-        forest_ctx->end_pack_region_tree_state_return(rez);
+        forest_ctx->end_pack_region_tree_state_return(rez, false/*created only*/);
         unlock_context();
         // Now send it back to the utility processor
         Processor utility = orig_proc.get_utility_processor();
@@ -7279,7 +7536,7 @@ namespace RegionRuntime {
               buffer_size += compute_state_return_size(idx, ctx_id, RegionTreeForest::DIFF);
             }
           }
-          buffer_size += forest_ctx->post_compute_region_tree_state_return();
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(false/*created only*/);
           buffer_size += sizeof(size_t);
           // Also send back any source copy instances to be released
           for (std::vector<PointTask*>::const_iterator it = points.begin();
@@ -7299,7 +7556,7 @@ namespace RegionRuntime {
             }
           }
           forest_ctx->pack_region_tree_updates_return(rez);
-          forest_ctx->begin_pack_region_tree_state_return(rez);
+          forest_ctx->begin_pack_region_tree_state_return(rez, false/*created only*/);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             if (non_virtual_mappings[idx] < points.size())
@@ -7311,7 +7568,7 @@ namespace RegionRuntime {
               pack_tree_state_return(idx, ctx_id, RegionTreeForest::DIFF, rez);
             }
           }
-          forest_ctx->end_pack_region_tree_state_return(rez);
+          forest_ctx->end_pack_region_tree_state_return(rez, false/*created only*/);
           rez.serialize<size_t>(points.size());
           for (std::vector<PointTask*>::const_iterator it = points.begin();
                 it != points.end(); it++)
@@ -7346,6 +7603,7 @@ namespace RegionRuntime {
         size_t result_size = 0;
         // Need to send back the results to the enclosing context
         size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner) + sizeof(is_leaf);
+        buffer_size += sizeof(size_t); // number of points
         // Need to send back the tasks for which we have privileges
         lock_context();
         if (!is_leaf)
@@ -7353,11 +7611,15 @@ namespace RegionRuntime {
           buffer_size += compute_privileges_return_size();
           buffer_size += compute_deletions_return_size();
           buffer_size += forest_ctx->compute_region_tree_updates_return();
-          buffer_size += forest_ctx->compute_created_state_return(ctx_id); 
+          for (std::vector<PointTask*>::const_iterator it = points.begin();
+                it != points.end(); it++)
+          {
+            buffer_size += (*it)->compute_return_created_contexts();
+          }
+          buffer_size += forest_ctx->post_compute_region_tree_state_return(true/*created only*/);
         }
         // Always need to send back the leaked return state
         buffer_size += forest_ctx->compute_leaked_return_size();
-        buffer_size += sizeof(size_t); // number of points
         if (has_reduction)
         {
           buffer_size += sizeof(reduction_state_size); 
@@ -7383,18 +7645,24 @@ namespace RegionRuntime {
         Serializer rez(buffer_size);
         rez.serialize<Processor>(orig_proc);
         rez.serialize<IndexTask*>(index_owner);
+        rez.serialize<size_t>(points.size());
         rez.serialize<bool>(is_leaf);
         if (!is_leaf)
         {
           pack_privileges_return(rez);
           pack_deletions_return(rez);
           forest_ctx->pack_region_tree_updates_return(rez);
-          forest_ctx->pack_created_state_return(ctx_id, rez);
+          forest_ctx->begin_pack_region_tree_state_return(rez, true/*created only*/);
+          for (std::vector<PointTask*>::const_iterator it = points.begin();
+                it != points.end(); it++)
+          {
+            (*it)->pack_return_created_contexts(rez);
+          }
+          forest_ctx->end_pack_region_tree_state_return(rez, true/*created only*/);
         }
         forest_ctx->pack_leaked_return(rez);
         unlock_context();
         // Pack up the future(s)
-        rez.serialize<size_t>(points.size());
         if (has_reduction)
         {
           rez.serialize<size_t>(reduction_state_size);
@@ -7430,6 +7698,12 @@ namespace RegionRuntime {
         index_owner->return_privileges(created_index_spaces,created_field_spaces,
                                         created_regions,created_fields);
         index_owner->return_deletions(deleted_regions, deleted_partitions, deleted_fields);
+        for (std::vector<PointTask*>::const_iterator it = points.begin();
+              it != points.end(); it++)
+        {
+          (*it)->return_created_field_contexts(index_owner->parent_ctx);
+        }
+        // Created field spaces have already been sent back
         index_owner->slice_finished(points.size());
       }
 

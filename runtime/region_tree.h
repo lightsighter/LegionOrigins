@@ -54,7 +54,7 @@ namespace RegionRuntime {
       size_t get_field_size(FieldSpace space, FieldID fid);
     public:
       // Logical Region operations
-      void create_region(LogicalRegion handle);  
+      void create_region(LogicalRegion handle, ContextID ctx);  
       void destroy_region(LogicalRegion handle);
       void destroy_partition(LogicalPartition handle);
       LogicalPartition get_region_partition(LogicalRegion parent, IndexPartition handle);
@@ -81,6 +81,7 @@ namespace RegionRuntime {
       void invalidate_physical_context(LogicalRegion handle, ContextID ctx);
       void invalidate_physical_context(LogicalPartition handle, ContextID ctx);
       void invalidate_physical_context(LogicalRegion handle, ContextID ctx, const std::vector<FieldID> &fields);
+      void merge_field_context(LogicalRegion handle, ContextID outer_ctx, ContextID inner_ctx, const std::vector<FieldID> &fields);
     public:
       // Packing and unpacking send
       size_t compute_region_forest_shape_size(const std::vector<IndexSpaceRequirement> &indexes,
@@ -129,25 +130,57 @@ namespace RegionRuntime {
                                               , const char *task_name
 #endif
                                               );
+      
       void post_partition_state_return(const RegionRequirement &req, ContextID ctx, SendingMode mode);
-      size_t post_compute_region_tree_state_return(void);
-      void begin_pack_region_tree_state_return(Serializer &rez);
+      size_t post_compute_region_tree_state_return(bool created_only);
+      void begin_pack_region_tree_state_return(Serializer &rez, bool created_only);
       void pack_region_tree_state_return(const RegionRequirement &req, unsigned idx, 
                               ContextID ctx, bool overwrite, SendingMode mode, Serializer &rez);
+      
       void post_partition_pack_return(const RegionRequirement &req, ContextID ctx, SendingMode mode);
-      void end_pack_region_tree_state_return(Serializer &rez);
-      void begin_unpack_region_tree_state_return(Deserializer &derez);
+      void end_pack_region_tree_state_return(Serializer &rez, bool created_only);
+      void begin_unpack_region_tree_state_return(Deserializer &derez, bool created_only);
       void unpack_region_tree_state_return(const RegionRequirement &req, ContextID ctx, 
                                             bool overwrite, SendingMode mode, Deserializer &derez
 #ifdef DEBUG_HIGH_LEVEL
                                             , unsigned idx, const char *task_name
 #endif
                                             );
-      void end_unpack_region_tree_state_return(Deserializer &derez);
+      void end_unpack_region_tree_state_return(Deserializer &derez, bool created_only);
+    public:
+      // Packing and unpacking for returning created field states for pre-existing region trees
+      size_t compute_created_field_state_return(LogicalRegion handle, const std::vector<FieldID> &fields, 
+                                                ContextID ctx
+#ifdef DEBUG_HIGH_LEVEL
+                                              , const char *task_name
+#endif
+                                              );
+      void pack_created_field_state_return(LogicalRegion handle, const std::vector<FieldID> &fields, 
+                                            ContextID ctx, Serializer &rez);
+      void unpack_created_field_state_return(LogicalRegion handle, ContextID ctx, Deserializer &derez
+#ifdef DEBUG_HIGH_LEVEL
+                                            , const char *task_name      
+#endif
+                                            );
+    public:
+      // Packing and unpacking for returning created region trees
+      size_t compute_created_state_return(LogicalRegion handle, ContextID ctx
+#ifdef DEBUG_HIGH_LEVEL
+                                            , const char *task_name
+#endif
+                                            );
+      void pack_created_state_return(LogicalRegion handle, ContextID ctx, Serializer &rez);
+      void unpack_created_state_return(LogicalRegion handle, ContextID ctx, Deserializer &derez
+#ifdef DEBUG_HIGH_LEVEL
+                                            , const char *task_name
+#endif
+                                          );
+#if 0
     public:
       size_t compute_created_state_return(ContextID ctx);
       void pack_created_state_return(ContextID ctx, Serializer &rez);
       void unpack_created_state_return(ContextID ctx, Deserializer &derez);
+#endif
     public:
       // Packing and unpacking leaked references
       size_t compute_leaked_return_size(void);
@@ -389,10 +422,7 @@ namespace RegionRuntime {
       size_t compute_field_return_size(void) const;
       void serialize_field_return(Serializer &rez);
       void deserialize_field_return(Deserializer &derez);
-    public:
-      size_t compute_created_field_return(void) const;
-      void serialize_created_field_return(Serializer &rez);
-      unsigned deserialize_created_field_return(Deserializer &derez);
+      unsigned get_shift_amount(void) const { return shift; }
     public:
       FieldMask get_field_mask(const std::vector<FieldID> &fields) const;
       FieldMask get_field_mask(const std::set<FieldID> &fields) const;
@@ -407,6 +437,9 @@ namespace RegionRuntime {
       std::list<FieldID> created_fields;
       std::list<FieldID> deleted_fields;
       unsigned total_index_fields;
+      // Shift is only valid while the context lock is held during
+      // the deserialization phase, once it is released, all bets are off
+      unsigned shift;
     };
 
     /////////////////////////////////////////////////////////////
@@ -533,6 +566,8 @@ namespace RegionRuntime {
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     public:
       void initialize_physical_context(ContextID ctx, const FieldMask &init_mask, bool top);
+      void fill_exclusive_context(ContextID ctx, const FieldMask &fill_mask, Color open_child);
+      void merge_physical_context(ContextID outer_ctx, ContextID inner_ctx, const FieldMask &merge_mask);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
       virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);
@@ -626,6 +661,8 @@ namespace RegionRuntime {
       void register_deletion_operation(ContextID ctx, DeletionOperation *op, const FieldMask &deletion_mask);
     public:
       void initialize_physical_context(ContextID ctx, const FieldMask &initialize_mask, bool top);
+      void fill_exclusive_context(ContextID ctx, const FieldMask &fill_mask, Color open_child);
+      void merge_physical_context(ContextID outer_ctx, ContextID inner_ctx, const FieldMask &merge_mask);
       void register_physical_region(const PhysicalUser &user, RegionMapper &rm);
       void open_physical_tree(const PhysicalUser &user, RegionMapper &rm);
       virtual void close_physical_tree(PhysicalCloser &closer, const FieldMask &closing_mask);

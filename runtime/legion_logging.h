@@ -156,6 +156,8 @@ namespace RegionRuntime {
                                 PartitionNode *node, ContextID ctx, bool pack, bool send);
       static void capture_state(HighLevelRuntime *rt, const RegionRequirement *req, unsigned idx, const char *task_name,
                                 RegionNode *node, ContextID ctx, bool pre_map, bool sanitize, bool closing);
+      static void capture_state(HighLevelRuntime *rt, LogicalRegion handle, const char *task_name,
+                                RegionNode *node, ContextID ctx, bool pack, unsigned shift);
     private:
       void println(const char *fmt, va_list args);
     private:

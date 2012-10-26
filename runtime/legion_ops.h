@@ -249,7 +249,7 @@ namespace RegionRuntime {
       bool has_created_index_space(IndexSpace handle) const;
       bool has_created_field_space(FieldSpace handle) const;
       bool has_created_region(LogicalRegion handle) const;
-      bool has_created_field(FieldID fid) const;
+      bool has_created_field(FieldID fid) const; 
     protected:
       size_t compute_task_context_size(void);
       void pack_task_context(Serializer &rez);
@@ -415,6 +415,15 @@ namespace RegionRuntime {
       void return_deletions(const std::map<FieldID,FieldSpace> &fields);
       void invalidate_matches(LogicalRegion handle, const std::map<FieldID,FieldSpace> &fields);
     public:
+      // These five functions handle the job of returning state for fields that
+      // are created in region trees that existed before the start of the task.
+      // They have to merge the state back into the enclosing task's context.
+      void return_created_field_contexts(SingleTask *enclosing);
+      void return_field_context(LogicalRegion handle, ContextID inner_ctx, const std::vector<FieldID> &fields);
+      size_t compute_return_created_contexts(void);
+      void pack_return_created_contexts(Serializer &rez);
+      void unpack_return_created_contexts(Deserializer &derez);
+    public:
       size_t compute_source_copy_instances_return(void);
       void pack_source_copy_instances_return(Serializer &derez);
       static void unpack_source_copy_instances_return(Deserializer &derez, RegionTreeForest *forest, UniqueID uid);
@@ -452,6 +461,8 @@ namespace RegionRuntime {
       std::list<DeletionOperation*> child_deletions;
       // Set when the variant is selected after mapping succeeds
       bool is_leaf;
+      // For packing up return created fields
+      std::map<unsigned,std::vector<FieldID> > need_pack_created_fields;
     };
 
     /////////////////////////////////////////////////////////////
@@ -757,6 +768,7 @@ namespace RegionRuntime {
       // This function pairs with pack_tree_state_return in SliceTask
       void unpack_tree_state_return(unsigned idx, ContextID ctx, RegionTreeForest::SendingMode mode, Deserializer &derez);
     private:
+      friend class SliceTask;
       bool locally_set;
       bool locally_mapped; 
       UserEvent mapped_event;
