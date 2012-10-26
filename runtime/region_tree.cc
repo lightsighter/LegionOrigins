@@ -1932,7 +1932,8 @@ namespace RegionRuntime {
       for (std::map<UniqueManagerID,InstanceManager*>::const_iterator it = managers.begin();
             it != managers.end(); it++)
       {
-        if ((it->second->is_remote() || (unique_managers.find(it->second) != unique_managers.end()))
+        if (((it->second->is_remote() && !it->second->is_returned()) 
+              || (unique_managers.find(it->second) != unique_managers.end()))
             && (it->second->is_valid_free()))
         {
           returning_managers.push_back(it->second);
@@ -1949,6 +1950,10 @@ namespace RegionRuntime {
         result += (*it)->compute_return_size();  
       }
 
+#ifdef DEBUG_HIGH_LEVEL
+        assert(ordered_views.size() == unique_views.size());
+        assert(ordered_views.size() == overwrite_views.size());
+#endif
       // There is a nice property here if we know all the state is created state.
       // Since created state only gets passed back at the end of a task there is no need to
       // pass back any of the state/users in the InstanceViews since they all
@@ -1972,10 +1977,6 @@ namespace RegionRuntime {
       {
         result += sizeof(size_t); // number of unique views
         // Now pack up the instance views that need to be send back for the updated state
-#ifdef DEBUG_HIGH_LEVEL
-        assert(ordered_views.size() == unique_views.size());
-        assert(ordered_views.size() == overwrite_views.size());
-#endif
         unsigned idx = 0;
         for (std::vector<InstanceView*>::const_iterator it = ordered_views.begin();
               it != ordered_views.end(); it++)
@@ -1995,9 +1996,9 @@ namespace RegionRuntime {
           result += (*it)->compute_return_users_size(escaped_users, escaped_copies,
                                         (unique_views.find(*it) != unique_views.end()));
         }
-        result += sizeof(size_t); // number of returning managers
-        result += (returning_managers.size() * (sizeof(UniqueManagerID) + sizeof(InstFrac)));
       }
+      result += sizeof(size_t); // number of returning managers
+      result += (returning_managers.size() * (sizeof(UniqueManagerID) + sizeof(InstFrac)));
 
       return result;
     }
@@ -2045,6 +2046,7 @@ namespace RegionRuntime {
       }
       unique_views.clear();
       ordered_views.clear();
+      overwrite_views.clear();
     }
 
     //--------------------------------------------------------------------------
@@ -6949,7 +6951,7 @@ namespace RegionRuntime {
     InstanceManager::InstanceManager(Memory m, PhysicalInstance inst, 
             const std::map<FieldID,IndexSpace::CopySrcDstField> &infos, FieldSpace fsp,
             const FieldMask &mask, RegionTreeForest *ctx, UniqueManagerID mid, bool rem, bool cl)
-      : context(ctx), references(0), unique_id(mid), remote(rem), clone(cl), 
+      : context(ctx), references(0), unique_id(mid), remote(rem), returned(false), clone(cl), 
         remote_frac(Fraction<unsigned long>(0,1)), local_frac(Fraction<unsigned long>(1,1)), 
         location(m), instance(inst), fspace(fsp), allocated_fields(mask), field_infos(infos)
     //--------------------------------------------------------------------------
@@ -7252,12 +7254,14 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(remote);
+      assert(!returned);
       assert(is_valid_free());
       assert(!remote_frac.is_empty());
 #endif
       InstFrac return_frac = remote_frac;
       rez.serialize(return_frac);
       remote_frac.subtract(return_frac);
+      returned = true;
 #ifdef DEBUG_HIGH_LEVEL
       assert(remote_frac.is_empty());
 #endif

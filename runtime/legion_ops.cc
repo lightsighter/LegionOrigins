@@ -488,7 +488,9 @@ namespace RegionRuntime {
       source_copy_instances.clear();
 
       deactivate_base();
+#ifndef INORDER_EXECUTION
       Context parent = parent_ctx;
+#endif
       parent_ctx = NULL;
       mapper = NULL;
 #ifdef LOW_LEVEL_LOCKS
@@ -498,7 +500,9 @@ namespace RegionRuntime {
 #endif
       tag = 0;
       map_dependent_waiters.clear();
+#ifndef INORDER_EXECUTION
       runtime->notify_operation_complete(parent);
+#endif
       runtime->free_mapping(this);
     }
 
@@ -638,6 +642,9 @@ namespace RegionRuntime {
           (*it)->notify();
         }
         map_dependent_waiters.clear();
+#ifdef INORDER_EXECUTION
+        runtime->notify_operation_complete(parent_ctx);
+#endif
       }
       else
       {
@@ -979,46 +986,12 @@ namespace RegionRuntime {
       lock_context();
       // Lock to test if the operation has been performed yet 
       lock();
+      Context parent = parent_ctx; // copy this while holding the lock
       if (!performed)
       {
-        switch (handle_tag)
-        {
-          case DESTROY_INDEX_SPACE:
-            {
-              parent_ctx->destroy_index_space(index.space);
-              break;
-            }
-          case DESTROY_INDEX_PARTITION:
-            {
-              parent_ctx->destroy_index_partition(index.partition);
-              break;
-            }
-          case DESTROY_FIELD_SPACE:
-            {
-              parent_ctx->destroy_field_space(field_space);
-              break;
-            }
-          case DESTROY_FIELD:
-            {
-              parent_ctx->free_fields(field_space, free_fields);
-              break;
-            }
-          case DESTROY_REGION:
-            {
-              parent_ctx->destroy_region(region);
-              break;
-            }
-          case DESTROY_PARTITION:
-            {
-              parent_ctx->destroy_partition(partition);
-              break;
-            }
-          default:
-            assert(false); // should never get here
-        }
+        perform_internal();
         // Mark that this has been performed and unlock
         performed = true;
-        Context parent = parent_ctx; // copy this while holding the lock
         unlock();
         unlock_context();
         runtime->notify_operation_complete(parent);
@@ -1027,6 +1000,9 @@ namespace RegionRuntime {
       {
         unlock();
         unlock_context();
+#ifdef INORDER_EXECUTION
+        runtime->notify_operation_complete(parent);
+#endif
         // The deletion was already performed, so we can now deactivate the operation 
         deactivate();
       }
@@ -1040,6 +1016,82 @@ namespace RegionRuntime {
     {
       // Enqueue this operation with the runtime
       runtime->add_to_ready_queue(this);
+    }
+
+    //--------------------------------------------------------------------------
+    bool DeletionOperation::flush(void)
+    //--------------------------------------------------------------------------
+    {
+      // Looks very similar to the one above, except in the INORDER_EXECUTION case
+      // we don't notify that the operation is complete
+      lock_context();
+      // Lock to test if the operation has been performed yet 
+      lock();
+      if (!performed)
+      {
+        perform_internal();
+#ifndef INORDER_EXECUTION
+        Context parent = parent_ctx; // copy this while holding the lock
+#endif
+        // Mark that this has been performed and unlock
+        performed = true;
+        unlock();
+        unlock_context();
+#ifndef INORDER_EXECUTION
+        runtime->notify_operation_complete(parent);
+#endif
+      }
+      else
+      {
+        unlock();
+        unlock_context();
+        // The deletion was already performed, so we can now deactivate the operation 
+        deactivate();
+      }
+      // Deletion operations never fail
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
+    void DeletionOperation::perform_internal(void)
+    //--------------------------------------------------------------------------
+    {
+      // Should be holding the lock
+      switch (handle_tag)
+      {
+        case DESTROY_INDEX_SPACE:
+          {
+            parent_ctx->destroy_index_space(index.space);
+            break;
+          }
+        case DESTROY_INDEX_PARTITION:
+          {
+            parent_ctx->destroy_index_partition(index.partition);
+            break;
+          }
+        case DESTROY_FIELD_SPACE:
+          {
+            parent_ctx->destroy_field_space(field_space);
+            break;
+          }
+        case DESTROY_FIELD:
+          {
+            parent_ctx->free_fields(field_space, free_fields);
+            break;
+          }
+        case DESTROY_REGION:
+          {
+            parent_ctx->destroy_region(region);
+            break;
+          }
+        case DESTROY_PARTITION:
+          {
+            parent_ctx->destroy_partition(partition);
+            break;
+          }
+        default:
+          assert(false); // should never get here
+      }
     }
 
     /////////////////////////////////////////////////////////////
@@ -3403,7 +3455,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         bool result = 
 #endif
-        (*it)->perform_operation();
+        (*it)->flush();
 #ifdef DEBUG_HIGH_LEVEL
         assert(result);
 #endif
@@ -3839,6 +3891,7 @@ namespace RegionRuntime {
     void IndividualTask::deactivate(void)
     //--------------------------------------------------------------------------
     {
+      lock();
       if (future != NULL)
       {
         if (future->remove_reference())
@@ -3859,6 +3912,7 @@ namespace RegionRuntime {
         remaining_buffer = NULL;
         remaining_bytes = 0;
       }
+      unlock();
       deactivate_single();
       // Free this back up to the runtime
       runtime->free_individual_task(this);
@@ -4669,12 +4723,19 @@ namespace RegionRuntime {
             parent_ctx->return_deletions(deleted_fields);
           return_created_field_contexts(parent_ctx);
         }
-        // Now we can trigger the termination event
-        termination_event.trigger();
         if (parent_ctx != NULL)
           runtime->notify_operation_complete(parent_ctx);
       }
 
+      // Hold the local context lock before triggering the
+      // termination event since it could result in us
+      // begin deactivated before we're done deactivating children.
+      lock();
+      if (!remote)
+      {
+        // Trigger the termination event
+        termination_event.trigger();
+      }
 #ifdef DEBUG_HIGH_LEVEL
       if (is_leaf)
       {
@@ -4696,6 +4757,7 @@ namespace RegionRuntime {
       {
         (*it)->deactivate();
       }
+      unlock();
 
       // If we're remote or the top level task, deactivate ourself
       if (remote || top_level_task)
@@ -4871,6 +4933,7 @@ namespace RegionRuntime {
       assert(this->future != NULL);
 #endif
       future->set_result(derez);
+      lock();
       termination_event.trigger();
       // We can now remove our reference to the future for garbage collection
       if (future->remove_reference())
@@ -4880,6 +4943,7 @@ namespace RegionRuntime {
       future = NULL;
       if (parent_ctx != NULL)
         runtime->notify_operation_complete(parent_ctx);
+      unlock();
     }
 
     //--------------------------------------------------------------------------
@@ -5491,6 +5555,7 @@ namespace RegionRuntime {
     void IndexTask::deactivate(void)
     //--------------------------------------------------------------------------
     {
+      lock();
       mapped_points.clear();
       if (future_map != NULL)
       {
@@ -5512,6 +5577,7 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       slice_overlap.clear();
 #endif
+      unlock();
       deactivate_multi();
       runtime->free_index_task(this);
     }
@@ -6274,6 +6340,8 @@ namespace RegionRuntime {
     void IndexTask::slice_finished(size_t points)
     //--------------------------------------------------------------------------
     {
+      // Hold the lock when testing the num_finished_points
+      // and frac_index_space
       lock();
       num_finished_points += points;
 #ifdef DEBUG_HIGH_LEVEL
@@ -6284,6 +6352,7 @@ namespace RegionRuntime {
       if ((num_finished_points == num_total_points) &&
           (frac_index_space.first == frac_index_space.second))
       {
+        unlock();
         // Handle the future or future map
         if (has_reduction)
         {
@@ -6306,6 +6375,9 @@ namespace RegionRuntime {
           parent_ctx->return_deletions(deleted_partitions);
         if (!deleted_fields.empty())
           parent_ctx->return_deletions(deleted_fields);
+        // Reclaim the lock now that we're done with any 
+        // calls that may end up taking the context lock
+        lock();
         // We're done, trigger the termination event
         termination_event.trigger();
         runtime->notify_operation_complete(parent_ctx);
