@@ -538,11 +538,18 @@ void main_task(const void *input_args, size_t input_arglen,
   int &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
   int &nx = args.nx, &ny = args.ny, &nz = args.nz;
 
-  // Don't actually read or write any data in this task.
   LogicalRegion cells = regions[0].get_logical_region();
   IndexSpace ispace = cells.get_index_space();
   FieldSpace fspace = cells.get_field_space();
+
+  // Don't actually read or write any data in this task.
   runtime->unmap_region(ctx, regions[0]);
+
+  // Decide how long to run the simulation.
+  //double t_sim = 5.0 + 1e5/(nx*ny*nz);
+  double t_sim = 1.0;     // FIXME (Elliott): Full simulation takes forever.
+  double courant = 0.5;
+  double dt = courant/a;
 
   printf("+---------------------------------------------+\n");
   printf("| FDTD simulation parameters                  |\n");
@@ -551,7 +558,7 @@ void main_task(const void *input_args, size_t input_arglen,
   printf("  bounding volume size: %.1f x %.1f x %.1f\n", sx, sy, sz);
   printf("  cells per unit dist : %.1f\n",               a);
   printf("  number of blocks    : %d x %d x %d\n",       nbx, nby, nbz);
-  printf("  number of cells     : %d (+ 2) x %d (+ 2) x %d (+ 2)\n",       nx, ny, nz);
+  printf("  number of cells     : %d (+ 2) x %d (+ 2) x %d (+ 2)\n", nx, ny, nz);
 
   // Allocate fields and indices.
   FieldAllocator field_alloc = runtime->create_field_allocator(ctx, fspace);
@@ -613,7 +620,11 @@ void main_task(const void *input_args, size_t input_arglen,
     printf("%d..%d", z_divs[bz].first, z_divs[bz].second);
     if (bz + 1 < nbz) printf(", ");
   }
-  printf("\n\n");
+  printf("\n");
+
+  printf("  simulation time    : %.2f\n", t_sim);
+  printf("  timestep size      : %.2f\n", dt);
+  printf("  timesteps          : %d\n", (int)(t_sim / dt));
   printf("+---------------------------------------------+\n");
 
   // Choose color space for partitions.
@@ -690,14 +701,12 @@ void main_task(const void *input_args, size_t input_arglen,
   }
 
   printf("\nSTARTING MAIN SIMULATION LOOP\n");
-  struct timespec ts_start, ts_end;
-  clock_gettime(CLOCK_MONOTONIC, &ts_start);
+  struct timespec clock_start, clock_end;
+  clock_gettime(CLOCK_MONOTONIC, &clock_start);
   RegionRuntime::DetailedTimer::clear_timers();
 
-  // FIXME (Elliott): Figure out the real timestep here
-  int timesteps = 10;
   std::vector<FutureMap> fs;
-  for (int ts = 0; ts < timesteps; ts++) {
+  for (double t = 0.0; t < t_sim; t += dt) {
     std::vector<IndexSpaceRequirement> indexes;
     indexes.push_back(IndexSpaceRequirement(ispace, NO_MEMORY, ispace));
 
@@ -773,9 +782,9 @@ void main_task(const void *input_args, size_t input_arglen,
     fs.pop_back();
   }
 
-  clock_gettime(CLOCK_MONOTONIC, &ts_end);
-  double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
-		     (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
+  clock_gettime(CLOCK_MONOTONIC, &clock_end);
+  double sim_time = ((1.0 * (clock_end.tv_sec - clock_start.tv_sec)) +
+		     (1e-9 * (clock_end.tv_nsec - clock_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
   RegionRuntime::DetailedTimer::report_timers();
 
