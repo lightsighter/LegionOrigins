@@ -579,7 +579,7 @@ namespace RegionRuntime {
       bool map_success = true;  
       forest_ctx->lock_context();
       ContextID phy_ctx = parent_ctx->find_enclosing_physical_context(requirement.parent);
-      RegionMapper reg_mapper(parent_ctx, unique_id, phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, runtime->local_proc, 
+      RegionMapper reg_mapper(parent_ctx, unique_id, phy_ctx, 0/*idx*/, requirement, mapper, mapper_lock, parent_ctx->get_executing_processor(), 
                               unmapped_event, unmapped_event, tag, false/*sanitizing*/,
                               true/*inline mapping*/, source_copy_instances);
       // Compute the path 
@@ -652,7 +652,8 @@ namespace RegionRuntime {
         map_success = false;
         AutoLock m_lock(mapper_lock);
         DetailedTimer::ScopedPush sp(TIME_MAPPER);
-        mapper->notify_failed_mapping(parent_ctx, requirement, 0/*index*/, true/*inline mapping*/);
+        mapper->notify_failed_mapping(parent_ctx, parent_ctx->get_executing_processor(),
+                                      requirement, 0/*index*/, true/*inline mapping*/);
       }
       
       return map_success;
@@ -1129,7 +1130,7 @@ namespace RegionRuntime {
         arglen = 0;
         map_id = 0;
         tag = 0;
-        orig_proc = runtime->local_proc;
+        orig_proc = runtime->utility_proc;
         steal_count = 0;
         must_parallelism = false;
         is_index_space = false;
@@ -1212,7 +1213,8 @@ namespace RegionRuntime {
       tag = t;
       mapper_lock = map_lock;
       // Initialize remaining fields in the Task as well
-      orig_proc = runtime->local_proc;
+      if (parent != NULL)
+        orig_proc = parent->get_executing_processor();
       // Intialize fields in any sub-types
       initialize_subtype_fields();
       // Register with the parent task, only NULL if initializing top-level task
@@ -1598,7 +1600,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool TaskContext::invoke_mapper_map_region_virtual(unsigned idx)
+    bool TaskContext::invoke_mapper_map_region_virtual(unsigned idx, Processor target)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1606,20 +1608,38 @@ namespace RegionRuntime {
 #endif
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
-      return mapper->map_region_virtually(this, regions[idx], idx);
+      return mapper->map_region_virtually(this, target, regions[idx], idx);
     }
 
     //--------------------------------------------------------------------------
-    Processor TaskContext::invoke_mapper_target_proc(void)
+    ProcessorGroup TaskContext::invoke_mapper_select_target_group(void)
     //--------------------------------------------------------------------------
     {
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
-      return mapper->select_initial_processor(this);
+      ProcessorGroup result = mapper->select_target_group(this);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(result.exists());
+#endif
+      return result;
     }
 
     //--------------------------------------------------------------------------
-    void TaskContext::invoke_mapper_failed_mapping(unsigned idx)
+    Processor TaskContext::invoke_mapper_select_final_proc(ProcessorGroup group)
+    //--------------------------------------------------------------------------
+    {
+      const std::set<Processor> &options = group.get_all_processors();
+      AutoLock m_lock(mapper_lock);
+      DetailedTimer::ScopedPush sp(TIME_MAPPER);
+      Processor result = mapper->select_final_processor(this, options); 
+#ifdef DEBUG_HIGH_LEVEL
+      assert(result.exists());
+#endif
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskContext::invoke_mapper_failed_mapping(unsigned idx, Processor target)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -1627,7 +1647,7 @@ namespace RegionRuntime {
 #endif
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
-      return mapper->notify_failed_mapping(this, regions[idx], idx, false/*inline mapping*/);
+      return mapper->notify_failed_mapping(this, target, regions[idx], idx, false/*inline mapping*/);
     }
 
     //--------------------------------------------------------------------------
@@ -1866,6 +1886,7 @@ namespace RegionRuntime {
       bool activated = activate_task(parent);
       if (activated)
       {
+        executing_processor = Processor::NO_PROC;
         unmapped = 0;
         is_leaf = false;
       }
@@ -2689,7 +2710,7 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Task %s (ID %d) starting on processor %x",
-                this->variants->name, get_unique_id(), runtime->local_proc.id);
+                this->variants->name, get_unique_id(), executing_processor.id);
       assert(regions.size() == physical_instances.size());
 #endif
       physical_regions.resize(regions.size());
@@ -2759,10 +2780,10 @@ namespace RegionRuntime {
           // have been mapped
           size_t buffer_size = sizeof(Processor) + sizeof(Context);
           Serializer rez(buffer_size);
-          rez.serialize<Processor>(runtime->local_proc);
+          rez.serialize<Processor>(runtime->utility_proc);
           rez.serialize<Context>(this);
           // Launch the task on the utility processor
-          Processor utility = runtime->local_proc.get_utility_processor();
+          UtilityProcessor utility = runtime->utility_proc;
           utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,wait_on_event);
         }
       }
@@ -3158,6 +3179,7 @@ namespace RegionRuntime {
         assert(non_virtual_mapped_region.size() == regions.size());
 #endif
         result += (regions.size() * sizeof(bool));
+        result += sizeof(executing_processor);
       }
       return result;
     }
@@ -3176,6 +3198,7 @@ namespace RegionRuntime {
           bool non_virt = non_virtual_mapped_region[idx];
           rez.serialize<bool>(non_virt);
         }
+        rez.serialize<Processor>(executing_processor);
       }
     }
 
@@ -3194,6 +3217,7 @@ namespace RegionRuntime {
           derez.deserialize<bool>(non_virt);
           non_virtual_mapped_region.push_back(non_virt);
         }
+        derez.deserialize(executing_processor);
       }
     }
 
@@ -3223,8 +3247,17 @@ namespace RegionRuntime {
         // Otherwise see if we're going to do an actual mapping
         ContextID phy_ctx = get_enclosing_physical_context(regions[idx].parent);
         // First check to see if we want to map the given region  
-        if (invoke_mapper_map_region_virtual(idx))
+        if (invoke_mapper_map_region_virtual(idx, target))
         {
+          // Can't be a leaf task
+          if (is_leaf)
+          {
+            log_region(LEVEL_ERROR,"Illegal request for a virtual mapping of region (%x,%d,%d) index %d "
+                                  "in LEAF task %s (ID %d)", regions[idx].region.index_space.id,
+                                  regions[idx].region.field_space.id, regions[idx].region.tree_id, idx,
+                                  this->variants->name, get_unique_id());
+            exit(ERROR_VIRTUAL_MAP_IN_LEAF_TASK);
+          }
           // Want a virtual mapping
           lock();
           unmapped++;
@@ -3271,7 +3304,7 @@ namespace RegionRuntime {
           {
             unlock();
             // Mapping failed
-            invoke_mapper_failed_mapping(idx);
+            invoke_mapper_failed_mapping(idx, target);
             map_success = false;
             break;
           }
@@ -3289,6 +3322,8 @@ namespace RegionRuntime {
         Processor::Kind proc_kind = machine->get_processor_kind(target);
         const TaskVariantCollection::Variant &variant = this->variants->select_variant(is_index_space,proc_kind);
         this->is_leaf = variant.leaf;
+        // Since the mapping was a success we now know that we're going to run on this processor
+        this->executing_processor = target;
       }
       else
       {
@@ -3393,7 +3428,10 @@ namespace RegionRuntime {
       const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
       // Launch the task, passing the pointer to this Context as the argument
       SingleTask *this_ptr = this; // dumb c++
-      Event task_launch_event = runtime->local_proc.spawn(variant.low_id,&this_ptr,sizeof(SingleTask*),start_condition);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(this->executing_processor.exists());
+#endif
+      Event task_launch_event = this->executing_processor.spawn(variant.low_id,&this_ptr,sizeof(SingleTask*),start_condition);
 
       // After we launched the task, see if we had any atomic locks to release
       if (!needed_locks.empty())
@@ -3484,7 +3522,8 @@ namespace RegionRuntime {
             clone_instances[idx].remove_reference(unique_id, true/*strict*/);
             Event close_event = forest_ctx->close_to_instance(clone_ref, rm);
 #ifdef DEBUG_HIGH_LEVEL
-            assert(close_event != get_termination_event());
+            assert(close_event != single_event);
+            assert(close_event != multi_event);
 #endif
             wait_on_events.insert(close_event);
           }
@@ -3715,7 +3754,7 @@ namespace RegionRuntime {
       for (unsigned idx = 0; idx < splits.size(); idx++)
       {
         SliceTask *slice = this->clone_as_slice_task(splits[idx].space,
-                                                     splits[idx].p,
+                                                     splits[idx].group,
                                                      splits[idx].recurse,
                                                      splits[idx].stealable);
         slices.push_back(slice);
@@ -3866,7 +3905,7 @@ namespace RegionRuntime {
       bool activated = activate_single(parent);
       if (activated)
       {
-        target_proc = Processor::NO_PROC;
+        target_group = ProcessorGroup::NO_GROUP;
         distributed = false;
         locally_set = false;
         locally_mapped = false;
@@ -4045,14 +4084,14 @@ namespace RegionRuntime {
       assert(!distributed);
 #endif
       // Allow this to be re-entrant in case sanitization fails
-      target_proc = invoke_mapper_target_proc();
+      target_group = invoke_mapper_select_target_group();
       distributed = true;
-      bool is_local = (target_proc == runtime->local_proc);
+      bool is_local = runtime->is_local_group(target_group);
       // If the target processor isn't us we have to
       // send our task away
       if (!is_local)
       {
-        runtime->send_task(target_proc, this);
+        runtime->send_task(target_group, this);
       }
       return is_local; 
     }
@@ -4068,7 +4107,8 @@ namespace RegionRuntime {
 #endif
         finish_task_unpack();
       }
-      bool map_success = map_all_regions(target_proc, termination_event, termination_event); 
+      Processor target = invoke_mapper_select_final_proc(target_group);
+      bool map_success = map_all_regions(target, termination_event, termination_event); 
       if (map_success)
       {
         // Mark that we're no longer stealable now that we've been mapped
@@ -4400,6 +4440,7 @@ namespace RegionRuntime {
       derez.deserialize<bool>(stealable);
       stealable_set = true;
       remote = true;
+      target_group = runtime->local_group; // if we we're sent here this is our new target group
       derez.deserialize<UserEvent>(termination_event);
       derez.deserialize<Context>(orig_ctx);
       if (locally_mapped)
@@ -4634,10 +4675,10 @@ namespace RegionRuntime {
       {
         size_t buffer_size = sizeof(Processor)+sizeof(Context);
         Serializer rez(buffer_size);
-        rez.serialize<Processor>(runtime->local_proc);
+        rez.serialize<Processor>(runtime->utility_proc);
         rez.serialize<Context>(this);
         // Launch the task on the utility processor
-        Processor utility = runtime->local_proc.get_utility_processor();
+        UtilityProcessor utility = runtime->utility_proc;
         utility.spawn(FINISH_ID,rez.get_buffer(),buffer_size,wait_on_event);
       }
     }
@@ -5026,6 +5067,7 @@ namespace RegionRuntime {
         slice_owner = NULL;
         local_point_argument = NULL;
         local_point_argument_len = 0;
+        target_group = ProcessorGroup::NO_GROUP;
       }
       return activated;
     }
@@ -5115,7 +5157,14 @@ namespace RegionRuntime {
     bool PointTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      return map_all_regions(slice_owner->target_proc, point_termination_event,slice_owner->get_termination_event());
+      Processor target_proc = invoke_mapper_select_final_proc(target_group);
+      bool success = map_all_regions(target_proc, point_termination_event,
+                                      slice_owner->get_termination_event());
+      if (success && (unmapped == 0))
+      {
+        slice_owner->point_task_mapped(this);
+      }
+      return success;
     }
 
     //--------------------------------------------------------------------------
@@ -5301,8 +5350,12 @@ namespace RegionRuntime {
       // Issue the restoring copies for this task
       issue_restoring_copies(cleanup_events, point_termination_event, slice_owner->termination_event);
       unlock_context();
-      // notify the slice owner that this task has been mapped
-      slice_owner->point_task_mapped(this);
+      // If it hadn't been mapped already, notify it that it is now
+      if (unmapped > 0)
+      {
+        slice_owner->point_task_mapped(this);
+        unmapped = 0;
+      }
 
       // Now can invalidate any valid physical instances our context for
       // all the regions which we had as region requirements.  We can't invalidate
@@ -5323,10 +5376,10 @@ namespace RegionRuntime {
       {
         size_t buffer_size = sizeof(Processor)+sizeof(Context);
         Serializer rez(buffer_size);
-        rez.serialize<Processor>(runtime->local_proc);
+        rez.serialize<Processor>(runtime->utility_proc);
         rez.serialize<Context>(this);
         // Launch the task on the utility processor
-        Processor utility = runtime->local_proc.get_utility_processor();
+        UtilityProcessor utility = runtime->utility_proc;
         utility.spawn(FINISH_ID,rez.get_buffer(),buffer_size,wait_on_event);
       }
     }
@@ -6084,7 +6137,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    SliceTask* IndexTask::clone_as_slice_task(IndexSpace new_space, Processor target,
+    SliceTask* IndexTask::clone_as_slice_task(IndexSpace new_space, ProcessorGroup target,
                                               bool recurse, bool steal)
     //--------------------------------------------------------------------------
     {
@@ -6096,8 +6149,8 @@ namespace RegionRuntime {
       result->remote = false;
       result->is_leaf = false;
       result->termination_event = this->termination_event;
-      result->target_proc = target;
-      result->orig_proc = runtime->local_proc;
+      result->target_group = target;
+      result->orig_proc = this->orig_proc;
       result->index_owner = this;
       // denominator gets set by post_slice
       return result;
@@ -6202,6 +6255,7 @@ namespace RegionRuntime {
                                 const std::vector<unsigned> &non_virtual_mapped)
     //--------------------------------------------------------------------------
     {
+      lock_context();
       lock();
 #ifdef DEBUG_HIGH_LEVEL
       assert(points > 0);
@@ -6258,7 +6312,6 @@ namespace RegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         assert(mapped_points.size() == regions.size());
 #endif
-        lock_context();
         for (unsigned idx = 0; idx < regions.size(); idx++)
         {
           if (mapped_points[idx] < num_total_points)
@@ -6278,7 +6331,6 @@ namespace RegionRuntime {
             waiters.clear();
           }
         }
-        unlock_context();
         // Check to see if we're fully mapped, if so trigger the mapped event
         if (unmapped == 0)
         {
@@ -6286,12 +6338,14 @@ namespace RegionRuntime {
         }
       }
       unlock(); 
+      unlock_context();
     }
 
     //--------------------------------------------------------------------------
     void IndexTask::slice_mapped(const std::vector<unsigned> &virtual_mapped)
     //--------------------------------------------------------------------------
     {
+      lock_context();
       lock();
 #ifdef DEBUG_HIGH_LEVEL
       assert(virtual_mapped.size() == mapped_points.size());
@@ -6334,6 +6388,7 @@ namespace RegionRuntime {
         }
       }
       unlock();
+      unlock_context();
     }
 
     //--------------------------------------------------------------------------
@@ -6553,8 +6608,7 @@ namespace RegionRuntime {
         remote = false;
         is_leaf = false;
         termination_event = Event::NO_EVENT;
-        target_proc = Processor::NO_PROC;
-        orig_proc = runtime->local_proc;
+        target_group = ProcessorGroup::NO_GROUP;
         index_owner = NULL;
         remote_start_event = Event::NO_EVENT;
         remote_mapped_event = Event::NO_EVENT;
@@ -6655,9 +6709,9 @@ namespace RegionRuntime {
 #endif
       distributed = true;
       // Check to see if the target processor is the local one
-      if (target_proc != runtime->local_proc)
+      if (!runtime->is_local_group(target_group))
       {
-        runtime->send_task(target_proc,this);
+        runtime->send_task(target_group,this);
         // Now we can deactivate this task since it's been distributed
         this->deactivate();
         return false;
@@ -6906,6 +6960,7 @@ namespace RegionRuntime {
       // to allow many children to run while others are still being instantiated
       // and mapped.
       bool all_mapped = (num_unmapped_points==0);
+      bool all_finished = (num_unfinished_points == 0);
       if (map_success)
         enumerating = false; // need this here to make sure post_slice_mapped gets called after post_slice_start
       unlock();
@@ -6913,6 +6968,10 @@ namespace RegionRuntime {
       if (map_success && all_mapped)
       {
         post_slice_mapped();
+      }
+      if (map_success && all_finished)
+      {
+        post_slice_finished();
       }
       return map_success;
     }
@@ -7168,6 +7227,7 @@ namespace RegionRuntime {
       if (locally_mapped)
         derez.deserialize<bool>(is_leaf);
       derez.deserialize<Event>(termination_event);
+      target_group = runtime->local_group; // if it was sent here, this is the target group
       derez.deserialize<IndexTask*>(index_owner);
       derez.deserialize<unsigned long>(denominator);
       remaining_bytes = derez.get_remaining_bytes();
@@ -7330,7 +7390,7 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    SliceTask* SliceTask::clone_as_slice_task(IndexSpace new_space, Processor target,
+    SliceTask* SliceTask::clone_as_slice_task(IndexSpace new_space, ProcessorGroup target,
                                               bool recurse, bool steal)
     //--------------------------------------------------------------------------
     {
@@ -7342,8 +7402,7 @@ namespace RegionRuntime {
       result->remote = this->remote;
       result->is_leaf = false; // still unknown
       result->termination_event = this->termination_event;
-      result->target_proc = target;
-      result->orig_proc = this->orig_proc;
+      result->target_group = target;
       result->index_owner = this->index_owner;
       result->partially_unpacked = this->partially_unpacked;
       if (partially_unpacked)
@@ -7413,6 +7472,7 @@ namespace RegionRuntime {
       // Clear out the region requirements since we don't actually want that clone
       result->regions.clear();
       result->slice_owner = this;
+      result->target_group = this->target_group;
       if (new_point)
         result->point_termination_event = UserEvent::create_user_event();
       return result;
@@ -7585,8 +7645,7 @@ namespace RegionRuntime {
       }
       if (remote)
       {
-        // Only send stuff back if we're not a leaf and there were virtual mappings.
-        // Virtual mappings for leaf tasks are dumb and will create a warning.
+        // Only send stuff back if we're not a leaf.
         if (!is_leaf)
         {
           // Need to send back the results to the enclosing context

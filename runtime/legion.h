@@ -122,6 +122,8 @@ namespace RegionRuntime {
       template<typename PT, unsigned DIM>
       void get_index_point(PT buffer[DIM]) const;
       inline bool is_stolen(void) const { return (steal_count > 0); }
+    public:
+      virtual UniqueID get_unique_task_id(void) const = 0;
     protected:
       // Only the high level runtime should be able to make these
       friend class HighLevelRuntime;
@@ -1002,6 +1004,9 @@ namespace RegionRuntime {
       // Call this when an operation completes to tell the runtime that
       // an operation is no longer in flight in a given context.
       void notify_operation_complete(Context parent);
+      // Figure out if thie target processor is local or not to this runtime
+      bool is_local_processor(Processor target) const;
+      bool is_local_group(ProcessorGroup target) const;
     private:
       // These tasks manage how big a task window is for each parent task
       // to prevent tasks from running too far into the future.  For each operation
@@ -1042,8 +1047,8 @@ namespace RegionRuntime {
 #endif
     protected:
       // Send tasks to remote processors
-      void send_task(Processor target_proc, TaskContext *task) const;
-      void send_tasks(Processor target_proc, const std::set<TaskContext*> &tasks) const;
+      void send_task(ProcessorGroup target_group, TaskContext *task) const;
+      void send_tasks(ProcessorGroup target_group, const std::set<TaskContext*> &tasks) const;
     private:
       // Operations invoked by static methods
       void process_tasks(const void * args, size_t arglen); 
@@ -1066,7 +1071,7 @@ namespace RegionRuntime {
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
       // Static variables
-      static HighLevelRuntime *runtime_map;
+      static HighLevelRuntime **runtime_map;
       static volatile RegistrationCallbackFnptr registration_callback;
       static Processor::TaskFuncID legion_main_id;
 #ifdef INORDER_EXECUTION
@@ -1080,8 +1085,10 @@ namespace RegionRuntime {
 #endif
     private:
       // Member variables
-      const Processor local_proc;
+      const UtilityProcessor utility_proc;
       const Processor::Kind proc_kind;
+      const ProcessorGroup local_group;
+      const std::set<Processor> &local_procs;
       Machine *const machine;
       std::vector<Mapper*> mapper_objects;
 #ifdef LOW_LEVEL_LOCKS
@@ -1186,8 +1193,8 @@ namespace RegionRuntime {
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
       // Information for stealing
       const unsigned int max_outstanding_steals;
-      std::map<MapperID,std::set<Processor> > outstanding_steals;
-      std::multimap<MapperID,Processor> failed_thiefs;
+      std::map<MapperID,std::set<ProcessorGroup> > outstanding_steals;
+      std::multimap<MapperID,ProcessorGroup> failed_thiefs;
 #ifdef LOW_LEVEL_LOCKS
       Lock stealing_lock;
       Lock thieving_lock;
@@ -1228,19 +1235,19 @@ namespace RegionRuntime {
 
       struct IndexSplit {
       public:
-        IndexSplit(IndexSpace sp, Processor proc, 
+        IndexSplit(IndexSpace sp, ProcessorGroup g, 
                    bool rec, bool steal)
-          : space(sp), p(proc), 
+          : space(sp), group(g), 
             recurse(rec), stealable(steal) { }
       public:
         IndexSpace space;
-        Processor p;
+        ProcessorGroup group;
         bool recurse;
         bool stealable;
       };
     public:
-      Mapper(Machine *machine, HighLevelRuntime *runtime, Processor local);
-      virtual ~Mapper() {}
+      Mapper(void) { }
+      virtual ~Mapper(void) { }
     public:
       /**
        * Select which tasks should be scheduled.  The mapper is given a list of
@@ -1248,7 +1255,7 @@ namespace RegionRuntime {
        * the list where all the bits are initially set to false.  The mapper sets 
        * the bits to true if it wants that task to be scheduled.
        */
-      virtual void select_tasks_to_schedule(const std::list<Task*> &ready_tasks, std::vector<bool> &ready_mask);
+      virtual void select_tasks_to_schedule(const std::list<Task*> &ready_tasks, std::vector<bool> &ready_mask) = 0;
 
       /**
        * Return a boolean whether this task should be mapped locally.
@@ -1258,21 +1265,29 @@ namespace RegionRuntime {
        * and the task will not be stealable, because it will be mapped by
        * the mapper with the intention of running on a specific processor.
        */
-      virtual bool map_task_locally(const Task *task);
+      virtual bool map_task_locally(const Task *task) = 0;
 
       /**
        * Return a boolean indicating whether this task should be spawned.
        * If it is spawned then the task will be eligible for stealing, otherwise
        * it will never be able to be stolen.
        */
-      virtual bool spawn_task(const Task *task);
+      virtual bool spawn_task(const Task *task) = 0;
 
       /**
-       * Select a target processor for running this task.  Note this doesn't
-       * guarantee that the task will be run on the specified processor if the
-       * mapper allows stealing.
+       * Select a target processor group for running this task.  Note this doesn't
+       * guarantee that the task will be run on the specified processor group if the
+       * task has been spawned and the mapper allows stealing.
        */
-      virtual Processor select_initial_processor(const Task *task);
+      virtual ProcessorGroup select_target_group(const Task *task) = 0;
+
+      /**
+       * If there are multiple processors in the current processor group
+       * the runtime will ask the mapper to select the final one on which
+       * to run.  Picking this processor guarantees that the task will be
+       * run on this processor.
+       */
+      virtual Processor select_final_processor(const Task *task, const std::set<Processor> &options) = 0;
 
       /**
        * Select a processor from which to attempt a task steal.  The runtime
@@ -1280,28 +1295,29 @@ namespace RegionRuntime {
        * that failed and are blacklisted.  Any attempts to send a steal request
        * to a blacklisted processor will not be performed.
        */
-      virtual Processor target_task_steal(const std::set<Processor> &blacklisted);
+      virtual ProcessorGroup target_task_steal(const std::set<ProcessorGroup> &blacklisted) = 0;
 
       /**
        * The processor specified by 'thief' is attempting a steal on this processor.
        * Given the list of tasks managed by this mapper, specify which tasks are
        * permitted to be stolen by adding them to the 'to_steal' list.
        */
-      virtual void permit_task_steal( Processor thief, const std::vector<const Task*> &tasks,
-                                      std::set<const Task*> &to_steal);
+      virtual void permit_task_steal(ProcessorGroup thief, const std::vector<const Task*> &tasks,
+                                      std::set<const Task*> &to_steal) = 0;
 
       /**
        * Given a task to be run over an index space, specify whether the task should
        * be devided into smaller chunks by adding constraints to the current index space.
        */
       virtual void slice_index_space(const Task *task, const IndexSpace &index_space,
-                                      std::vector<IndexSplit> &slice);
+                                      std::vector<IndexSplit> &slice) = 0;
 
       /**
        * Ask the given mapper if it wants to perform a virtual mapping for the given region.
        * Return true if the region should be virtually mapped, otherwise return false.
        */
-      virtual bool map_region_virtually(const Task *task, const RegionRequirement &req, unsigned index);
+      virtual bool map_region_virtually(const Task *task, Processor target,
+                                        const RegionRequirement &req, unsigned index) = 0;
 
       /**
        * The specified task is being mapped on the current processor.  For the given
@@ -1312,11 +1328,12 @@ namespace RegionRuntime {
        * Write-After-Read optimization of making an additional copy of the data.  The
        * default value for enable_WAR_optimization is true. 
        */
-      virtual void map_task_region(const Task *task, Processor target, MappingTagID tag, bool inline_mapping,
+      virtual void map_task_region(const Task *task, Processor target, 
+                                    MappingTagID tag, bool inline_mapping,
                                     const RegionRequirement &req, unsigned index,
                                     const std::map<Memory,bool/*all-fields-up-to-date*/> &current_instances,
                                     std::vector<Memory> &target_ranking,
-                                    bool &enable_WAR_optimization);
+                                    bool &enable_WAR_optimization) = 0;
 
       /**
        * Whenever a task fails to map, tell the mapper about it so that is aware of which
@@ -1324,7 +1341,8 @@ namespace RegionRuntime {
        * Note there is nothing returned to the high-level in this case so the mapper
        * can do nothing for this call if it wants.
        */
-      virtual void notify_failed_mapping(const Task *task, const RegionRequirement &req, unsigned index, bool inline_mapping);
+      virtual void notify_failed_mapping(const Task *task, Processor target,
+                                          const RegionRequirement &req, unsigned index, bool inline_mapping) = 0;
 
       /**
        * Once a region has been mapped into a specify memory, the programmer must select
@@ -1332,8 +1350,9 @@ namespace RegionRuntime {
        * is 1 and struct-of-arrays is 'max_blocking_factor'.  Other common choices might
        * correspond to the number of elements that can be handled by vector units.
        */
-      virtual size_t select_region_layout(const Task *task, const RegionRequirement &req, unsigned index,
-                                        const Memory & chosen_mem, size_t max_blocking_factor); 
+      virtual size_t select_region_layout(const Task *task, Processor target,
+                                          const RegionRequirement &req, unsigned index,
+                                          const Memory & chosen_mem, size_t max_blocking_factor) = 0; 
 
       /**
        * A copy-up operation is occuring to write dirty data back to a parent physical
@@ -1347,12 +1366,13 @@ namespace RegionRuntime {
        * last parameter lets the mapper say whether the runtime should only try to create
        * one or all of the instances (default is true).
        */
-      virtual void rank_copy_targets(const Task *task, MappingTagID tag, bool inline_mapping,
+      virtual void rank_copy_targets(const Task *task, Processor target,
+                                    MappingTagID tag, bool inline_mapping,
                                     const RegionRequirement &req, unsigned index,
                                     const std::set<Memory> &current_instances,
                                     std::set<Memory> &to_reuse,
                                     std::vector<Memory> &to_create,
-                                    bool &create_one);
+                                    bool &create_one) = 0;
 
       /**
        * A copy operation needs to be performed to move data to a physical instance
@@ -1361,42 +1381,14 @@ namespace RegionRuntime {
        * If the returned vector is empty, the runtime will issue copies in a random order.
        */
       virtual void rank_copy_sources(const std::set<Memory> &current_instances,
-                                     const Memory &dst, std::vector<Memory> &chosen_order);
+                                     const Memory &dst, std::vector<Memory> &chosen_order) = 0;
 
 
       /**
        * Ask the mapper for a given predicate if it would like to speculate and if
        * so what the speculative value for the predicate should be.
        */
-      virtual bool speculate_on_predicate(MappingTagID tag, bool &speculative_value);
-    protected:
-      HighLevelRuntime *const runtime;
-      const Processor local_proc;
-      Machine *const machine;
-      // The kind of processor being controlled by this mapper
-      Processor::Kind proc_kind;
-      // The maximum number of tasks a mapper will allow to be stolen at a time
-      // Controlled by -dm:thefts
-      unsigned max_steals_per_theft;
-      // The maximum number of times that a single task is allowed to be stolen
-      // Controlled by -dm:count
-      unsigned max_steal_count;
-      // The splitting factor for breaking index spaces across the machine
-      // Mapper will try to break the space into split_factor * num_procs
-      // difference pieces
-      // Controlled by -dm:split
-      unsigned splitting_factor;
-      // Whether or not copies can be made to avoid Write-After-Read dependences
-      // Controlled by -dm:war
-      bool war_enabled;
-      // The memory stack for this mapper
-      // Ranked from the best memories in front the worst at the back
-      std::vector<Memory> memory_stack;
-      // The group of processors that this mapper can send tasks to
-      std::vector<Processor> proc_group;
-      // The map of target processors for tasks that need a processor
-      // different from the kind of processor that we are
-      std::map<Processor::Kind,Processor> alt_proc_map;
+      virtual bool speculate_on_predicate(MappingTagID tag, bool &speculative_value) = 0;
     };
 
     /////////////////////////////////////////////////////////////////////

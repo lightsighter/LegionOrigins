@@ -95,6 +95,7 @@ namespace RegionRuntime {
       ERROR_INDEPENDENT_SLICES_VIOLATION = 60,
       ERROR_INVALID_REGION_HANDLE = 61,
       ERROR_INVALID_PARTITION_HANDLE = 62,
+      ERROR_VIRTUAL_MAP_IN_LEAF_TASK = 63,
     };
 
     // enum and namepsaces don't really get along well
@@ -261,6 +262,8 @@ namespace RegionRuntime {
     typedef LowLevel::RegionInstance PhysicalInstance;
     typedef LowLevel::Memory Memory;
     typedef LowLevel::Processor Processor;
+    typedef LowLevel::UtilityProcessor UtilityProcessor;
+    typedef LowLevel::ProcessorGroup ProcessorGroup;
     typedef LowLevel::Event Event;
     typedef LowLevel::UserEvent UserEvent;
     typedef LowLevel::Lock Lock;
@@ -284,7 +287,7 @@ namespace RegionRuntime {
     typedef unsigned int UniqueManagerID;
     typedef Processor::TaskFuncID TaskID;
     typedef SingleTask* Context;
-    typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, Processor local);
+    typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, ProcessorGroup group);
     typedef Color (*ProjectionFnptr)(const void*,size_t,unsigned);
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;

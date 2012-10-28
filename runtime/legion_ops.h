@@ -245,6 +245,9 @@ namespace RegionRuntime {
       virtual void unpack_task(Deserializer &derez) = 0;
       virtual void finish_task_unpack(void) = 0;
     public:
+      // Functions from Task
+      virtual UniqueID get_unique_task_id(void) const { return get_unique_id(); }
+    public:
       // For returning privileges (stored in create_* lists)
       void return_privileges(const std::set<IndexSpace> &new_indexes,
                              const std::set<FieldSpace> &new_fields,
@@ -269,9 +272,10 @@ namespace RegionRuntime {
     protected:
       bool invoke_mapper_locally_mapped(void);
       bool invoke_mapper_stealable(void);
-      bool invoke_mapper_map_region_virtual(unsigned idx);
-      Processor invoke_mapper_target_proc(void);
-      void invoke_mapper_failed_mapping(unsigned idx);
+      bool invoke_mapper_map_region_virtual(unsigned idx, Processor target);
+      ProcessorGroup invoke_mapper_select_target_group(void);
+      Processor invoke_mapper_select_final_proc(ProcessorGroup group);
+      void invoke_mapper_failed_mapping(unsigned idx, Processor target);
     protected:
       void clone_task_context_from(TaskContext *rhs);
     protected:
@@ -410,6 +414,7 @@ namespace RegionRuntime {
       virtual void remote_finish(const void *args, size_t arglen) = 0;
     public:
       const RegionRequirement& get_region_requirement(unsigned idx);
+      Processor get_executing_processor(void) const { return executing_processor; }
     public:
       void register_deletion(LogicalRegion handle);
       void register_deletion(LogicalPartition handle);
@@ -445,6 +450,9 @@ namespace RegionRuntime {
       void issue_restoring_copies(std::set<Event> &wait_on_events, Event single, Event multi);
       void invalidate_owned_contexts(void);
     protected:
+      // The processor on which this task is executing
+      ProcessorGroup target_group;
+      Processor executing_processor;
       unsigned unmapped; // number of regions still unmapped
       std::vector<bool> non_virtual_mapped_region;
       // This vector is filled in by perform_operation which does the mapping
@@ -536,7 +544,7 @@ namespace RegionRuntime {
       bool slice_index_space(void);
       virtual bool pre_slice(void) = 0;
       virtual bool post_slice(void) = 0; // What to do after slicing
-      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
+      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, ProcessorGroup target_group, 
                                              bool recurse, bool stealable) = 0;
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event) = 0;
       void clone_multi_from(MultiTask *rhs, IndexSpace new_space, bool recurse);
@@ -614,7 +622,6 @@ namespace RegionRuntime {
     public:
       Future get_future(void);
     private:
-      Processor target_proc;
       // Keep track of both whether the value has been set as well
       // as what its value is if it has
       bool distributed;
@@ -750,7 +757,7 @@ namespace RegionRuntime {
     public:
       // Function from MultiTask
       virtual bool map_and_launch(void);
-      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
+      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, ProcessorGroup target_group, 
                                              bool recurse, bool stealable);
       virtual bool pre_slice(void);
       virtual bool post_slice(void);
@@ -854,7 +861,7 @@ namespace RegionRuntime {
     public:
       // Functions from MultiTask
       virtual bool map_and_launch(void);
-      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
+      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, ProcessorGroup target_group, 
                                              bool recurse, bool stealable);
       virtual bool pre_slice(void);
       virtual bool post_slice(void);
@@ -883,7 +890,7 @@ namespace RegionRuntime {
       bool remote;
       bool is_leaf;
       Event termination_event;
-      Processor target_proc;
+      ProcessorGroup target_group;
       std::vector<PointTask*> points;
       // For remote slices
       // orig_proc from Task

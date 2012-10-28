@@ -790,7 +790,7 @@ namespace RegionRuntime {
       }
       inline const FieldMask& get_allocated_fields(void) const { return allocated_fields; }
       inline bool is_remote(void) const { return remote; }
-      inline bool is_returned(void) const { return returned; }
+      inline bool is_returned(void) const { return remote_frac.is_empty(); }
       inline bool is_clone(void) const { return clone; }
       inline Lock get_lock(void) const { return lock; }
       inline UniqueManagerID get_unique_id(void) const { return unique_id; }
@@ -843,7 +843,6 @@ namespace RegionRuntime {
       unsigned references;
       const UniqueManagerID unique_id;
       bool remote;
-      bool returned;
       const bool clone;
       InstFrac remote_frac; // The fraction we are remote from somewhere else
       InstFrac local_frac; // Fraction of this instance info that is still here

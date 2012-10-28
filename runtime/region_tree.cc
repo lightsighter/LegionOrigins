@@ -5616,7 +5616,8 @@ namespace RegionRuntime {
       {
         DetailedTimer::ScopedPush sp(TIME_MAPPER);
         AutoLock m_lock(rm.mapper_lock);
-        blocking_factor = rm.mapper->select_region_layout(rm.task, rm.req, rm.idx, location, blocking_factor);
+        blocking_factor = rm.mapper->select_region_layout(rm.task, rm.target, rm.req, 
+                                                          rm.idx, location, blocking_factor);
       }
       FieldSpaceNode *field_node = context->get_node(handle.field_space);
       // Now get the field Mask and see if we can make the instance
@@ -6951,7 +6952,7 @@ namespace RegionRuntime {
     InstanceManager::InstanceManager(Memory m, PhysicalInstance inst, 
             const std::map<FieldID,IndexSpace::CopySrcDstField> &infos, FieldSpace fsp,
             const FieldMask &mask, RegionTreeForest *ctx, UniqueManagerID mid, bool rem, bool cl)
-      : context(ctx), references(0), unique_id(mid), remote(rem), returned(false), clone(cl), 
+      : context(ctx), references(0), unique_id(mid), remote(rem), clone(cl), 
         remote_frac(Fraction<unsigned long>(0,1)), local_frac(Fraction<unsigned long>(1,1)), 
         location(m), instance(inst), fspace(fsp), allocated_fields(mask), field_infos(infos)
     //--------------------------------------------------------------------------
@@ -7254,14 +7255,12 @@ namespace RegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(remote);
-      assert(!returned);
       assert(is_valid_free());
       assert(!remote_frac.is_empty());
 #endif
       InstFrac return_frac = remote_frac;
       rez.serialize(return_frac);
       remote_frac.subtract(return_frac);
-      returned = true;
 #ifdef DEBUG_HIGH_LEVEL
       assert(remote_frac.is_empty());
 #endif
@@ -7291,7 +7290,7 @@ namespace RegionRuntime {
 #ifndef DISABLE_GC
       if (!remote && !clone && (references == 0) && local_frac.is_whole())
       {
-        log_garbage(LEVEL_INFO,"Garbage collecting physical instance %x in memory %x",instance.id, location.id);
+        log_garbage(LEVEL_DEBUG,"Garbage collecting physical instance %x in memory %x",instance.id, location.id);
         instance.destroy();
         lock.destroy_lock();
         instance = PhysicalInstance::NO_INST;
@@ -9480,7 +9479,8 @@ namespace RegionRuntime {
         {
           DetailedTimer::ScopedPush sp(TIME_MAPPER);
           AutoLock m_lock(rm.mapper_lock);
-          rm.mapper->rank_copy_targets(rm.task, rm.tag, rm.inline_mapping, rm.req, rm.idx, valid_memories, to_reuse, to_create, create_one);
+          rm.mapper->rank_copy_targets(rm.task, rm.target, rm.tag, rm.inline_mapping, rm.req, 
+                                        rm.idx, valid_memories, to_reuse, to_create, create_one);
         }
         // Now process the results
         // First see if we should re-use any instances
