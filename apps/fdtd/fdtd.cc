@@ -897,7 +897,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
-                    Processor local) {
+                    ProcessorGroup local_group) {
   // TODO (Elliott): Customize mappers
 }
 
