@@ -1629,6 +1629,12 @@ namespace RegionRuntime {
     //--------------------------------------------------------------------------
     {
       const std::set<Processor> &options = group.get_all_processors();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!options.empty());
+#endif
+      // If there is only one then we know which one to pick
+      if (options.size() == 1)
+        return *(options.begin());
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
       Processor result = mapper->select_final_processor(this, options); 
