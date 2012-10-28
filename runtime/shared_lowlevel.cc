@@ -3550,7 +3550,7 @@ namespace RegionRuntime {
             p.id = idx + 1;
             procs.insert(p);
             // Figure out which utility processor this guy gets
-            unsigned utility_idx = idx/((num_cpus + (num_utility_cpus-1))/num_utility_cpus);
+            unsigned utility_idx = idx % num_utility_cpus;
 #ifdef DEBUG_LOW_LEVEL
             assert(utility_idx < num_utility_cpus);
 #endif
