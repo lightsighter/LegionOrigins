@@ -843,11 +843,11 @@
 
 \setlength{\topsep}{\standardvspace}
 \if \@blockstyle
-  \setlength{\itemsep}{1pt}
-  \setlength{\parsep}{3pt}
+  \setlength{\itemsep}{0pt}
+  \setlength{\parsep}{0pt}
 \else
-  \setlength{\itemsep}{1pt}
-  \setlength{\parsep}{3pt}
+  \setlength{\itemsep}{0pt}
+  \setlength{\parsep}{0pt}
 \fi
 
 \renewcommand{\labelitemi}{{\small \centeroncapheight{\textbullet}}}
