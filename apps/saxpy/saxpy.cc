@@ -667,7 +667,7 @@ public:
   }
 };
 #endif
-
+#if 0
 class TestMapper : public Mapper {
 public:
   TestMapper(Machine *machine, HighLevelRuntime *runtime, Processor local)
@@ -759,9 +759,10 @@ private:
   std::vector<Memory> ordered_mems;
   Memory last_memory;
 };
+#endif
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
-                    Processor local) {
+                    ProcessorGroup local_group) {
 #ifdef USE_SAXPY_SHARED
   //runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
 #else
