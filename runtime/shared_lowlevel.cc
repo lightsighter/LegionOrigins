@@ -20,13 +20,9 @@
 #define BASE_ALLOCATORS	64
 #define BASE_INSTANCES	64
 
-// Minimum number of tasks are processor can
-// have in its queues before the scheduler is invoked
-#define MIN_SCHED_TASKS	1
-
 // The number of threads for this version
 #define NUM_PROCS	4
-#define NUM_UTILITY_PROCS 0
+#define NUM_UTIL_PROCS  0
 // Maximum memory in global
 #define GLOBAL_MEM      4096   // (MB)	
 #define LOCAL_MEM       16384  // (KB)
@@ -397,37 +393,39 @@ namespace RegionRuntime {
 
     class ProcessorImpl : public Triggerable {
     public:
-	ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, size_t stacksize, bool is_utility = false, unsigned num_owners = 0) :
-		init_bar(init), task_table(table), proc(p), utility_proc(p),
-                has_scheduler(!is_utility && (table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end())),
-                is_utility_proc(is_utility), remaining_stops(num_owners), 
-                scheduler_invoked(false), util_shutdown(is_utility) /*utility processors have no utility to shut down*/
-	{
-                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
-                wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
-		PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
-		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
-                PTHREAD_SAFE_CALL(pthread_attr_init(&attr));
-                PTHREAD_SAFE_CALL(pthread_attr_setstacksize(&attr,stacksize));
-		shutdown = false;
-		shutdown_trigger = NULL;
-                idle_task_enabled = true;
-	}
-        ProcessorImpl(pthread_barrier_t *init, Processor::TaskIDTable table, Processor p, Processor utility, size_t stacksize) :
-                init_bar(init), task_table(table), proc(p), utility_proc(utility),
-                has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
-                is_utility_proc(false), remaining_stops(0), 
-                scheduler_invoked(false), util_shutdown(false) /*might have utility processor to shutdown*/
+        // For creation of normal processors when there is no utility processors
+        ProcessorImpl(pthread_barrier_t *init, const Processor::TaskIDTable &table, 
+                      Processor p, size_t stacksize) 
+          : init_bar(init), task_table(table), proc(p), utility_proc(this),
+            has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
+            is_utility_proc(true), remaining_stops(0),
+            scheduler_invoked(false), util_shutdown(true)
         {
-                mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
-                wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
-                PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
-		PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
-                PTHREAD_SAFE_CALL(pthread_attr_init(&attr));
-                PTHREAD_SAFE_CALL(pthread_attr_setstacksize(&attr,stacksize));
-		shutdown = false;
-		shutdown_trigger = NULL;
-                idle_task_enabled = true;
+          utility.id = p.id; // we are our own utility processor
+          initialize_state(stacksize);
+          // Add ourselves as the processor that we're managing 
+          util_users.insert(p);
+        }
+        // For the creation of normal processors when there are utility processors
+        ProcessorImpl(pthread_barrier_t *init, const Processor::TaskIDTable &table,
+                      Processor p, size_t stacksize, ProcessorImpl *util)
+          : init_bar(init), task_table(table), proc(p), 
+            utility(util->get_utility_processor()), utility_proc(util), has_scheduler(false),
+            is_utility_proc(false), remaining_stops(0),
+            scheduler_invoked(false), util_shutdown(false)
+        {
+          initialize_state(stacksize);
+        }
+        // For the creation of explicit utility processors
+        ProcessorImpl(pthread_barrier_t *init, const Processor::TaskIDTable &table,
+                      Processor p, size_t stacksize, unsigned num_owners)
+          : init_bar(init), task_table(table), proc(p), utility_proc(this),
+            has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
+            is_utility_proc(true), remaining_stops(num_owners),
+            scheduler_invoked(false), util_shutdown(true)
+        {
+          utility.id = p.id;
+          initialize_state(stacksize);
         }
         ~ProcessorImpl(void)
         {
@@ -437,11 +435,16 @@ namespace RegionRuntime {
                 free(mutex);
                 free(wait_cond);
         }
+    private:
+        void initialize_state(size_t stacksize);
     public:
         // Operations for utility processors
-        Processor get_utility_processor(void) const;
-        void release_user(Processor owner);
+        UtilityProcessor get_utility_processor(void) const;
+        ProcessorGroup get_processor_group(void) const;
+        void release_user(void);
         void utility_finish(void);
+        const std::set<Processor>& get_utility_users(void) const;
+        void add_utility_user(Processor p);
     public:
 	Event spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on);
@@ -469,7 +472,8 @@ namespace RegionRuntime {
         pthread_barrier_t *init_bar;
 	Processor::TaskIDTable task_table;
 	Processor proc;
-        Processor utility_proc;
+        UtilityProcessor utility;
+        ProcessorImpl *utility_proc;
 	std::list<TaskDesc> ready_queue;
 	std::list<TaskDesc> waiting_queue;
 	pthread_mutex_t *mutex;
@@ -485,7 +489,7 @@ namespace RegionRuntime {
         bool util_shutdown;       // for knowing when our utility processor is done
         std::set<Processor> util_users;// Users of the utility processor to know when it's safe to finish
     };
-    
+
     ////////////////////////////////////////////////////////
     // Events 
     ////////////////////////////////////////////////////////
@@ -1334,6 +1338,7 @@ namespace RegionRuntime {
     ////////////////////////////////////////////////////////
 
     /*static*/ const Processor Processor::NO_PROC = { 0 };
+    /*static*/ const ProcessorGroup ProcessorGroup::NO_GROUP = { 0 };
 
     // Processor Impl at top due to use in event
     
@@ -1345,25 +1350,59 @@ namespace RegionRuntime {
 	return p->spawn(func_id, args, arglen, wait_on);
     }
 
-    Processor Processor::get_utility_processor(void) const
+    UtilityProcessor Processor::get_utility_processor(void) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
         return p->get_utility_processor();
     }
 
-    void Processor::enable_idle_task(void)
+    ProcessorGroup Processor::get_processor_group(void) const
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
+        return p->get_processor_group();
+    }
+
+    void UtilityProcessor::enable_idle_task(void)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
         p->enable_idle_task();
     }
 
-    void Processor::disable_idle_task(void)
+    void UtilityProcessor::disable_idle_task(void)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
         p->disable_idle_task();
+    }
+
+    const std::set<Processor>& ProcessorGroup::get_all_processors(void) const
+    {
+        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
+        ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(get_utility_processor());
+        return p->get_utility_users();
+    }
+
+    UtilityProcessor ProcessorGroup::get_utility_processor(void) const
+    {
+        UtilityProcessor util;
+        util.id = id;
+        return util;
+    }
+
+    void ProcessorImpl::initialize_state(size_t stacksize)
+    {
+        mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+        wait_cond = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
+        PTHREAD_SAFE_CALL(pthread_mutex_init(mutex,NULL));
+        PTHREAD_SAFE_CALL(pthread_cond_init(wait_cond,NULL));
+        PTHREAD_SAFE_CALL(pthread_attr_init(&attr));
+        PTHREAD_SAFE_CALL(pthread_attr_setstacksize(&attr,stacksize));
+        shutdown = false;
+        shutdown_trigger = NULL;
+        idle_task_enabled = true;
     }
 
     Event ProcessorImpl::spawn(Processor::TaskFuncID func_id, const void * args,
@@ -1417,23 +1456,30 @@ namespace RegionRuntime {
 	return result;
     }
 
-    Processor ProcessorImpl::get_utility_processor(void) const
+    UtilityProcessor ProcessorImpl::get_utility_processor(void) const
     {
-#ifdef DEBUG_LOW_LEVEL
-        assert(!is_utility_proc);
-#endif
-        return utility_proc;
+        return utility;
     }
 
-    void ProcessorImpl::release_user(Processor owner)
+    ProcessorGroup ProcessorImpl::get_processor_group(void) const
+    {
+      if (is_utility_proc)
+      {
+        ProcessorGroup g;
+        g.id = utility.id;
+        return g;
+      }
+      else
+        return utility_proc->get_processor_group();
+    }
+
+    void ProcessorImpl::release_user()
     {
       PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
 #ifdef DEBUG_LOW_LEVEL
       assert(remaining_stops > 0);
-      assert(util_users.find(owner) == util_users.end());
 #endif
       remaining_stops--;
-      util_users.insert(owner); 
       // If we've had all our users released, we can shutdown
       if (remaining_stops == 0)
       {
@@ -1458,8 +1504,21 @@ namespace RegionRuntime {
       PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
+    const std::set<Processor>& ProcessorImpl::get_utility_users(void) const
+    {
+      return util_users;
+    }
+
+    void ProcessorImpl::add_utility_user(Processor p)
+    {
+      util_users.insert(p);
+    }
+
     void ProcessorImpl::enable_idle_task(void)
     {
+#ifdef DEBUG_LOW_LEVEL
+        assert(is_utility_proc);
+#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         idle_task_enabled = true;
         // Wake up thread so it can run the idle task
@@ -1469,6 +1528,9 @@ namespace RegionRuntime {
 
     void ProcessorImpl::disable_idle_task(void)
     {
+#ifdef DEBUG_LOW_LEVEL
+        assert(is_utility_proc);
+#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         idle_task_enabled = false;    
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
@@ -1479,7 +1541,7 @@ namespace RegionRuntime {
         //fprintf(stdout,"This is processor %d\n",proc.id);
         //fflush(stdout);
         // Check to see if there is an initialization task
-        if (!is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end()))
+        if (is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end()))
         {
           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_INIT];
           func(NULL, 0, proc);
@@ -1497,8 +1559,8 @@ namespace RegionRuntime {
         {
           PTHREAD_SAFE_CALL(bar_result);
         }
-        init_bar = NULL;
 #endif
+        init_bar = NULL;
         //fprintf(stdout,"Processor %d is starting\n",proc.id);
         //fflush(stdout);
 	// Processors run forever and permit shutdowns
@@ -1555,8 +1617,8 @@ namespace RegionRuntime {
 	// If there are too few, invoke the scheduler
         // If we've been told to shutdown, never invoke the scheduler
         // Utility proc can't have an idle task
-	if (!is_utility_proc && has_scheduler && idle_task_enabled && !scheduler_invoked && 
-            !shutdown && (ready_queue.size()/*+waiting_queue.size()*/) < MIN_SCHED_TASKS)
+	if (is_utility_proc && has_scheduler && idle_task_enabled && 
+            !scheduler_invoked && !shutdown)
 	{
                 // Mark that we're invoking the scheduler
                 scheduler_invoked = true;
@@ -1582,7 +1644,7 @@ namespace RegionRuntime {
                         // to do even though we've already exited
                         PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
                         // Check to see if there is a shutdown method
-                        if (!is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end()))
+                        if (is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end()))
                         {
                           // If there is, call the shutdown method before triggering
                           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_SHUTDOWN];
@@ -1594,10 +1656,13 @@ namespace RegionRuntime {
                         }
                         else
                         {
-                          // Send shutdown messages to all our users
+                          // Send shutdown messages to all our users that aren't us
                           for (std::set<Processor>::const_iterator it = util_users.begin();
                                 it != util_users.end(); it++)
                           {
+                            // Skip ourselves
+                            if ((*it) == proc)
+                              continue;
                             ProcessorImpl *orig = Runtime::get_runtime()->get_processor_impl(*it);
                             orig->utility_finish();
                           }
@@ -1628,20 +1693,16 @@ namespace RegionRuntime {
 		// Check for the shutdown function
 		if (task.func_id == 0)
 		{
-#ifdef DEBUG_LOW_LEVEL
-                        assert(!is_utility_proc); // utility processors should never get a kill pill
-#endif
                         shutdown = true;
                         shutdown_trigger = task.complete;
                         // Check to see if we have a utility processor, if so mark that we're done
                         // and then set the flag to indicate when the utility processor has drained
                         // its tasks
-                        if (!is_utility_proc && (utility_proc != proc))
+                        if (!is_utility_proc && (utility_proc != this))
                         {
                           util_shutdown = false;
                           // Tell our utility processor to tell us when it's done
-                          ProcessorImpl *util = Runtime::get_runtime()->get_processor_impl(utility_proc);
-                          util->release_user(proc);
+                          utility_proc->release_user();
                         }
                         else
                         {
@@ -3420,7 +3481,7 @@ namespace RegionRuntime {
 	}
 
         unsigned num_cpus = NUM_PROCS;
-        unsigned num_utility_cpus = NUM_UTILITY_PROCS;
+        unsigned num_utility_cpus = NUM_UTIL_PROCS;
         size_t cpu_mem_size_in_mb = GLOBAL_MEM;
         size_t cpu_l1_size_in_kb = LOCAL_MEM;
         size_t cpu_stack_size = STACK_SIZE;
@@ -3448,7 +3509,7 @@ namespace RegionRuntime {
 
         if (num_utility_cpus > num_cpus)
         {
-            fprintf(stderr,"The number of utility cpus (%d) cannot be greater than the number of cpus (%d)\n",num_utility_cpus,num_cpus);
+            fprintf(stderr,"The number of processor groups (%d) cannot be greater than the number of cpus (%d)\n",num_utility_cpus,num_cpus);
             fflush(stderr);
             exit(1);
         }
@@ -3459,18 +3520,69 @@ namespace RegionRuntime {
         // Initialize the logger
         Logger::init(*argc, (const char**)*argv);
 	
-        // Keep track of the number of users of each utility cpu
-        std::vector<unsigned> utility_users(num_utility_cpus);
-        for (unsigned idx = 0; idx < num_utility_cpus; idx++)
-        {
-                utility_users[idx] = 0;
-        }
-
-	// Fill in the tables
+        // Fill in the tables
         // find in proc 0 with NULL
         Runtime::runtime->processors.push_back(NULL);
         pthread_barrier_t *init_barrier = (pthread_barrier_t*)malloc(sizeof(pthread_barrier_t));
         PTHREAD_SAFE_CALL(pthread_barrier_init(init_barrier,NULL,(num_cpus+num_utility_cpus)));
+        if (num_utility_cpus > 0)
+        {
+          // This is the case where we have actual utility processors  
+
+          // Keep track of the number of users of each utility cpu
+          std::vector<ProcessorImpl*> temp_utils(num_utility_cpus);
+          for (unsigned idx = 0; idx < num_utility_cpus; idx++)
+          {
+            Processor p;
+            p.id = num_cpus+idx+1;
+            // Figure out how many users this guy will have
+            unsigned num_users = (num_cpus/num_utility_cpus) + (idx < (num_cpus%num_utility_cpus) ? 1 : 0);
+            temp_utils[idx] = new ProcessorImpl(init_barrier, task_table, p, cpu_stack_size, num_users);
+            // Make the processor groups at the same time
+            ProcessorGroup g;
+            g.id = num_cpus+idx+1;
+            groups.insert(g);
+          }
+          // Now we can make the processors themselves
+          for (unsigned idx = 0; idx < num_cpus; idx++)
+          {
+            Processor p;
+            p.id = idx + 1;
+            procs.insert(p);
+            // Figure out which utility processor this guy gets
+            unsigned utility_idx = idx/((num_cpus + (num_utility_cpus-1))/num_utility_cpus);
+#ifdef DEBUG_LOW_LEVEL
+            assert(utility_idx < num_utility_cpus);
+#endif
+            ProcessorImpl *impl = new ProcessorImpl(init_barrier, task_table, p, cpu_stack_size, temp_utils[utility_idx]);
+            // Add this processor as utility user
+            temp_utils[utility_idx]->add_utility_user(p);
+            Runtime::runtime->processors.push_back(impl);
+          }
+          // Finally we can add the utility processors to the set of processors
+          for (unsigned idx = 0; idx < num_utility_cpus; idx++)
+          {
+            Runtime::runtime->processors.push_back(temp_utils[idx]);
+          }
+        }
+        else
+        {
+          // This is the case where everyone processor is its own utility processor
+          for (unsigned idx = 0; idx < num_cpus; idx++)
+          {
+            Processor p;
+            p.id = idx + 1;
+            procs.insert(p);
+            ProcessorImpl *impl = new ProcessorImpl(init_barrier, task_table, p, cpu_stack_size);
+            Runtime::runtime->processors.push_back(impl);
+            // Make the processor groups too
+            ProcessorGroup g;
+            g.id = idx + 1;
+            groups.insert(g);
+          }
+        }
+	
+#if 0
 	for (unsigned id=1; id<=num_cpus; id++)
 	{
 		Processor p;
@@ -3508,6 +3620,7 @@ namespace RegionRuntime {
                 ProcessorImpl *impl = new ProcessorImpl(init_barrier,task_table, p, cpu_stack_size, true/*utility*/, utility_users[id-1]);
                 Runtime::runtime->processors.push_back(impl);
         }
+#endif
 	{
                 // Make the first memory null
                 Runtime::runtime->memories.push_back(NULL);

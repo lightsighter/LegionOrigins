@@ -18,10 +18,14 @@ namespace RegionRuntime {
     class Lock;
     class Memory;
     class Processor;
+    class UtilityProcessor;
+    class ProcessorGroup;
 
     class IndexSpace;
     class IndexSpaceAllocator;
     class RegionInstance;
+
+    class Machine;
 
     class Event {
     public:
@@ -112,7 +116,7 @@ namespace RegionRuntime {
 
       size_t data_size(void) const;
       void *data_ptr(void) const;
-  };
+    };
 
     class Processor {
     public:
@@ -129,10 +133,8 @@ namespace RegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
-      Processor get_utility_processor(void) const;
-
-      void enable_idle_task(void);
-      void disable_idle_task(void);
+      UtilityProcessor get_utility_processor(void) const;
+      ProcessorGroup get_processor_group(void) const;
 
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);
@@ -145,19 +147,39 @@ namespace RegionRuntime {
 	UTIL_PROC, // Utility core
       };
 
-
       // special task IDs
       enum {
         // Save ID 0 for the force shutdown function
 	TASK_ID_REQUEST_SHUTDOWN   = 0,
-	TASK_ID_PROCESSOR_INIT     = 1,
-	TASK_ID_PROCESSOR_SHUTDOWN = 2,
-	TASK_ID_PROCESSOR_IDLE     = 3, // typically used for high-level scheduler
+	TASK_ID_PROCESSOR_INIT     = 1, // only called by utility processors
+	TASK_ID_PROCESSOR_SHUTDOWN = 2, // only called by utility processors
+	TASK_ID_PROCESSOR_IDLE     = 3, // typically used for high-level scheduler, only called by utility processors
 	TASK_ID_FIRST_AVAILABLE    = 4,
       };
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
 		  Event wait_on = Event::NO_EVENT) const;
+    };
+
+    class UtilityProcessor : public Processor {
+    public:
+      void enable_idle_task(void);
+      void disable_idle_task(void);
+    };
+
+    class ProcessorGroup {
+    public:
+      typedef unsigned id_t;
+      id_t id;
+      bool operator<(const ProcessorGroup& rhs) const { return id < rhs.id; }
+      bool operator==(const ProcessorGroup& rhs) const { return id == rhs.id; }
+      bool operator!=(const ProcessorGroup& rhs) const { return id != rhs.id; }
+
+      static const ProcessorGroup NO_GROUP;
+      bool exists(void) const { return id != 0; }
+    public:
+      const std::set<Processor>& get_all_processors(void) const;
+      UtilityProcessor get_utility_processor(void) const;
     };
 
     class Memory {
@@ -953,6 +975,7 @@ namespace RegionRuntime {
     public:
       const std::set<Memory>&    get_all_memories(void) const { return memories; }
       const std::set<Processor>& get_all_processors(void) const { return procs; }
+      const std::set<ProcessorGroup>& get_all_groups(void) const { return groups; }
       // Return the set of memories visible from a processor
       const std::set<Memory>&    get_visible_memories(Processor p) const
       { return visible_memories_from_procs.find(p)->second; }
@@ -970,7 +993,7 @@ namespace RegionRuntime {
 
       //void add_processor(Processor p) { procs.insert(p); }
       static Machine* get_machine(void);
-
+    public:
       struct ProcessorMemoryAffinity {
 	Processor p;
 	Memory m;
@@ -995,6 +1018,7 @@ namespace RegionRuntime {
     protected:
       std::set<Processor> procs;
       std::set<Memory> memories;
+      std::set<ProcessorGroup> groups;
       std::vector<ProcessorMemoryAffinity> proc_mem_affinities;
       std::vector<MemoryMemoryAffinity> mem_mem_affinities;
       std::map<Processor,std::set<Memory> > visible_memories_from_procs;
