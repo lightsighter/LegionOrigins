@@ -7,43 +7,68 @@ In the past decade machine architectures, particularly at the high
 performance end of the spectrum, have undergone a revolution.  The
 latest supercomputers are now composed of heterogeneous processors
 and deep memory hierarchies.  Programming this class of machines is
-becoming increasingly difficult.  Current programming systems for these
-machines have intricate features for describing parallelism.  However,
-these systems relegate to the programmer the responsibility for:
-\begin{itemize}
-\item the correctness of their parallel declarations
-\item the movement and placement of data in the memory hierarchy
-\end{itemize}
-Coupled with the complexity of these machines, this places a heavy
-burden on the programmer.  The reason that the programmer must bear
-this load is because current programming systems have few or no
-insights into properties of program data (e.g. locality and independence).  
-To enable more efficient programming of this class of machines we 
-need programming systems capable of reasoning both statically and dynamically
-about the structure of program data.
+increasingly difficult.  Current programming systems for these
+machines have intricate features for describing parallelism, but contain
+few abstractions for describing properties of program data
+(e.g. independence).  Consequently, the burden of managing
+the correctness of parallel computations and movement of data
+through the memory hierarchy is placed on the programmer.
 
-Researchers have previously explored language designs with hierarchical 
-decomposition of data to express locality and independence for high 
-performance programming. Two recent examples, Sequoia \cite{Fatahalian06} and 
+%However,
+%these systems relegate to the programmer the responsibility for:
+%\begin{itemize}
+%\item the correctness of their parallel declarations
+%\item the movement and placement of data in the memory hierarchy
+%\end{itemize}
+%Coupled with the complexity of these machines, this places a heavy
+%burden on the programmer.  The reason that the programmer must bear
+%this load is because current programming systems have few or no
+%insights into properties of program data (e.g. locality and independence).  
+%To enable more efficient programming of this class of machines we 
+%need programming systems capable of reasoning both statically and dynamically
+%about the structure of program data.
+
+To combat this problem, researchers have previously explored programming
+systems that are capable of reasoning about the structure of data in
+parallel programs.  Traditionally, these attempts have taken two approaches.   
+The first approach relies on fully static analyses that
+have no runtime overhead, but limited expressivity.  Two recent examples, 
+Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a 
-mechanism to partition the heap recursively into a tree of collections 
+mechanism to statically partition the heap recursively into a tree of collections 
 of data.  The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that must be fully checked statically 
-(see Section~\ref{sec:related} for more discussion of related work).
+(see Section~\ref{sec:related} for more discussion of related work).  The
+second approach relies on a dynamic analysis of program data that doesn't
+limit expressivity, but incurs runtime overhead.  Examples of this approach 
+include transactional memory and thread-level speculation.
 
-Our own experience with writing high-performance applications in both 
-Sequoia and the current industry standard mix of MPI, shared-memory
+These two different approaches illustrate different mechanisms for dealing with
+the problem of data aliasing in parallel programs.  The fully static approach outlaws aliasing
+by requiring a single static partitioning of data.  Our own experience with writing high-performance 
+applications in both Sequoia and the current industry standard mix of MPI, shared-memory
 threads, and CUDA, has taught us that for many practical situations a
 single, static partitioning is insufficient.  In practice, the
 best way to partition data is often a function of the data
 itself---i.e., the partitions need to be dynamically computed.
 Furthermore, it is useful to allow multiple, simultaneous partitions of
-the same data, providing different views on to that data.
+the same data, providing different views on to that data.  Alternatively, 
+the fully dynamic approach enables arbitrary data aliasing, but requires 
+centralized control logic to perform conflict detection between every pair 
+of parallel computations. This results in runtime overhead and is 
+not scalable on distributed-memory machines.
 
-To support reasoning about the structure
-of data in applications with dynamically instantiated data structures, 
-we present a type system and operational semantics for Legion\cite{Legion12}.  
-Legion is a programming model that presents {\em logical regions} as an
+In this work, we present a type system and operational semantics for
+Legion\cite{Legion12}.  Legion is a programming model that supports multiple,
+dynamic partitions of program data which can result in aliasing.  We prove
+the soundness of our type system and show that through a combination of
+static and dynamic analysis we can implement it in a way that minimizes dynamic
+runtime checks and results in low actual runtime overhead.  We then show 
+that the soundness of our type system enables a scalable, hierarchical 
+distributed scheduling algorithm that enables Legion programs to achieve
+high performance on current supercomputers.  
+
+Legion presents {\em logical regions} as an
 abstraction for capturing {\em locality} (data that will be used together,
 and therefore should be colocated) and {\em independence} (disjoint data
 that may be operated on in parallel).  Logical regions have the following
@@ -58,24 +83,7 @@ the programmer can express arbitrary partitions of regions;
 
 \item  a logical region may be dynamically partitioned in multiple different ways.
 \end{itemize}
-
-While data in Legion is organized into a hierarchy of logical region forests, 
-computation is organized into a hierarchy of tasks.  Logical regions and tasks interact
-through a system of privileges specifying operations that a task
-can perform on a logical region argument (read, write, or reduce).  
-Tasks are only permitted to access logical regions for which they 
-possess privileges.  
-%Privileges are passed to a task by their calling task
-%or by creating new logical regions.  
-%The Legion programming model 
-%mandates a functional restriction: a sub-task can only be passed a subset
-%of the privileges possesed by its parent task.  As we describe below,
-%our type system relies on a combination of static and dynamic checks to 
-%enforce this restriction owing to the first-class nature of logical regions.
-
-Legion's ability to describe dynamically instantiated data structures with
-multiple dynamic partitions of data does have an important consequence:
-aliasing.  Through multiple partitions
+Through multiple partitions
 of a logical region, a given datum may belong to multiple different regions.  
 For example, if a region $R$ is disjointly partitioned three distinct ways 
 and each partition assigns every element in $R$ to a
@@ -87,25 +95,21 @@ in the memory hierarchy.\footnote{There
 is a separate system of {\em physical regions} at runtime that hold
 copies of the data in the language-level logical regions.  Details can
 be found in \cite{Legion12}.}
-%In fact,
-%the Legion implementation routinely maintains multiple distinct
-%physical regions, each with a copy of the data in the corresponding
-%logical region, for performance reasons \cite{Legion12}.
 
-One consequence of aliasing is that it significantly hinders 
-static analyses for proving properties of parallel programs.  
-Approaches to dealing with aliasing in the domain
-of parallelism have traditionally bifurcated to extremes: Sequoia and DPJ both disallow aliasing
-which enables their static analyses at the coarse granularity of regions;  
-approaches like transactional memory\cite{} and thread-level speculation\cite{} perform 
-fully dynamic analysis at the granularity of individual heap locations.
-Alternatively, the type system we present for Legion leverages a hybrid
-approach to handling aliasing that enables a combination of static and dynamic
-analyses to prove important properties of Legion programs.
+While data in Legion is organized into a hierarchy of logical region forests, 
+computation is organized into a hierarchy of tasks.  Logical regions and tasks interact
+through a system of privileges specifying operations that a task
+can perform on a logical region argument (read, write, or reduce).  
+Tasks are only permitted to access logical regions for which they 
+possess privileges.  Privileges are given to a task by their calling task
+or by creating new logical regions.  The Legion programming model 
+mandates a functional restriction: a sub-task can only be passed a subset
+of the privileges possesed by its parent task.  
 
-The key observation behind our type system is that dynamic alias analysis
-is very easy and relatively cheap when done at the granularity of regions 
-instead of individual heap locations.  To that end, our type system supports
+To enforce this restriction, our type system relies on a combination of static 
+and dynamic analyses.  The key observation behind our type system is that dynamic
+analysis is very easy and relatively cheap when done at the granularity of
+regions instead of individual heap locations.  To that end, our type system supports
 static verification of all pointer dereferences and passing of region privileges at 
 task calls boundaries.  The Legion runtime then leverages its knowledge of logical
 region aliasing to perform dynamic safety checks for the unpacking
@@ -113,27 +117,24 @@ and packing of logical regions to/from heap with regards to task privileges.
 These checks are then amortized over all the uses of the logical region 
 which significantly reduces their cost.
 
-Another important consequence of aliasing is that it often limits 
-parallelism.  Legion currently does not attempt to statically prove any two tasks
-parallel, but instead relies on dynamic region aliasing checks to discover
-parallelism at runtime.  If regions contain many elements, then these checks are
-amortized as we will show in Section~\ref{sec:evaluation}.  In addition
-to supporting parallel execution in alias-free tasks, Legion also enables
-programmer controlled parallel execution in the presence of aliasing.
-In many cases, programmers often want to enable parallel execution 
-even in the presence of aliased data.  For example, two tasks 
+To enable parallelism, Legion again relies on a combination of static and dynamic
+analysis to prove that two tasks operate on independent sets of data.  If two tasks
+cannot be proven independent statically, the Legion runtime performs dynamic dependence
+tests to detect region aliasing.  Since these tests are performed at the granularity of
+regions instead of individual heap locations, they are significantly less costly.
+In addition to supporting parallel execution for independent tasks, Legion also enables
+programmer specified parallel execution in the presence of aliasing.  For example, two tasks 
 accessing aliased data may only need to be serialized
 with respect to each other (e.g. run atomically) or are permitted to run
 simultaneously with the programmer using separate synchronization mechanisms
 to control access (e.g. locks).  To support these relaxed access modes
 Legion provides {\em cohrence modes} on logical regions.  For each region
 argument to a task, a programmer specifies the coherence in which other tasks
-can access aliased data while the task is running.  Our operational semantics
-provides a formal framework with which to reason about the interaction of tasks
-accessing aliased in different coherence modes.
+can access aliased data while the task is running.  We present an operational semantics
+for coherence modes and show that it is sound.
 
-We prove the soundess of both the privilges system and the coherence system.
-We then use these results to prove a third result: if two {\em siblings} (tasks that
+Using our proofs of the soundess of the privilegs and coherence systems, we then 
+prove a third result: if two {\em siblings} (tasks that
 have the same immediate parent task) $t_1$ and $t_2$ are 
 {\em non-interfering} (have no ordering requirements for correctness), 
 then the any descendant of $t_1$ in the task hierarchy is non-interfering
@@ -143,12 +144,12 @@ performance; a centralized scheduler would be a bottleneck
 because of the large communication latencies in the target
 class of machines.
 
-The crucial aspect of this result is that the tasks $t_1$ and $t_2$ only 
-need be non-interfering instead of non-aliased.  Thus, through a combination
-of static and dynamic analysis, our privilge type system and coherence system
-enable us to implement a hierarchical, distributed scheduling algorithm even
-in the presence of aliasing introduced by the need for dynamic descriptions of
-data via first-class logical regions.  
+%The crucial aspect of this result is that the tasks $t_1$ and $t_2$ only 
+%need be non-interfering instead of non-aliased.  Thus, through a combination
+%of static and dynamic analysis, our privilge type system and coherence system
+%enable us to implement a hierarchical, distributed scheduling algorithm even
+%in the presence of aliasing introduced by the need for dynamic descriptions of
+%data via first-class logical regions.  
 %All of this is possible only because
 %our programming system supports an abstraction for understanding the structure
 %of program data.
@@ -356,7 +357,7 @@ $e_1'$ of $e_1$ and $e_2'$ of $e_2$ are also non-interfering (Section~\ref{sec:s
 \item We give experimental evidence for the Legion design.  On three real-world applications, we show that 
 dynamic region pointer checks would be expensive, justifying checking this aspect of the type system statically.
 We also show that the cost of checking for non-interference of region privileges is low, showing that a much more expressive
-and dynamic language with aliasing is not incompatible with high performance (Section~\ref{sec:evaluation}.
+and dynamic language with aliasing is not incompatible with high performance (Section~\ref{sec:evaluation}).
 
 \end{itemize}
 Finally, Section~\ref{sec:related} discusses the most closely related work and
