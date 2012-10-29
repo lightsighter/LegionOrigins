@@ -1515,49 +1515,63 @@ non-interference on the privileges with physical regions allows
 parallel execution in many more cases than a purely static analysis
 can achieve.
 
+\subsection{Atomic Coherence}
+\label{subsec:coherenceatomic}
 
+In cases where the Legion compiler and runtime cannot safely infer non-interference of
+privileges (either because the programmer did not partition the regions enough or because the two
+tasks really do access the same location), the fallback behavior of serialized execution can
+be avoided through the use of relaxed coherence.
 
-\subsection{Relaxed Coherence}
-\label{subsec:relaxed}
+The first form of relaxed coherence is the {\em atomic} mode, which specifies that although two
+tasks accessing the same region cannot run concurrently, they may execute in either order, allowing
+a ``later'' task to run as soon as its ready, even if the ``earlier'' task is not ready.  This
+relaxation only applies if all regions of overlap are designated as atomic coherence.
 
-The analysis above does not consider the coherence modes of operations,
-making the worst-case assumption that all operations use $excl$ mode.  However, if two or more
-subexpressions contain calls to functions using $atomic$ or $simult$ coherence modes
-on some regions, executions besides serial program order may 
-result in valid interleavings even if constituent traces have locations in common.  We discuss
-two cases of interest.  In both, the previous section's analysis 
-is repeated with minor modifications, so for brevity we limit
-discussion to a description of the differences rather than complete proofs.
+To show that this is safe, we define a relaxed version of non-interference for atomic coherence as
+follows:
+$$
+\begin{array}{l@{}l}
+op_1(l_1, c_1, v_1)\ \nonint^A\ op_2(l_2, c_2, v_2) \Leftrightarrow &op_1(l_1, c_1, v_1)\ \nonint^A\ op_2(l_2, c_2, v_2) \vee \\
+& (c_1 = atomic \wedge c_2 = atomic)
+\end{array}$$
 
-The first important case occurs when all apparently-interfering operations have coherence modes
-of either $atomic$ or $simult$.  In this case, the conditions required for
-coherence and sequential equivalence are trivially satisfied for locations in $L_{excl}$.  The
-requirements for locations in $L_{atomic}$ allow any permutation of the constituent traces,
-so the runtime is free to serialize the execution of the subexpressions in any order, not just
-program order.
+We repeat the steps in Section~\ref{subsec:coherenceparallel} using the $\nonint^A$ operator and reach another
+result used by the Legion runtime scheduler:
 
-To convert the required analysis to one that can be performed on regions, we modify
-the non-interference operator for memory operations to consider only locations in $L_{excl}$ and show that
-traces that are non-interfering under this modified check satisfy the requirement for atomic
-execution.  We then modify the non-interference operator on privileges to allow 
-$M(r_1) \cap M(r_2) \not= \emptyset$ if either $atomic(r_1)$ or $simult(r_1)$ is in $Q_1$ and
-either $atomic(r_2)$ or $simult(r_2)$ is in $Q_2$. We then show that subexpressions with 
-privileges that are {\em atomically non-interfering} (under a dynamic region mapping
-$M$) always have memory traces compatible with atomically-reordered execution.  Finally,
-in the special case where each subexpression has $atomic(r)$ or $simult(r)$ in $Q_i$ for every $r$
-in $\Phi_i$, we can eliminate the dynamic check entirely.
+\begin{thm}
+\label{thm:atomicexec}
+\rm
+Let $\oton{e}$ be well-typed Legion expressions, each with its own privileges $\Phi_i$.
+Let $M$ be a region mapping, $L$ a local value mapping,
+$H$ a heap typing, and $S$ be an initial store satisfying
+$\mapconsist{\Omega}$, $\localconsist{L}{\Gamma}$, and $\storeconsist{S}{H}$.
+If $\Phi_i \nonint[M]^A \Phi_j$ for $1 \leq i < j \leq n$, then for any permuatation $(\oton{\pi})$ of
+$(1, \ldots, n)$, $E_{\pi_1} \dplus \ldots \dplus E_{\pi_n}$ is a valid interleaving.
+\end{thm}
 
-The second case is a subset of the first, in which all apparently-interfering operations have
-the $simult$ coherence mode.  In this case, all the coherence and sequential equivalence 
-checks are trivially satisfied, and any interleaving of the constituent traces is valid.
-We again modify the non-interference criteria for memory operations, traces, and privileges, this time
-only allowing $simult$ coherence annotations. We show that subexpression with privileges
-that are {\em simultaneously non-interfering} (under mapping $M$) can be executed
-in parallel, which includes all the cases covered by Theorem~\ref{thm:parallelexec} as well
-as those where the programmer has used the $simult$ coherence mode to explicitly allow parallel
-execution.  Again, a special (but important) case exists where all privileges for each
-subexpression are paired with $simult$ coherence mode declarations, allowing the safety of
-parallel execution to be determined at compile time.
+\subsection{Simultaneous Coherence}
+\label{subsec:coherencesimult}
+
+The other way in which coherence can be relaxed is using the {\em simult} mode, which allows
+multiple tasks to access the same region concurrently.  The simult coherence mode is appropriate in two
+important cases:
+\begin{enumerate}
+\item When subtasks are accessing disjoint data, but the disjointness is hard to describe (e.g. walking
+separate linked lists that have been allocated in the same region)
+\item When the algorithm is tolerant of non-determinism (e.g. in a breadth-first search, setting the parent
+pointer of a node with multiple equally-short paths to the root).
+\end{enumerate}
+
+When one or more regions have been marked as using the simult coherence mode, the non-interference operators from
+the non-interference test is relaxed analagously to the atomic coherence case, yielding a $\nonint^S$ operator.
+Because the rules for valid interleavings exclude locations that are only accessed in simult mode, it is straightforward
+to extend Theorem~\ref{thm:parallelexec} to show that parallel execution is safe as long as $\Phi_i \nonint[M]^S \Phi_j$.
+
+It is also possible to have both atomic and simult coherence modes in use at the same time (although for different regions),
+in which case the non-interference test $\nonint^{AS}$ uses both the atomic and simult relaxations, and
+Theorem~\ref{thm:atomicexec} is extended to allow arbitrary reordering (but not simultaneous execution) of subtasks when
+$\Phi_i \nonint[M]^{AS} \Phi_j$.
 
 \section{Hierarchical Scheduling}
 \label{sec:scheduling}
