@@ -13,7 +13,10 @@ Regions in Legion are first-class and can be created, partitioned, packed, and u
 dynamically, allowing programmers to compute data organization at runtime; like Sequoia, DPJ
 partition schemes must be statically decided.  Legion allows 
 programmers to create multiple partitions of the same region to give different 
-views onto the same data, which is not possible in DPJ.  
+views onto the same data, which is not possible in DPJ.  DPJ supports both
+exclusive and atomic tasks which are similar to Legion's coherence modes, but only
+allows specification at the coarser granularity of tasks and not individual regions.
+DPJ does not support any modes analogous to simultaneous coherence.
 %DPJ only supports the 
 %equivalent to Legion's exclusive and atomic coherence modes \cite{Bocchino11} 
 %while Legion provides safe execution even in simultaneous environments.  
@@ -51,7 +54,7 @@ used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provi
 a mechanism for reasoning about independence\cite{Hayman06}.
 While we have borrowed some separation logic notation, we ultimately chose to use a 
 privileges system as our primary formalism because separation logic does not easily
-support reasoning about the interleaving of operations to non-disjoint regions of memory.
+support reasoning about the interleaving of operations to aliased regions of memory.
 
 % I'm also not sure how much detail to go into here.  DPJ spends a lot of time
 % on these papers, but I'm not sure I understand all the details of these papers.

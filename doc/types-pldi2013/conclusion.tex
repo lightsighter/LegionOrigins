@@ -2,12 +2,20 @@
 \section{Conclusion}
 \label{sect:conclusion}
 
-Modern architectures have dramatically increased in complexity in recent years and we believe that new programming models
-are needed to take advantage of the potential of such machines.  We have presented the semantics and type system
-for Legion, which differs from previous efforts in having a much more flexible programming model (in particular,
-regions are first-class values and data can be dynamically partitioned in as many ways as needed) while maintaining
-soundness of privileges and coherence.  The key insight is that we can divide the problem between static and dynamic
-checking differently, keeping what is expensive to check dynamically (region pointer checks) in the static system while incurring very little if any performance cost for the work deferred to runtime (the region aliasing checks).  We have also given
-a formal basis for hierarchical, distributed scheduling in Legion, and provided experimental evidence  that the
-expected benefits of the Legion design are realized in real-world programs.
+Modern architectures have dramatically increased in complexity in recent years.  To program this class
+of machines, new programming systems will be required that are capable about reasoning about the structure
+of data including aliasing.  We have presented a type system for the Legion programming system that
+reasons about aliasing using a combination of static and dynamic analyses.  Furthermore, we've proven
+the soundness of our type system enables a hierarchical, distributed scheduling algorithm capable
+of scaling on large, distribute memory machines.  This result demonstrates that allowing programmers
+to provide descriptions of data that include aliasing is not prohibitive to high performance.
+
+%Modern architectures have dramatically increased in complexity in recent years and we believe that new programming models
+%are needed to take advantage of the potential of such machines.  We have presented the semantics and type system
+%for Legion, which differs from previous efforts in having a much more flexible programming model (in particular,
+%regions are first-class values and data can be dynamically partitioned in as many ways as needed) while maintaining
+%soundness of privileges and coherence.  The key insight is that we can divide the problem between static and dynamic
+%checking differently, keeping what is expensive to check dynamically (region pointer checks) in the static system while incurring very little if any performance cost for the work deferred to runtime (the region aliasing checks).  We have also given
+%a formal basis for hierarchical, distributed scheduling in Legion, and provided experimental evidence  that the
+%expected benefits of the Legion design are realized in real-world programs.
 

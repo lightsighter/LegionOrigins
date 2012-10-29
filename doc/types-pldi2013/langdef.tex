@@ -1518,11 +1518,21 @@ Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E
 $E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 \nonint \epsilon_4$.  Since
 this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \nonint E_4$.
 \end{proof}
-} The Legion task scheduler uses Theorem~\ref{thm:hiersched} in the
-following way.  Sibling function calls (those invoked within the same
-function body) are checked for non-interference of their (dynamic)
-privileges.  If they interfere they are serialized; otherwise they are
-considered for execution as parallel subtasks.  Although determining that $e_1$
+} The Legion task scheduler uses Theorem~\ref{thm:hiersched} as follows: 
+sibling function calls (those invoked within the same
+function body) $e_1$ and $e_2$ are checked for non-interference of their (dynamic)
+privileges.  Since $e_1$ and $e_2$ are guaranteed to be created on the node on which their parent
+is running, no communication is required to perform the non-interference
+test.  If they interfere they are executed in program order or serialized
+depending on their coherence specifications; otherwise they are
+considered for execution as parallel subtasks.    If $e_1$ and $e_2$ are 
+determined to be non-interfering and are scheduled in parallel on different 
+remote processors then Theorem~\ref{thm:hiersched}
+guarantees that there is no communication required between $e_1$ and $e_2$
+to perform non-interference tests between their sub-tasks.  Therefore,
+the runtime requires no communication for scheduling.
+
+Although determining that $e_1$
 and $e_2$ are non-interfering guarantees $e_3$ and $e_4$ are
 non-interfering, the converse is not true.  It is possible for $e_1$
 and $e_2$ to be judged to be potentially interfering and be serialized

@@ -5,10 +5,10 @@
 We evaluate the Legion type system on four criteria:
 \begin{itemize}
 \item Expressivity: Can real applications be written (Section~\ref{subsec:expressivity})?
-\item Overhead: Does it reduce checking costs (Section~\ref{subsec:overhead})?
-\item Scalability: Can it leverage hierarchical scheduling (Section~\ref{subsec:scalability})?
-\item Performance: Does the performance increase from relaxed coherence modes (Section~\ref{subsec:relaxedperf})
-warrant the increased complexity in the operational semantics?
+\item Overhead: Does it reduce dynamic checking costs (Section~\ref{subsec:overhead})?
+\item Scalability: Can it enable hierarchical scheduling (Section~\ref{subsec:scalability})?
+\item Performance: Does the performance increase from relaxed coherence modes 
+warrant the increased complexity in the operational semantics (Section~\ref{subsec:relaxedperf})?
 \end{itemize}
 %Our evaluation uses a prototype implementation of the Legion language and programming model.
 Our prototype implementation has two components: a type checker
@@ -75,15 +75,22 @@ The dynamic nature of AMR requires that regions be created and partitioned at ru
 %The many ways in which cells are used also requires multiple simultaneous
 %partitions of regions.
 
-These applications show Legion is capable of 
-expressing applications with both regular (Fluid, AMR) and irregular (Circuit) pointer data structures.
+%These applications directly demonstrate the need to for multiple, dynamic partitions
+%of program data.
+%These applications demonstrate Legion is capable of 
+%expressing real applications with both regular (Fluid, AMR) and 
+%irregular (Circuit) pointer data structures.
 Being able to dynamically create and partition regions at runtime is crucial to Legion's
 ability to handle applications that make runtime decisions about data organization (AMR).  Legion
 is able to capture both allocate-then-partition (Circuit) and partition-then-allocate (Fluid) algorithms. 
 Having multiple partitions of regions is necessary for describing the many ways 
 that data can be accessed (Circuit, AMR).  All the types of privileges and coherence we have
 described are needed in different applications.  Region relationships
-are used in all applications. %, region relationships convey disjointness information.
+are used in all applications.   Finally, all applications introduce aliasing of
+data through both multi-colorings or having multiple partitions.  Our implementations of
+these applications both type check and execute, proving that our type system is
+sufficiently expressive to handle real-world applications written in the Legion programming model.
+%, region relationships convey disjointness information.
 % despite
 %regions being a first-class feature that cannot be fully tracked statically.
 
@@ -187,27 +194,43 @@ demonstrating that runtime non-interference checks are inexpensive in Legion.
 
 \subsection{Scalability}
 \label{subsec:scalability}
-The scalability of Legion derives directly from Theorem~\ref{thm:hiersched}.  This 
-theorem proves it is safe for the runtime to only perform dependence checks between two
-tasks that share the same immediate parent task instead of having to consider all
-possible interactions with other tasks anywhere in the system.  Since all tasks that
-share the same immediate parent are all created on the node where the parent is executing,
-all dependence checks and scheduling decisions can be performed locally with no inter-processor communication.  
-Without this property the runtime would be forced to inform all other processors in the system 
-of every task that it launches using expensive broadcasts. 
+%The scalability of Legion derives directly from Theorem~\ref{thm:hiersched}.  This 
+%theorem proves it is safe for the runtime to only perform dependence checks between two
+%tasks that share the same immediate parent task instead of having to consider all
+%possible interactions with other tasks anywhere in the system.  Since all tasks that
+%share the same immediate parent are all created on the node where the parent is executing,
+%all dependence checks and scheduling decisions can be performed locally with no inter-processor communication.  
+%Without this property the runtime would be forced to inform all other processors in the system 
+%of every task that it launches using expensive broadcasts. 
 
 Figures~\ref{fig:ckt_overhead}, \ref{fig:fluid_overhead}, and \ref{fig:amr_overhead} show that
 the overhead of the Legion runtime is always less than 7\% of the total execution time
-of the applications.  In some applications communication doesn't scale well, but this is
-a result of the algorithm chosen by the programmer, not the Legion runtime.
+of the applications.  In some applications communication does not scale well, but this is
+a result of the algorithm required by the application, not the Legion runtime.
 Even in the case of the Circuit application, which exhibits quadratic communication scaling, the Legion
 runtime is able to achieve a 62.5X speedup on 96 GPUs over a hand-coded single GPU implementation\cite{Legion12}.
+
+\begin{figure}
+\begin{center}
+\includegraphics[scale=0.33]{figs/circuit_coherence.pdf}
+\end{center}
+\vspace{-2mm}
+\caption{Performance gains from relaxed coherence modes.\label{fig:circuit_excl}}
+\vspace{-6mm}
+\end{figure}
 
 \subsection{Performance}
 \label{subsec:relaxedperf}
 
 To demonstrate the benefit of relaxed coherence modes, we modified the circuit example from Section~\ref{sec:example}
-to use exclusive coherence in the {\em distribute\_charge} task and compared the performance of the two versions.
-The results are shown in Figure~\ref{fig:circuit_excl}.  Even though the {\em distribute\_charge} tasks
-are a small fraction of the total work, the serialization that results from requiring exclusive access to the 
-overlapping ghost regions limits the scalability of the application, as would be expected from Amdahl's Law.
+to use exclusive coherence instead of atomic coherence in the {\em distribute\_charge} task and compared 
+the performance of the two versions.
+The results are shown in Figure~\ref{fig:circuit_excl}.  Slow-downs ranged from 34\% on 48-GPUs to 67\% on 
+96 GPUs and more importantly scaled with node count.  This is a direct consequence of Amdahl's Law.  
+Even though the {\em distribute\_charge} tasks are a small fraction of the total work, the serialization 
+that results from requiring exclusive access to the 
+overlapping ghost regions limits the scalability of the application.  Relaxed coherence modes will be 
+imperative for enabling the scalability of applications with aliased data on distributed memory machines.
+
+
+
