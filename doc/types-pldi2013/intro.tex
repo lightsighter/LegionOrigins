@@ -31,7 +31,7 @@ through the memory hierarchy is placed on the programmer.
 To combat this problem, researchers have previously explored programming
 systems that are capable of reasoning about the structure of data in
 parallel programs.  Traditionally, these attempts have taken one of two approaches.   
-The first approach relies on static analyses that
+The first approach relies on fully static analyses that
 have no runtime overhead, but limited expressivity.  Two recent examples, 
 Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a 
@@ -39,11 +39,11 @@ mechanism to statically partition the heap recursively into a tree of collection
 of data.  The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that must be fully checked statically 
 (see Section~\ref{sec:related} for more discussion of related work).  The
-second approach relies on a dynamic analysis of program data that doesn't
+second approach relies on a totally dynamic analysis of program data that doesn't
 limit expressivity, but incurs runtime overhead.  Examples of this approach 
-include transactional memory and thread-level speculation.
+include transactional memory \cite{Harris05} and thread-level speculation \cite{Steffan00}.
 
-These two different approaches illustrate different mechanisms for dealing with
+These two approaches illustrate different mechanisms for dealing with
 the problem of data aliasing in parallel programs.  The fully static approach disallows aliasing
 by requiring a single static partitioning of data.  Our own experience with writing high-performance 
 applications in both Sequoia and the current industry standard mix of MPI, shared-memory
