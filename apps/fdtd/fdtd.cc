@@ -76,11 +76,11 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 #include "legion.h"
 #include "lowlevel.h"
 
-using namespace RegionRuntime::HighLevel;
+using namespace LegionRuntime::HighLevel;
 
-typedef RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> Accessor;
+typedef LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> Accessor;
 
-RegionRuntime::Logger::Category log_app("app");
+LegionRuntime::Logger::Category log_app("app");
 
 ////////////////////////////////////////////////////////////////////////
 // Global task ID list. Each of these tasks will be registered with
@@ -703,7 +703,7 @@ void main_task(const void *input_args, size_t input_arglen,
   printf("\nSTARTING MAIN SIMULATION LOOP\n");
   struct timespec clock_start, clock_end;
   clock_gettime(CLOCK_MONOTONIC, &clock_start);
-  RegionRuntime::DetailedTimer::clear_timers();
+  LegionRuntime::DetailedTimer::clear_timers();
 
   std::vector<FutureMap> fs;
   for (double t = 0.0; t < t_sim; t += dt) {
@@ -786,7 +786,7 @@ void main_task(const void *input_args, size_t input_arglen,
   double sim_time = ((1.0 * (clock_end.tv_sec - clock_start.tv_sec)) +
 		     (1e-9 * (clock_end.tv_nsec - clock_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
-  RegionRuntime::DetailedTimer::report_timers();
+  LegionRuntime::DetailedTimer::report_timers();
 
 }
 
@@ -808,13 +808,13 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
 
   PhysicalRegion cells = regions[0];
 
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> accessor[NDIMS*2];
+  LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> accessor[NDIMS*2];
   for (int field = 0; field < NDIMS*2; field++) {
     accessor[field] = cells.get_accessor<AccessorGeneric>(fields[field]);
   }
 
-  RegionRuntime::LowLevel::ElementMask mask = cells.get_logical_region().get_index_space().get_valid_mask();
-  RegionRuntime::LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
+  LegionRuntime::LowLevel::ElementMask mask = cells.get_logical_region().get_index_space().get_valid_mask();
+  LegionRuntime::LowLevel::ElementMask::Enumerator *enabled = mask.enumerate_enabled();
   int position = 0, length = 0;
   while (enabled->get_next(position, length)) {
     for (int index = position; index < position + length; index++) {
