@@ -896,6 +896,7 @@ namespace LegionRuntime {
     bool DeletionOperation::activate(GeneralizedOperation *parent /*= NULL*/)
     //--------------------------------------------------------------------------
     {
+      termination_event = UserEvent::create_user_event();
       return activate_base(parent);
     }
 
@@ -906,6 +907,8 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(performed);
 #endif
+      // Trigger the termination event
+      termination_event.trigger();
       deactivate_base();
       parent_ctx = NULL;
       runtime->free_deletion(this);
@@ -938,6 +941,16 @@ namespace LegionRuntime {
     void DeletionOperation::perform_dependence_analysis(void)
     //--------------------------------------------------------------------------
     {
+      lock();
+      // Since deletions can be flushed, they can sometimes be performed before
+      // this dependence analysis is performed, so check to make sure we haven't already been performed
+      if (performed)
+      {
+        unlock();
+        trigger();
+        return;
+      }
+      unlock();
       lock_context();
       switch (handle_tag)
       {
@@ -1020,7 +1033,7 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool DeletionOperation::flush(void)
+    Event DeletionOperation::flush(void)
     //--------------------------------------------------------------------------
     {
       // Looks very similar to the one above, except in the INORDER_EXECUTION case
@@ -1028,6 +1041,7 @@ namespace LegionRuntime {
       lock_context();
       // Lock to test if the operation has been performed yet 
       lock();
+      Event result = termination_event;
       if (!performed)
       {
         perform_internal();
@@ -1050,7 +1064,7 @@ namespace LegionRuntime {
         deactivate();
       }
       // Deletion operations never fail
-      return true;
+      return result;
     }
 
     //--------------------------------------------------------------------------
@@ -3490,19 +3504,13 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void SingleTask::flush_deletions(void)
+    void SingleTask::flush_deletions(std::set<Event> &cleanup_events)
     //--------------------------------------------------------------------------
     {
       for (std::list<DeletionOperation*>::const_iterator it = child_deletions.begin();
             it != child_deletions.end(); it++)
       {
-#ifdef DEBUG_HIGH_LEVEL
-        bool result = 
-#endif
-        (*it)->flush();
-#ifdef DEBUG_HIGH_LEVEL
-        assert(result);
-#endif
+        cleanup_events.insert((*it)->flush());
       }
       child_deletions.clear();
     }
@@ -4545,13 +4553,13 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!is_leaf); // shouldn't be here if we're a leaf task
 #endif
+      std::set<Event> cleanup_events;
       // Make sure all the deletion operations for this task have been performed
       // to ensure that the region tree is in a good state either to be sent back
       // or for other users to begin using it.
-      flush_deletions();
+      flush_deletions(cleanup_events);
 
       lock_context();
-      std::set<Event> cleanup_events;
       // Get the termination events for all of the tasks
       {
         lock(); // need lock to touch child tasks
@@ -5337,12 +5345,12 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!is_leaf);
 #endif
-      lock_context();
-
-      // Make sure that all the deletion operations for this task have been performed
-      flush_deletions();
 
       std::set<Event> cleanup_events;
+      // Make sure that all the deletion operations for this task have been performed
+      flush_deletions(cleanup_events);
+
+      lock_context();
       // Get the termination events for all of the tasks
       {
         lock(); // need lock to touch child tasks
