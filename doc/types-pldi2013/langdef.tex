@@ -166,11 +166,12 @@ can be written into the heap and later read and
 unpacked, giving new local names to the regions contained in
 the instance.
 
-As Legion attempts to benefit from both static and dynamic checks
-to achieve performance while maintaining safety, both the type system and the operational
+To achieve high performance in the presence of aliasing, the Legion type system has 
+been designed to efficiently leverage both static and dynamic checks.
+Consequently, both the type system and the operational
 semantics have been extended in interesting ways from a basic expression language.  We
-will describe these extensions in the next two subsections, and explain how these extensions
-were chosen to preserve a straightforward proof of the soundness of the type system.
+describe these extensions in the next two subsections, and explain how they 
+were chosen to preserve a straightforward proof of soundness for the type system.
 
 \subsection{Core Type System}
 \label{subsec:coretypes}
@@ -201,11 +202,11 @@ have left it out for simplicity.
 
 The introduction of constraints into $\Omega$ occurs through the use of the {\em partition} expression,
 which makes use of a new type specific to Legion, a {\em coloring}.  A coloring is an opaque mapping from
-pointers (which much point into the region being colored) to integer ``color'' values.  (For simplicity, 
+pointers (which must point into the region being colored) to integer {\em color} values.  (For simplicity, 
 Core Legion allows only an iterative construction of a coloring via a {\em newcolor} expression that generates
-an empty map and a {\em color} expression which adds a new entry to an existing map, but the opacity of the
+an empty map, and a {\em color} expression which adds a new entry to an existing map. The opacity of the
 coloring allows for more efficient generation (and storage) of colorings as needed.)  The {\em partition} 
-expression introduces names for subregions corresponding to each of those ``colors'', guaranteeing that each
+expression introduces names for subregions corresponding to each color in the coloring, guaranteeing that each
 subregion is disjoint from the other subregions and all are included in the original region.
 
 The {\em pack} and {\em unpack} expressions allow the storage of pointers in the heap.  Logical region names
@@ -216,7 +217,7 @@ region relationship value is created, the {\em unpack} expression is able to rei
 the (fresh) logical region names given to the contents of an unwrapped region relationship value.
 
 Finally, the task call expression handles the aliasing of logical region names between the caller and callee and
-verifies the property that the privileges held by a called task are always a subset of those held
+verifies the functional requirement that the privileges held by a called task are always a subset of those held
 by the caller.  In addition to being necessary for the proof of soundness, this property is critical to
 enable the hierarchical scheduling model used by the Legion runtime.
 
@@ -479,14 +480,14 @@ locations.
 
 The final element of the environment is the {\em clobber set} $C$.  Our goal is to show that parallel Legion
 programs can
-be scheduled in a hierarchical (and therefore scalable) fashion, we require a formulation of operational semantics
+be scheduled in a hierarchical fashion.  We therefore require a formulation of operational semantics
 that is both parallel and hierarchical.  Because Legion allows constrained nondeterminism (in the order in which
-reductions are applied and in cases of relaxed coherence), it is possible for the heap accesses performed by
+reductions are applied and in cases of relaxed coherence with aliasing), it is possible for the heap accesses performed by
 one expression's evaluation to observe interference from other concurrent evaluations.  The traditional way of
 handling this in operational semantics \cite{XYZ} is to use a top-down approach with small-step semantics and
 a global view of all
 partially-evaluated expressions.  Rules are specified for which expression(s) are valid choices for the next small
-step of execution.  This approach has the benefit of being constructive but the implicit global ``scheduler'' is
+step of execution.  This approach has the benefit of being constructive but the implicit global scheduler is
 difficult to map into a hierarchical one in which decisions must necessarily be made with limited information.
 
 Instead we use a bottom-up approach with large-step semantics in which each expression is evaluated with limited 
@@ -499,10 +500,10 @@ to be any value at all.  The validation of these hypotheses is deferred until al
 modifications to a location can be observed (i.e. the evaluation of a parent expression whose clobber set does
 not include the location) and a consistent interleaving of the subexpressions' memory traces can be determined.
 With this formulation, the criteria for when a hierarchical scheduler may execute subexpressions in parallel can be
-made clear, but they are no longer constructive.  Instead, we will have to show that the scheduling algorithms
-used by the Legion runtime satisfy these constraints, guaranteeing the soundness of the Legion programming model.
+made clear, but they are no longer constructive.  Instead, we will have to show that the scheduling algorithm
+used by the Legion runtime satisfies these constraints, guaranteeing the soundness of the Legion programming model.
 
-The complete operational semantics rules can be found in \cite{LegionTypes12} - we show the most interesting ones
+The complete operational semantics rules can be found in \cite{LegionTypes12}; we show the most interesting ones
 in Figure~\ref{fig:semantics}.  The rules for the {\em read}, {\em write}, and {\em reduce} show how dynamic memory
 traces are constructed and how the result of a read expression is relaxed when the location falls within the
 clobber set.  Additionally, the write and reduce operations, with their two subexpressions, demonstrate how the
@@ -521,8 +522,8 @@ logical region(s) have been mapped to, returning {\em null} if not.  As discusse
 The general form of a coloring being an abitrary mapping of locations to ``colors'' (integers) is shown in the
 operational semantics rules for the {\em newcolor} and {\em color} expressions.  The color expression accepts an
 existing coloring and returns one in which the specified location is given the specified color, replacing an
-existing coloring for that location (if present).  The behavior of the newcolor expression is a bit trickier.
-Since Legion supports the {\em partition-then-allocate} model in which the {\em new} expression may be called
+existing coloring for that location (if present).  The behavior of the newcolor expression is more subtle.
+Since Legion supports the {\em partition-then-allocate} model (see Section~\ref{sec:example}) in which the {\em new} expression may be called
 on subregions, each subregion that results from a partitioning may need an arbitrary number of locations for which
 the program does not know the name at partitioning time.  The semantics for the newcolor expression allow this while
 guaranteeing that any explicit colorings performed by the program are honored.
@@ -1101,10 +1102,11 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 
 Theorem~\ref{thm:effects} guarantees that a function call produces a value of the
 correct type and does so within the regions of memory for which privileges are held.  In fact, this results holds
-even if the {\em valid\_interleave} constraint is weakened to just require an arbitrary interleaving of the memory
+even if the {\em valid\_interleave} constraint is weakened to only require an arbitrary interleaving of the memory
 traces of subexpressions (i.e. the {\em any\_interleave} predicated defined in Figure~\ref{fig:opsecfns}).  The 
 additional constraints on {\em valid\_interleave} in Figure~\ref{fig:validinterleave} address the coherence of 
-heap accesses and allow for the per-region relaxation of coherence that is introduced in Legion.
+heap accesses and allow for the per-region relaxation of coherence that is introduced in Legion to enable parallelism
+in the presence of aliasing.
 
 To determine whether an interleaving of two or more memory traces is valid, we consider three sets of addresses:
 \begin{itemize}

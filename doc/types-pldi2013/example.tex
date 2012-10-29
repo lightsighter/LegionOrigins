@@ -137,15 +137,16 @@ privilege must also specify which reduction function is used
 
 In addition to privileges, functions can also specify {\em coherence}
 on regions.  Coherence specifies what updates the function may
-see from other functions using the same region.  If not otherwise
-specified, coherence defaults to {\em exclusive}, meaning the
-function must appear to execute in program order.  Line 14 shows
+observe from other functions using aliased regions.  
+If not otherwise specified, coherence defaults to {\em exclusive}, 
+meaning the function must appear to execute in program order.  
+Line 14 in Listing~\ref{lst:circuit_leaf} shows
 an example of {\tt atomic}, a relaxed coherence mode requiring
 that operations to {\tt rn} and {\tt rg} appear atomic relative
-to other functions using those regions.  The most relaxed coherence
+to other functions using regions which may alias.  The most relaxed coherence
 mode is {\tt simult}; simultaneous coherence allows concurrent access 
 to the region by all functions that are using the region
-in a simultaneous mode.  The interaction between {\em tasks} (which are functions chosen by the runtime to execute in parallel) using the same
+in a simultaneous mode.  The interaction between {\em tasks} (which are functions chosen to execute in parallel) using the same
 region with different coherence
 modes is formalized in Section~\ref{sec:coherence}.
 
