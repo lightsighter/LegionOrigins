@@ -1001,6 +1001,9 @@ namespace RegionRuntime {
       void free_mapping(MappingOperation *op);
       void free_deletion(DeletionOperation *op);
     protected:
+      RegionTreeForest* create_region_forest(void);
+      void destroy_region_forest(RegionTreeForest *forest);
+    protected:
       // Call this when an operation completes to tell the runtime that
       // an operation is no longer in flight in a given context.
       void notify_operation_complete(Context parent);
@@ -1068,6 +1071,10 @@ namespace RegionRuntime {
 #ifdef INORDER_EXECUTION
       void perform_inorder_scheduling(void);
 #endif
+#ifdef DYNAMIC_TESTS
+      void perform_dynamic_tests(void);
+      void request_dynamic_tests(RegionTreeForest *forest);
+#endif
       void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
       // Static variables
@@ -1076,6 +1083,9 @@ namespace RegionRuntime {
       static Processor::TaskFuncID legion_main_id;
 #ifdef INORDER_EXECUTION
       static bool program_order_execution;
+#endif
+#ifdef DYNAMIC_TESTS
+      static bool dynamic_independence_tests;
 #endif
       static unsigned max_tasks_per_schedule_request;
       static unsigned max_task_window_per_context;
@@ -1126,6 +1136,10 @@ namespace RegionRuntime {
       std::list<MappingOperation*> available_maps;
       std::list<DeletionOperation*> available_deletions;
       std::set<ArgumentMapImpl*> active_argument_maps;
+      std::set<RegionTreeForest*> active_forests;
+#ifdef DYNAMIC_TESTS
+      std::vector<RegionTreeForest*> dynamic_forests; // forest that have requested dynamic dependence tests
+#endif
     private:
       struct WindowState {
       public:
@@ -1177,11 +1191,6 @@ namespace RegionRuntime {
 #endif // INORDER_EXECUTION
     private:
       // Keep track of how to do partition numbering
-#ifdef LOW_LEVEL_LOCKS
-      Lock unique_lock;
-#else
-      ImmovableLock unique_lock; // Make sure all unique values are actually unique
-#endif
       IndexPartition next_partition_id; // The next partition id for this instance (unique)
       UniqueID next_op_id; // Give all tasks a unique id for debugging purposes
       InstanceID next_instance_id;
@@ -1196,11 +1205,15 @@ namespace RegionRuntime {
       std::map<MapperID,std::set<ProcessorGroup> > outstanding_steals;
       std::multimap<MapperID,ProcessorGroup> failed_thiefs;
 #ifdef LOW_LEVEL_LOCKS
+      Lock unique_lock;
       Lock stealing_lock;
       Lock thieving_lock;
+      Lock forest_lock;
 #else
       ImmovableLock stealing_lock;
       ImmovableLock thieving_lock;
+      ImmovableLock unique_lock; // Make sure all unique values are actually unique
+      ImmovableLock forest_lock;
 #endif
       // There is a partial ordering on all the locks in the high level runtime
       // Here are the edges in the lock dependency graph (guarantee no deadlocks)

@@ -427,12 +427,62 @@ namespace RegionRuntime {
       else
         part_color = unsigned(color);
       IndexPartNode *new_part = create_node(pid, parent_node, part_color, disjoint, true/*add*/);
+#ifdef DYNAMIC_TESTS
+      std::vector<IndexSpaceNode*> children; 
+#endif
       // Now do all of the child nodes
       for (std::map<Color,IndexSpace>::const_iterator it = coloring.begin();
             it != coloring.end(); it++)
       {
+#ifdef DYNAMIC_TESTS
+        IndexSpaceNode *child = 
+#endif
         create_node(it->second, new_part, it->first, true/*add*/);
+#ifdef DYNAMIC_TESTS
+        children.push_back(child);
+#endif
       }
+#ifdef DYNAMIC_TESTS
+      bool notify_runtime = false;
+      for (std::map<Color,IndexPartNode*>::const_iterator it = parent_node->color_map.begin();
+            it != parent_node->color_map.end(); it++)
+      {
+        if (it->first == part_color)
+          continue;
+        // Otherwise add a disjointness test
+        notify_runtime = true;
+        dynamic_part_tests.push_back(DynamicPartTest(parent_node, part_color, it->first));
+        DynamicPartTest &test = dynamic_part_tests.back();
+        // Add the left children
+        for (std::vector<IndexSpaceNode*>::const_iterator lit = children.begin();
+              lit != children.end(); lit++)
+        {
+          test.add_child_space(true/*left*/,(*lit)->handle);
+        }
+        // Add the right children
+        for (std::map<Color,IndexSpaceNode*>::const_iterator rit = it->second->color_map.begin();
+              rit != it->second->color_map.end(); rit++)
+        {
+          test.add_child_space(false/*left*/,rit->second->handle);
+        }
+      }
+      // Now do they dynamic tests between all the children if the partition is not disjoint
+      if (!disjoint && (children.size() > 1))
+      {
+        notify_runtime = true; 
+        for (std::vector<IndexSpaceNode*>::const_iterator it1 = children.begin();
+              it1 != children.end(); it1++)
+        {
+          for (std::vector<IndexSpaceNode*>::const_iterator it2 = children.begin();
+                it2 != it1; it2++)
+          {
+            dynamic_space_tests.push_back(DynamicSpaceTest(new_part, (*it1)->color, (*it1)->handle, (*it2)->color, (*it2)->handle));
+          }
+        }
+      }
+      if (notify_runtime)
+        runtime->request_dynamic_tests(this);
+#endif
       return part_color;
     }
 
@@ -2561,6 +2611,136 @@ namespace RegionRuntime {
         view->remove_copy(copy.copy_event, false/*strict*/);
       }
     }
+
+#ifdef DYNAMIC_TESTS
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::fix_dynamic_test_set(void)
+    //--------------------------------------------------------------------------
+    {
+      ghost_space_tests.insert(ghost_space_tests.end(),
+          dynamic_space_tests.begin(),dynamic_space_tests.end());
+      ghost_part_tests.insert(ghost_part_tests.end(),
+          dynamic_part_tests.begin(),dynamic_part_tests.end());
+      dynamic_space_tests.clear();
+      dynamic_part_tests.clear();
+      return (!ghost_space_tests.empty() || !ghost_part_tests.empty());
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::perform_dynamic_tests(void)
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<DynamicSpaceTest>::iterator it = ghost_space_tests.begin();
+            it != ghost_space_tests.end(); /*nothing*/)
+      {
+        if (it->perform_test())
+          it++;
+        else
+          it = ghost_space_tests.erase(it);
+      }
+      for (std::list<DynamicPartTest>::iterator it = ghost_part_tests.begin();
+            it != ghost_part_tests.end(); /*nothing*/)
+      {
+        if (it->perform_test())
+          it++;
+        else
+          it = ghost_part_tests.erase(it);
+      }
+    }
+    
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::publish_dynamic_test_results(void)
+    //--------------------------------------------------------------------------
+    {
+      for (std::list<DynamicSpaceTest>::const_iterator it = ghost_space_tests.begin();
+            it != ghost_space_tests.end(); it++)
+      {
+        it->publish_test();
+      }
+      for (std::list<DynamicPartTest>::const_iterator it = ghost_part_tests.begin();
+            it != ghost_part_tests.end(); it++)
+      {
+        it->publish_test();
+      }
+      ghost_space_tests.clear();
+      ghost_part_tests.clear();
+    }
+
+    //--------------------------------------------------------------------------
+    RegionTreeForest::DynamicSpaceTest::DynamicSpaceTest(IndexPartNode *par,
+        Color one, IndexSpace l, Color two, IndexSpace r)
+      : parent(par), c1(one), c2(two), left(l), right(r)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::DynamicSpaceTest::perform_test(void)
+    //--------------------------------------------------------------------------
+    {
+      const LowLevel::ElementMask &left_mask = left.get_valid_mask();
+      const LowLevel::ElementMask &right_mask = right.get_valid_mask();
+      LowLevel::ElementMask::OverlapResult result = 
+        left_mask.overlaps_with(right_mask);
+      return (result == LowLevel::ElementMask::OVERLAP_NO);
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::DynamicSpaceTest::publish_test(void) const
+    //--------------------------------------------------------------------------
+    {
+      parent->add_disjoint(c1,c2);
+    }
+
+    //--------------------------------------------------------------------------
+    RegionTreeForest::DynamicPartTest::DynamicPartTest(IndexSpaceNode *par,
+        Color one, Color two)
+      : parent(par), c1(one), c2(two)
+    //--------------------------------------------------------------------------
+    {
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::DynamicPartTest::add_child_space(bool l, IndexSpace space) 
+    //--------------------------------------------------------------------------
+    {
+      if (l)
+        left.push_back(space);
+      else
+        right.push_back(space);
+    }
+
+    //--------------------------------------------------------------------------
+    bool RegionTreeForest::DynamicPartTest::perform_test(void)
+    //--------------------------------------------------------------------------
+    {
+      // TODO: A Better way to do this is to bitwise-union everything on
+      // the left and the right, and then do a intersection between left
+      // and right to test for non-empty.
+      for (std::vector<IndexSpace>::const_iterator lit = left.begin();
+            lit != left.end(); lit++)
+      {
+        const LowLevel::ElementMask &left_mask = lit->get_valid_mask();
+        for (std::vector<IndexSpace>::const_iterator rit = right.begin();
+              rit != right.end(); rit++)
+        {
+          const LowLevel::ElementMask &right_mask = rit->get_valid_mask();
+          LowLevel::ElementMask::OverlapResult result = 
+            left_mask.overlaps_with(right_mask);
+          if (result != LowLevel::ElementMask::OVERLAP_MAYBE)
+            return false;
+        }
+      }
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
+    void RegionTreeForest::DynamicPartTest::publish_test(void) const
+    //--------------------------------------------------------------------------
+    {
+      parent->add_disjoint(c1,c2);
+    }
+#endif
 
     //--------------------------------------------------------------------------
     IndexSpaceNode* RegionTreeForest::create_node(IndexSpace sp, IndexPartNode *parent,

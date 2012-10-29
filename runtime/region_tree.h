@@ -180,6 +180,13 @@ namespace RegionRuntime {
       size_t compute_leaked_return_size(void);
       void pack_leaked_return(Serializer &rez);
       void unpack_leaked_return(Deserializer &derez); // will unpack leaked references and remove them
+#ifdef DYNAMIC_TESTS
+    public:
+      // For performing dynamic independence tests
+      bool fix_dynamic_test_set(void); // Return true if there are any tests to perform (must hold forest lock)
+      void perform_dynamic_tests(void); // Perform the set of dynamic tests (don't need to hold the lock if only on performing
+      void publish_dynamic_test_results(void);
+#endif
     protected:
       friend class IndexSpaceNode;
       friend class IndexPartNode;
@@ -275,6 +282,35 @@ namespace RegionRuntime {
     private:
       std::list<IndexSpaceNode*> top_index_trees;
       std::list<RegionNode*>   top_logical_trees;
+#ifdef DYNAMIC_TESTS
+    private:
+      class DynamicSpaceTest {
+      public:
+        DynamicSpaceTest(IndexPartNode *parent, Color c1, IndexSpace left, Color c2, IndexSpace right);
+        bool perform_test(void);
+        void publish_test(void) const;
+      public:
+        IndexPartNode *parent;
+        Color c1, c2;
+        IndexSpace left, right;
+      };
+      class DynamicPartTest {
+      public:
+        DynamicPartTest(IndexSpaceNode *parent, Color c1, Color c2);
+        void add_child_space(bool left, IndexSpace space);
+        bool perform_test(void);
+        void publish_test(void) const;
+      public:
+        IndexSpaceNode *parent;
+        Color c1, c2;
+        std::vector<IndexSpace> left, right;
+      };
+    private:
+      std::vector<DynamicSpaceTest> dynamic_space_tests;
+      std::vector<DynamicPartTest>  dynamic_part_tests;
+      std::list<DynamicSpaceTest> ghost_space_tests;
+      std::list<DynamicPartTest>  ghost_part_tests;
+#endif
     };
 
     /////////////////////////////////////////////////////////////

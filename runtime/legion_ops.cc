@@ -56,7 +56,7 @@ namespace RegionRuntime {
         else
         {
           context_owner = true;
-          forest_ctx = new RegionTreeForest(runtime);
+          forest_ctx = runtime->create_region_forest();
         }
 #ifdef DEBUG_HIGH_LEVEL
         assert(forest_ctx != NULL);
@@ -81,7 +81,7 @@ namespace RegionRuntime {
       unlock();
       if (context_owner)
       {
-        delete forest_ctx; 
+        runtime->destroy_region_forest(forest_ctx);
       }
       forest_ctx = NULL;
       context_owner = false;

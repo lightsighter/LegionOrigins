@@ -2891,6 +2891,7 @@ namespace RegionRuntime {
       this->available_lock= Lock::create_lock();
       this->stealing_lock = Lock::create_lock();
       this->thieving_lock = Lock::create_lock();
+      this->forest_lock = Lock::create_lock();
 #else
       mapper_locks[0].init();
       
@@ -2900,11 +2901,13 @@ namespace RegionRuntime {
       this->available_lock.init();
       this->stealing_lock.init();
       this->thieving_lock.init();
+      this->forest_lock.init();
 #endif
 #ifdef DEBUG_HIGH_LEVEL
 #ifdef LOW_LEVEL_LOCKS
       assert(unique_lock.exists() && mapping_lock.exists() && queue_lock.exists() &&
-              available_lock.exists() && stealing_lock.exists() && thieving_lock.exists());
+              available_lock.exists() && stealing_lock.exists() && 
+              thieving_lock.exists() && forest_lock.exists());
 #endif
 #endif
       // Make some default contexts
@@ -3027,6 +3030,7 @@ namespace RegionRuntime {
       unique_lock.destroy_lock();
       stealing_lock.destroy_lock();
       thieving_lock.destroy_lock();
+      forest_lock.destroy_lock();
 #else
       mapping_lock.destroy();
       queue_lock.destroy();
@@ -3034,6 +3038,7 @@ namespace RegionRuntime {
       unique_lock.destroy();
       stealing_lock.destroy();
       thieving_lock.destroy();
+      forest_lock.destroy();
 #endif
 #ifdef DEBUG_HIGH_LEVEL
       if (logging_region_tree_state)
@@ -3217,6 +3222,9 @@ namespace RegionRuntime {
 #ifdef INORDER_EXECUTION
     /*static*/ bool HighLevelRuntime::program_order_execution = false;
 #endif
+#ifdef DYNAMIC_TESTS
+    /*static*/ bool HighLevelRuntime::dynamic_independence_tests = false;
+#endif
 #ifdef DEBUG_HIGH_LEVEL
     /*static*/ bool HighLevelRuntime::logging_region_tree_state = false;
 #endif
@@ -3317,6 +3325,15 @@ namespace RegionRuntime {
 #endif
           INT_ARG("-hl:sched", max_tasks_per_schedule_request);
           INT_ARG("-hl:window", max_task_window_per_context);
+#ifdef DYNAMIC_TESTS
+          BOOL_ARG("-hl:dynamic",dynamic_independence_tests); 
+#else
+          if (!strcmp(argv[i],"-hl:dynamic"))
+          {
+            log_run(LEVEL_WARNING,"WARNING: Dynamic independence tests are disabled.  To enable dynamic independence tests "
+                              "compile with the -DDYNAMIC_TESTS flag.");
+          }
+#endif
 #ifdef DEBUG_HIGH_LEVEL
           BOOL_ARG("-hl:tree",logging_region_tree_state);
 #else
@@ -4479,6 +4496,30 @@ namespace RegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    RegionTreeForest* HighLevelRuntime::create_region_forest(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock f_lock(forest_lock);
+      RegionTreeForest *result = new RegionTreeForest(this);
+      active_forests.insert(result);
+      return result;
+    }
+    
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::destroy_region_forest(RegionTreeForest *forest)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock f_lock(forest_lock);
+      std::set<RegionTreeForest*>::iterator finder = active_forests.find(forest);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(finder != active_forests.end());
+#endif
+      active_forests.erase(finder);
+      // Free up the memory
+      delete forest;
+    }
+
+    //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::notify_operation_complete(Context parent)
     //--------------------------------------------------------------------------------------------
     {
@@ -5231,6 +5272,12 @@ namespace RegionRuntime {
       // first perform the dependence analysis 
       perform_dependence_analysis();
 
+      // Perform these before doing any mappings
+#ifdef DYNAMIC_TESTS
+      if (dynamic_independence_tests)
+        perform_dynamic_tests();
+#endif
+
 #ifdef INORDER_EXECUTION
       // Short circuit for inorder case
       if (program_order_execution)
@@ -5501,6 +5548,45 @@ namespace RegionRuntime {
           copy.disable_idle_task(); 
         }
       }
+    }
+#endif
+
+#ifdef DYNAMIC_TESTS
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::perform_dynamic_tests(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Copy out the dynamic forests while holding the lock
+      std::set<RegionTreeForest*> targets;
+      {
+        AutoLock f_lock(forest_lock);
+        targets.insert(dynamic_forests.begin(),dynamic_forests.end());
+        // Empty out the current buffer
+        dynamic_forests.clear();
+      }
+      // Now we can do our thing
+      for (std::set<RegionTreeForest*>::const_iterator it = targets.begin();
+            it != targets.end(); it++)
+      {
+        RegionTreeForest *forest = *it;
+        forest->lock_context();
+        if (forest->fix_dynamic_test_set())
+        {
+          forest->unlock_context();
+          forest->perform_dynamic_tests();
+          forest->lock_context();
+          forest->publish_dynamic_test_results();
+        }
+        forest->unlock_context();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::request_dynamic_tests(RegionTreeForest *forest)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock f_lock(forest_lock);
+      dynamic_forests.push_back(forest);
     }
 #endif
 
