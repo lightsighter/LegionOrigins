@@ -50,7 +50,7 @@ GASNETT_THREADKEY_DECLARE(cur_thread);
 
 // GASnet helper stuff
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
     extern Logger::Category log_mutex;
 
@@ -810,6 +810,6 @@ namespace RegionRuntime {
     };
 
   }; // namespace LowLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 
 #endif

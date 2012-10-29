@@ -13,7 +13,7 @@
 #define MAX_TASK_MAPS_PER_STEP  4
 #define MAX_TASK_WINDOW         1024
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     Logger::Category log_run("runtime");

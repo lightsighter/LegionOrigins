@@ -4,7 +4,7 @@
 
 #include "legion_types.h"
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     ///////////////////////////////////////////////////////////////////////////

@@ -12,7 +12,7 @@
   } \
 } while(0)
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
     extern Logger::Category log_gpu;
 
@@ -724,4 +724,4 @@ namespace RegionRuntime {
     }
 
   }; // namespace LowLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime

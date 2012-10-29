@@ -28,7 +28,7 @@
 #define FIELD_ALL_ONES      0xFFFFFFFFFFFFFFFF
 
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
     
     enum LegionErrorType {
@@ -281,6 +281,7 @@ namespace RegionRuntime {
     typedef unsigned int InstanceID;
     typedef unsigned int FieldSpaceID;
     typedef unsigned int GenerationID;
+    typedef unsigned int MappingTagID;
     typedef unsigned int TypeHandle;
     typedef unsigned int ProjectionID;
     typedef unsigned int RegionTreeID;
@@ -388,6 +389,6 @@ namespace RegionRuntime {
 
 
   }; // HighLevel namespace
-}; // RegionRuntime namespace
+}; // LegionRuntime namespace
 
 #endif // __LEGION_TYPES_H__

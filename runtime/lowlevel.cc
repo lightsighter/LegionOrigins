@@ -16,7 +16,7 @@ GASNETT_THREADKEY_DEFINE(gpu_thread);
 #include <fcntl.h>
 
 // Implementation of Detailed Timer
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
     
     Logger::Category log_gpu("gpu");
@@ -6598,6 +6598,6 @@ namespace RegionRuntime {
     fflush(stdout);
     fputs(buffer, stderr);
   }
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 
 

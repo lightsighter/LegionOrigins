@@ -15,7 +15,7 @@
 
 // This is the default implementation of the mapper interface for the general low level runtime
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     Logger::Category log_mapper("defmapper");

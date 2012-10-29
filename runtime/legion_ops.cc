@@ -6,7 +6,7 @@
 
 #define PRINT_REG(reg) (reg).index_space.id,(reg).field_space.id, (reg).tree_id
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     // Extern declarations for loggers
@@ -7981,7 +7981,7 @@ namespace RegionRuntime {
     }
 
   }; // namespace HighLevel
-}; // namespace RegionRuntime 
+}; // namespace LegionRuntime 
 
 // EOF
 

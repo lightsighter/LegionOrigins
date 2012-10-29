@@ -10,7 +10,7 @@
  * To see where these statements get consumed, look in spy_parser.py
  */
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
     namespace LegionSpy {
 

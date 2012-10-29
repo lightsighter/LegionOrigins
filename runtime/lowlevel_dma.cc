@@ -11,7 +11,7 @@
   } \
 } while(0)
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
 
     Logger::Category log_dma("dma");

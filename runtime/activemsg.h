@@ -220,7 +220,7 @@ template <class RPLTYPE, int RPLID> struct ReplyRawArgs<RPLTYPE, RPLID, n> { \
 \
   void reply_short(gasnet_token_t token) \
   { \
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_SYSTEM); \
     MACROPROXY(gasnet_AMReplyShort ## n, token, RPLID, HANDLERARG_VALS_ ## n ); \
   } \
  \

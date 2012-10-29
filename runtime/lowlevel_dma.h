@@ -3,7 +3,7 @@
 
 #include "lowlevel_impl.h"
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
     extern void init_dma_handler(void);
 

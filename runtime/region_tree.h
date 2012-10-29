@@ -5,7 +5,7 @@
 #include "legion_types.h"
 #include "legion_utilities.h"
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     /////////////////////////////////////////////////////////////
@@ -1252,7 +1252,7 @@ namespace RegionRuntime {
     };
 
   }; // namespace HighLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 
 #endif // __REGION_TREE_H__
 
