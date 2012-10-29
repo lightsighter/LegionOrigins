@@ -30,8 +30,8 @@ through the memory hierarchy is placed on the programmer.
 
 To combat this problem, researchers have previously explored programming
 systems that are capable of reasoning about the structure of data in
-parallel programs.  Traditionally, these attempts have taken two approaches.   
-The first approach relies on fully static analyses that
+parallel programs.  Traditionally, these attempts have taken one of two approaches.   
+The first approach relies on static analyses that
 have no runtime overhead, but limited expressivity.  Two recent examples, 
 Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a 
@@ -44,7 +44,7 @@ limit expressivity, but incurs runtime overhead.  Examples of this approach
 include transactional memory and thread-level speculation.
 
 These two different approaches illustrate different mechanisms for dealing with
-the problem of data aliasing in parallel programs.  The fully static approach outlaws aliasing
+the problem of data aliasing in parallel programs.  The fully static approach disallows aliasing
 by requiring a single static partitioning of data.  Our own experience with writing high-performance 
 applications in both Sequoia and the current industry standard mix of MPI, shared-memory
 threads, and CUDA, has taught us that for many practical situations a
@@ -137,7 +137,7 @@ Using our proofs of the soundess of the privilegs and coherence systems, we then
 prove a third result: if two {\em siblings} (tasks that
 have the same immediate parent task) $t_1$ and $t_2$ are 
 {\em non-interfering} (have no ordering requirements for correctness), 
-then the any descendant of $t_1$ in the task hierarchy is non-interfering
+then any descendant of $t_1$ in the task hierarchy is non-interfering
 with any descendant of $t_2$.  This theorem is the basis for correct, distributed
 task scheduling in a Legion implementation, which is crucial for
 performance; a centralized scheduler would be a bottleneck
