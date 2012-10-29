@@ -281,6 +281,7 @@ namespace RegionRuntime {
     typedef unsigned int InstanceID;
     typedef unsigned int FieldSpaceID;
     typedef unsigned int GenerationID;
+    typedef unsigned int MappingTagID;
     typedef unsigned int TypeHandle;
     typedef unsigned int ProjectionID;
     typedef unsigned int RegionTreeID;
