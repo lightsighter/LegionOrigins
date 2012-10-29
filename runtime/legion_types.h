@@ -28,7 +28,7 @@
 #define FIELD_ALL_ONES      0xFFFFFFFFFFFFFFFF
 
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
     
     enum LegionErrorType {
@@ -389,6 +389,6 @@ namespace RegionRuntime {
 
 
   }; // HighLevel namespace
-}; // RegionRuntime namespace
+}; // LegionRuntime namespace
 
 #endif // __LEGION_TYPES_H__

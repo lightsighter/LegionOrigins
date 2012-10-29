@@ -5,7 +5,7 @@
 
 GASNETT_THREADKEY_DECLARE(gpu_thread);
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
     class GPUProcessor : public Processor::Impl {
     public:
@@ -236,6 +236,6 @@ namespace RegionRuntime {
     };
 
   }; // namespace LowLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 
 #endif

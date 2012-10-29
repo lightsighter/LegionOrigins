@@ -8,7 +8,7 @@
 
 #define MAX_STEALS_PERMITTED 4
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     Logger::Category log_mapper("default-mapper");

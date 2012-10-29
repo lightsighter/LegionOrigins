@@ -4,7 +4,7 @@
 
 #include "legion.h"
 
-using namespace RegionRuntime::HighLevel;
+using namespace LegionRuntime::HighLevel;
 
 // A debug mapper that will always map things
 // into the last memory in it's stack and will

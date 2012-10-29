@@ -83,7 +83,7 @@ pthread_mutex_t debug_mutex;
 // Local processor id
 __thread unsigned local_proc_id;
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
     
     // Implementation for each of the runtime objects

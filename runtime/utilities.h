@@ -43,7 +43,7 @@ enum {
 
 //#define DETAILED_TIMING
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   /**
    * A logger class for tracking everything from debug messages
    * to error messages.
@@ -578,12 +578,12 @@ namespace RegionRuntime {
 
     // Example Item types in lowlevel_impl.h 
 
-  }; // RegionRuntime::LowLevel namespace
+  }; // LegionRuntime::LowLevel namespace
 
   // typedef so we can use detailed timers anywhere in the runtime
   typedef LowLevel::DetailedTimer DetailedTimer;
 
-}; // RegionRuntime namespace
+}; // LegionRuntime namespace
 
 #undef PTHREAD_SAFE_CALL
 

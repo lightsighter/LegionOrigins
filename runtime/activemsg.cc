@@ -315,7 +315,7 @@ public:
 protected:
   void send_short(OutgoingMessage *hdr)
   {
-    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_AM);
+    LegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_AM);
     switch(hdr->num_args) {
     case 1:
       if(hdr->payload_mode != PAYLOAD_NONE)
@@ -413,7 +413,7 @@ protected:
   
   void send_long(OutgoingMessage *hdr, void *dest_ptr)
   {
-    RegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_AM);
+    LegionRuntime::LowLevel::DetailedTimer::ScopedPush sp(TIME_AM);
     switch(hdr->num_args) {
     case 1:
       gasnet_AMRequestLong1(peer, hdr->msgid, 

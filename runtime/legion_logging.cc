@@ -3,7 +3,7 @@
 #include "region_tree.h"
 #include "legion_logging.h"
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     //--------------------------------------------------------------------------
@@ -272,7 +272,7 @@ namespace RegionRuntime {
     }
 
   }; // namespace HighLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 
 // EOF
 

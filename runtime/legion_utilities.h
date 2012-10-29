@@ -4,7 +4,7 @@
 
 #include "legion_types.h"
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
 // Useful macros
@@ -830,6 +830,6 @@ namespace RegionRuntime {
 #undef BIT_ELMTS
 
   }; // namespace HighLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 
 #endif // __LEGION_UTILITIES_H__

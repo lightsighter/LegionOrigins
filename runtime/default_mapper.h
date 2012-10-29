@@ -8,7 +8,7 @@
 #include <cassert>
 #include <algorithm>
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
 
     class DefaultMapper : public Mapper {

@@ -5,7 +5,7 @@
 #include "legion_utilities.h"
 #include "legion_logging.h"
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace HighLevel {
   
     // Extern declarations for loggers
@@ -9829,5 +9829,5 @@ namespace RegionRuntime {
     }
 
   }; // namespace HighLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 

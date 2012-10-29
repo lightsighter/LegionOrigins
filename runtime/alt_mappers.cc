@@ -2,8 +2,8 @@
 #include "alt_mappers.h"
 #include "utilities.h"
 
-using namespace RegionRuntime;
-using namespace RegionRuntime::HighLevel;
+using namespace LegionRuntime;
+using namespace LegionRuntime::HighLevel;
 
 //////////////////////////////////////
 // Debug Mapper

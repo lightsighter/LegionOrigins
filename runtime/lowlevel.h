@@ -10,7 +10,7 @@
 #include "common.h"
 #include "utilities.h"
 
-namespace RegionRuntime {
+namespace LegionRuntime {
   namespace LowLevel {
     // forward class declarations because these things all refer to each other
     class Event;
@@ -1140,6 +1140,6 @@ namespace RegionRuntime {
     }
 
   }; // namespace LowLevel
-}; // namespace RegionRuntime
+}; // namespace LegionRuntime
 
 #endif
