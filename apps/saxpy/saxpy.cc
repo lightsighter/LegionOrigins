@@ -8,7 +8,7 @@
 #include "legion.h"
 #include "alt_mappers.h"
 
-using namespace RegionRuntime::HighLevel;
+using namespace LegionRuntime::HighLevel;
 
 
 #define TEST_STEALING
@@ -220,7 +220,7 @@ void main_task(const void *args, size_t arglen,
   double sim_time = ((1.0 * (ts_end.tv_sec - ts_start.tv_sec)) +
                      (1e-9 * (ts_end.tv_nsec - ts_start.tv_nsec)));
   printf("ELAPSED TIME = %7.3f s\n", sim_time);
-  RegionRuntime::DetailedTimer::report_timers();
+  LegionRuntime::DetailedTimer::report_timers();
 
   // Validate the results
   {
@@ -234,9 +234,9 @@ void main_task(const void *args, size_t arglen,
     r_y.wait_until_valid();
     r_z.wait_until_valid();
 
-    RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
-    RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
-    RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_z = r_z.get_accessor<AccessorGeneric>();
+    LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
+    LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
+    LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_z = r_z.get_accessor<AccessorGeneric>();
 
 #if 0
     printf("z values: ");
@@ -303,8 +303,8 @@ void init_vectors_task(const void *global_args, size_t global_arglen,
   PhysicalRegion r_x = regions[0];
   PhysicalRegion r_y = regions[1];
 
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
+  LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
+  LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
 
 #if 1
   Block *block = (Block *)local_args;
@@ -352,9 +352,9 @@ void add_vectors_task(const void *global_args, size_t global_arglen,
   PhysicalRegion r_y = regions[1];
   PhysicalRegion r_z = regions[2];
 
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
-  RegionRuntime::LowLevel::RegionAccessor<RegionRuntime::LowLevel::AccessorGeneric> a_z = r_z.get_accessor<AccessorGeneric>();
+  LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_x = r_x.get_accessor<AccessorGeneric>();
+  LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_y = r_y.get_accessor<AccessorGeneric>();
+  LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_z = r_z.get_accessor<AccessorGeneric>();
 
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
     float x = a_x.read(ptr_t<Entry>(block->entry_x[i])).v;
@@ -412,7 +412,7 @@ public:
   }
 
   virtual Processor select_initial_processor(const Task *task) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Processor proc_one, loc_proc;
     proc_one.id = 1;
     loc_proc.id = (task->tag % num_procs) + 1;
@@ -435,7 +435,7 @@ public:
   }
 
   virtual Processor target_task_steal(const std::set<Processor> &blacklist) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     return Mapper::target_task_steal(blacklist);
 #else
@@ -446,7 +446,7 @@ public:
   virtual void permit_task_steal(Processor thief,
                                  const std::vector<const Task*> &tasks,
                                  std::set<const Task*> &to_steal) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     for (unsigned i = 0; i < tasks.size(); i++) {
       if (tasks[i]->steal_count < MAX_STEAL_COUNT)
@@ -464,7 +464,7 @@ public:
   virtual void map_task_region(const Task *task, const RegionRequirement &req, unsigned index,
                                const std::set<Memory> &current_instances,
                                std::vector<Memory> &target_ranking, bool &enable_WAR_optimization) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Memory loc_mem;
     loc_mem.id = local_proc.id + 1;
     switch (task->task_id) {
@@ -487,13 +487,13 @@ public:
                                  std::set<Memory> &to_reuse,
                                  std::vector<Memory> &to_create,
                                  bool &create_one) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Mapper::rank_copy_targets(task, req, current_instances, to_reuse, to_create, create_one);
   }
 
   virtual void rank_copy_sources(const std::set<Memory> &current_instances,
                                 const Memory &dst, std::vector<Memory> &chosen_order) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     if (current_instances.size() == 1) {
       chosen_order.push_back(*current_instances.begin());
       return;
@@ -577,7 +577,7 @@ public:
   }
 
   virtual Processor select_initial_processor(const Task *task) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     std::vector<std::pair<Processor, Memory> > &loc_procs =
       cpu_mem_pairs[Processor::LOC_PROC];
 
@@ -599,7 +599,7 @@ public:
   }
 
   virtual Processor target_task_steal(const std::set<Processor> &blacklist) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     return Mapper::target_task_steal(blacklist);
 #else
@@ -610,7 +610,7 @@ public:
   virtual void permit_task_steal(Processor thief,
                                  const std::vector<const Task*> &tasks,
                                  std::set<const Task*> &to_steal) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
 #ifdef TEST_STEALING
     for (unsigned i = 0; i < tasks.size(); i++) {
       if (tasks[i]->steal_count < MAX_STEAL_COUNT)
@@ -628,7 +628,7 @@ public:
                                const std::vector<Memory> &valid_dst_instances,
                                Memory &chosen_src,
                                std::vector<Memory> &dst_ranking) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     switch (task->task_id) {
     case TOP_LEVEL_TASK_ID:
     case TASKID_MAIN:
@@ -651,13 +651,13 @@ public:
                                  std::set<Memory> &to_reuse,
                                  std::vector<Memory> &to_create,
                                  bool &create_one) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     Mapper::rank_copy_targets(task, req, current_instances, to_reuse, to_create, create_one);
   }
 
   virtual void rank_copy_sources(const std::set<Memory> &current_instances,
                                  const Memory &dst, std::vector<Memory> &chosen_order) {
-    RegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
+    LegionRuntime::DetailedTimer::ScopedPush sp(TIME_MAPPER);
     if (current_instances.size() == 1) {
       chosen_order.push_back(*current_instances.begin());
       return;
