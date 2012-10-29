@@ -137,6 +137,217 @@ $v$ & ::= & & values &
 \vspace{-5mm}
 \end{figure*}
 
+\newcommand{\placeat}[3]{%
+\makebox[0pt]{%
+\hspace*{#1in} \raisebox{#2in}{#3}%
+}%
+}
+
+\newcommand{\infrulez}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
+\newcommand{\cinfrulez}[3]{\parbox{14cm}{\hfil$\infrulez{#1}{#2}$\hfil}\parbox{4cm}{$\,#3$\hfil}}
+\newcommand{\finfrulez}[2]{\framebox{$\infrulez{#1}{#2}$}}
+
+\newcommand{\ruleat}[5]{
+\node[below right] at (#1) {$\infrulez{#4}{#5}$};
+\node[below] at (#2) {[#3]};
+}
+
+\newcommand{\ruleatx}[5]{
+\node[below right] at (#1) {$\infrulez{\begin{array}{l}#4\end{array}}{#5}$};
+\node[below] at (#2) {[#3]};
+}
+
+\newcommand{\axiomat}[4]{
+\node[below right] at (#1) {$#4$};
+\node[below] at (#2) {[#3]};
+}
+
+\begin{figure*}
+{
+\begin{tikzpicture}[x=1in,y={(0,-1in)}]
+%\draw[thin] (0,0) to (7,0);
+%\draw[thin] (0,0) to (0,6);
+ 
+% start with read/write/reduce rules
+\ruleat{0.1,0.1}{2.5,0.2}{T-Read}
+{\begin{array}{l}
+\typeenvx e_1 : T@(\oton{r}) \\
+\forall i, reads(r_i) \in \Phi^*\end{array}}
+{\typeenvx \text{read}(e_1) : T}
+
+\ruleat{0.1,1.1}{2.5,1.2}{T-Write}
+{\begin{array}{l}
+\typeenvx e_1 : T@(\oton{r}) \\
+\typeenvx e_2 : T \\
+\forall i, writes(r_i) \in \Phi^*
+\end{array}}
+{\typeenvx \text{write}(e_1, e_2) : T@(\oton{r})}
+
+\ruleat{0.1,2.1}{2.5,2.2}{T-Reduce}
+{\begin{array}{l}
+\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \\
+\typeenvx e_1 : T_1@(\oton{r}) \\
+\typeenvx e_2 : T_2 \\
+\forall i, reduces_{id}(r_i) \in \Phi^*
+\end{array}}
+{\typeenvx \text{reduce}(id, e_1, e_2) : T_1@(\oton{r})}
+
+\axiomat{0.1,2.8}{2.5,2.9}{T-New}
+{\typeenvx \text{new }T@r : T@r}
+
+\ruleat{0.1,3.2}{2.5,3.3}{T-UpRgn}
+{\begin{array}{l}
+\typeenvx e : T@(r'_1, \ldots r'_k) \\
+\forall i. \exists j, r'_i \leq r_j \in \Omega^* \\
+\end{array}}
+{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})}
+
+\ruleat{0.1,3.8}{2.5,3.9}{T-DnRgn}
+{\begin{array}{l}
+\typeenvx e : T@(r'_1, \ldots r'_k) \\
+%\forall j. \exists i, r_j \leq r'_i \in \Omega^* \\
+\end{array}}
+{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
+
+\axiomat{0.1,4.1}{2.5,4.2}{T-NewColor}
+{\typeenvx \text{newcolor }r : \text{coloring}(r)}
+
+\ruleat{0.1,4.5}{2.5,4.5}{T-Color}
+{\begin{array}{l}
+\typeenvx e_1 : \text{coloring}(r) \\
+\typeenvx e_2 : T@r \\
+\typeenvx e_3 : int
+\end{array}}
+{\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)}
+
+\ruleat{0.1,5.0}{2.5,5.1}{T-Partition}
+{\begin{array}{l}
+\typeenvx e_1 : \text{coloring}(r_p) \\
+\Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\
+\typeenvx[O=\Omega'] e_2 : T \\
+\{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset
+\end{array}}
+{\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
+
+\ruleat{0,5.3}{2.5,5.4}{T-Pack}
+{\begin{array}{l}
+T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\
+\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\
+\typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]
+\end{array}}
+{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1}
+
+\ruleat{0.0,6.0}{2.5,6.1}{T-Unpack}
+{\begin{array}{l}
+T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
+\typeenvx e_1 : T_1 \\
+\Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \\
+\Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
+\typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \\
+\{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset
+\end{array}}
+{\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3}
+
+\ruleat{0.0,6.5}{2.5,6.6}{T-Call}
+{\begin{array}{l}
+\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\
+\typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\
+\Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*
+\end{array}}
+{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
+
+% now the operational semantics versions
+
+\ruleatx{3.0,0.0}{6.5,0.0}{E-Read}{
+\opsenvx e \mapsto l, E \andalso S' = \text{apply}(S, E) \\
+v = \begin{cases} S'(l), & \text{if } l \not\in C \\
+v' : H(l), & \text{otherwise} \end{cases}
+}{\opsenvx \text{read}(e) \mapsto v, E \dplus [ read(l, excl, v) ]}
+
+\ruleatx{3.0,1.0}{6.5,1.1}{E-Write}{
+\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
+}{\opsenvx \text{write}(e_1, e_2) \mapsto l, E' \dplus [ write(l, excl, v) ]}
+
+\ruleatx{3.0,1.5}{6.5,1.6}{E-Reduce}{
+\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
+}{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto l, E' \dplus [ reduce_{id}(l, excl, v) ]}
+
+\ruleatx{3.0,2.0}{6.5,2.1}{E-New}{
+l \in M(r) \\
+H(l) = M \llbracket T \rrbracket
+}{\opsenvx \text{new }T@r \mapsto l, []}
+
+\ruleat{3.0,3.0}{6.5,3.1}{E-UpRgn}{
+\opsenvx e \mapsto v, E
+}{\opsenvx \text{upregion}(e, \oton{r}) \mapsto v, E}
+
+\ruleatx{3.0,4.0}{6.5,4.1}{E-DnRgn}{
+\opsenvx e \mapsto l, E \\
+v = \begin{cases} l, & \text{if $\exists i, l \in M(r_i)$}. \\ null, & \text{otherwise}. \end{cases}
+}{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E}
+
+\ruleatx{3.0,5.0}{6.5,5.1}{E-NewColor}{
+K = \{ (l_1, iv_1), \ldots, (l_p, iv_p) \}, \text{ where } \\
+(\forall i \in [1,p]. l_i \in M(r)) \wedge (\forall i,j \in [1,p]. l_i \not= l_j)
+}{\opsenvx \text{newcolor }r \mapsto K, []}
+
+\ruleatx{3.0,5.5}{6.5,5.6}{E-Color}{
+\opsenvx e_1 \mapsto K, E_1 \andalso S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto l, E_2 \andalso S'' = \text{apply}(S', E_2) \\
+\opsenvx[S=S''] e_3 \mapsto v, E_3 \\
+K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \} \\
+valid\_interleave(S, C, E', E_1, E_2, E_3)
+}{\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E'} 
+
+\ruleatx{3.0,6.0}{6.5,6.1}{E-Partition}{
+\opsenv{e_1}{K}{E_1} \andalso \rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
+M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \andalso S' = \text{apply}(S, E_1) \\
+\opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
+}{\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'}
+
+\ruleatx{3.0,6.5}{6.5,6.6}{E-Pack}{
+\opsenvx e_1 \mapsto v, E \andalso \rho_i = M[r_i], \text{ for } 1 \leq i \leq k \\
+v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle
+}{\opsenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] \mapsto v', E}
+
+\ruleatx{3.0,7.0}{6.5,7.1}{E-Unpack}{
+\opsenvx e_1 \mapsto \langle \langle \otok{k}{\rho} , v_1 \rangle \rangle, E_1 \andalso M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
+L' = L[v_1/id] \andalso S' = \text{apply}(S, E_1) \\
+\opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
+}{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E'}
+
+\ruleatx{3.0,7.5}{6.5,7.6}{E-Call}{
+\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
+valid\_interleave(S, C, E', \oton{E}) \andalso \text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
+M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \andalso L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \andalso S' = \text{apply}(S, E') \\
+C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \vee simult(\rho) \in M' \llbracket Q' \rrbracket \} \\
+\opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})
+}{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
+
+\end{tikzpicture}
+\texcomment{
+\framebox[7in]{
+\placeat{2}{3}{bar}%
+\placeat{3}{1}{3,1}%
+\placeat{-3}{1}{-3,1} %
+\makebox[0pt]{%
+\hspace*{2in} \raisebox{3in}{---}%
+} %
+\makebox[0pt]{%
+\hspace*{1in} \raisebox{1in}{foo}%
+} %
+\makebox[0pt]{%
+\hspace*{2in} \raisebox{3in}{bar}%
+}%
+\rule{0.1pt}{6in}
+}}
+}
+\caption{Type System and Operational Semantics Rules}
+\label{fig:langrules}
+\end{figure*}
+
 %\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
 %\newcommand{\cinfrule}[3]{\parbox{14cm}{\hfil$\infrule{#1}{#2}$\hfil}\parbox{4cm}{$\,#3$\hfil}}
 %\newcommand{\finfrule}[2]{\framebox{$\infrule{#1}{#2}$}}
@@ -336,6 +547,7 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \end{figure*}
 \end{comment}
 
+\texcomment{
 \begin{figure*}
 \begin{adjustwidth}{-4em}{-4em}
 \begin{center}
@@ -441,6 +653,7 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \vspace{-5mm}
 \label{fig:types}
 \end{figure*}
+}
 
 \begin{figure}
 \centering{
@@ -766,6 +979,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 \end{figure*}
 \end{comment}
 
+\texcomment{
 \begin{figure*}
 \begin{adjustwidth}{-4em}{-4em}
 \begin{center}
@@ -881,6 +1095,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 \caption{Legion Core Operational Semantics}
 \label{fig:semantics}
 \end{figure*}
+}
 
 \section{Soundness of Privileges}
 \label{sec:soundness}
@@ -1233,9 +1448,10 @@ $any\_interleave(E', \oton{E}) \Rightarrow$ \\
 \hspace*{0pt} \hfill $valid\_interleave(S, C, E', \oton{E})$.
 \end{lem}
 
-The final piece is to turn this test into something that can be performed before the subtasks are executed, ideally as efficiently as
-possible.  The key to this is the privileges on Legion tasks and their ability to provide bounds on the accesses that may be performed
-during execution.  Our non-interference operator is extended to work on privileges and sets of privileges:
+The final piece is to turn this test into something that can be performed before the subtasks are executed,
+ideally as efficiently as possible.  The key to this is the privileges on Legion tasks and their ability to
+provide bounds on the accesses that may be performed during execution.  Our non-interference operator is
+extended to work on privileges and sets of privileges:
 $
 \begin{array}{l@{}l}
 \multicolumn{2}{l}{priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow} \\
@@ -1246,155 +1462,25 @@ $
 \\
 \multicolumn{2}{l}{\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2}
 \end{array}$
-Note although the
+The ``two readers'' and ``two reducers'' conditions for memory operation non-interference have exact equivalents
+for regions, which can be performed at compile-time.  The ``different address'' condition is approximated by two
+tests.  The first uses (logical) region disjointness constraints from the type system to statically infer
+non-interference.  The second uses the region mapping $M$ to determine
+the two physical regions and performs a run-time test for overlapping.  Although still a dynamic test, it is performed
+once per pair of regions rather than for for every pair of memory operations, and often need not be performed at all
+(if one of the other three conditions is shown to hold at compile-time).
 
-CURRENT EDIT POINT
-
-Next we examine how to modify the serialized interleaving to produce valid interleavings allowing parallel execution. 
-We consider when we may swap the order of two adjacent memory operations in a valid interleaving.
-\begin{itemize}
-\item The two operations must have come from different constituent
-traces, or the swap would violate $any\_interleave$.
-\item If one is a read of
-a location $l$ (that is not in the clobber set), the other may not be a write or reduce to $l$, 
-as changing the order would almost certainly change the value read.
-\item If one is a write of a location $l$, the other may not be a write or reduce to $l$,
-as the store that would result from applying those operations in the opposite order may
-differ in $l$.
-\item Finally, if both operations are reductions to the same location, they may be swapped if they
-use the same reduction function, as each reduction function is assumed to commute with itself.  
-%(We 
-%follow the example of other work (i.e. DPJ) and leave proofs of commutativity to the programmer,
-%possibly with the aid of other tools.)  
-However, if the reduction functions have different names, swapping the two operations might result in a different store.
-\end{itemize}
-
-To summarize this, we define a {\em non-interference} operator on two memory operations that have been
-annotated with which constituent trace they came from as follows:
-$$
-\begin{array}{l@{ }l}
-op_1^{E_1}(l_1, c_1,& v_1)\ \nonint\ op_2^{E_2}(l_2, c_2, v_2) \Leftrightarrow E_1 \not= E_2\ \wedge \\
-& \big( l_1 \not= l_2 \vee (op_1 = read \wedge op_2 = read)\ \vee \\
-& (op_1 = reduce_{id_1} \wedge op_2 = reduce_{id_2} \wedge id_1 = id_2) \big)
-\end{array}
-$$
-
-\begin{lem}
-\label{lem:nonintswap}
-\rm
-Let $S$ be a store, $C$ a clobber set, $\oton{E}, E'_a, E'_b$ memory traces, and
-$\epsilon_1, \epsilon_2$ two annotated memory operations such that $\epsilon_1 \nonint \epsilon_2$.
-Then,
-$$valid\_interleave(S, C, E'_a \dplus [ \epsilon_1, \epsilon_2 ] \dplus E'_b, \oton{E})$$
-if and only if
-$$valid\_interleave(S, C, E'_a \dplus [ \epsilon_2, \epsilon_1 ] \dplus E'_b, \oton{E}).$$
-\end{lem}
-\texcomment{
-\begin{proof}
-As before, we consider the three conditions needed to be a valid interleaving.  We describe the
-implication in the ``forward'' direction, but the arguments are all symmetric.
-\begin{enumerate}
-\item If $E'_a \dplus [ \epsilon_1 ] \dplus [ \epsilon_2 ] \dplus E'_b$ is an interleaving of $\oton{E}$,
-the proof must first ``pop off'' all of $E'_a$, leaving $[ \epsilon_1 ] \dplus [ \epsilon_2 ] \dplus E'_b$ for
-the interleaved subtrace.  The next two steps must pop $\epsilon_1$ and $\epsilon_2$, leaving $E'_b$.
-They cannot be in the same subtrace because $\epsilon_1 \nonint \epsilon_2$, so we could also pop
-$\epsilon_2$ and then $\epsilon_1$, resulting in a proof that $E'_a \dplus [ \epsilon_2 ] \dplus [ \epsilon_1 ] \dplus E'_b$ is also an interleaving of the constituent traces.
-\item For coherence, we must show the value read (if any) by $\epsilon_1$ does not change, the value
-read (if any) by $\epsilon_2$ does not change, and that any read in $E'_b$ sees no change.  With the
-help of Lemma~\ref{lemma:applychain}, we can eliminate the common $E'_a$ from all sequences by
-using $S' = apply(S, E'_a)$.  Similarly to show that $apply(S', [ \epsilon_1  ] \dplus [ \epsilon_2 ] \dplus E) = apply(S', [ \epsilon_2 ] \dplus [ \epsilon_1 ] \dplus E)$ for any $E$, we need only to show that it holds
-for $E = []$.  The proof is now reduced to showing the following:
-\begin{enumerate}
-\item $\epsilon_1 = read(l, c, v) \Rightarrow S'(l) = apply(S',\epsilon_2)(l)$ - since $\epsilon_1$
-is a read, either $\epsilon_2$ must be a read (in which case $apply(S, \epsilon_2) = S'$) or must be
-to a different location, so the result of applying just it to $S'$ cannot change the value in 
-location $l$.
-\item $\epsilon_2 = read(l, c, v) \Rightarrow apply(S', \epsilon_1)(l) = S'(l)$ - this is the same
-as above, with $\epsilon_1$ and $\epsilon_2$ switched.
-\item $apply(S', \epsilon_1 \dplus \epsilon_2) = apply(S', \epsilon_2 \dplus \epsilon_1)$ - we must
-show that the two store operations $apply(\bullet, \epsilon_1)$ and $apply(\bullet, \epsilon_2)$
-commute.  Modifications to two different locations commute, as do two reads (which make no change
-to the store).  Finally, two reductions using the same function to the same location also commute.
-\end{enumerate}
-\item The proof that sequential equivalence is maintained comes down to showing the final store
-is identical after the swap of the two operations, and this is merely a special case of the third
-piece of the coherence proof.
-\end{enumerate}
-\end{proof}
-}
-We now extend the non-interference operator to entire memory traces, providing a way to say that
-no operation in a trace interferes with any operation in another:
-$$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
-and observe that this property permits arbitrary ordering (i.e. parallel execution) of the 
-corresponding subexpressions.
-
-\begin{lem}
-\label{lem:noninteffects}
-\rm
-Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces such that $E_i \nonint E_j$
-for every $1 \leq i < j \leq n$.  Then any trace $E'$ satisfying $any\_interleave(E', \oton{E})$
-is a valid interleaving.
-\end{lem}
-\texcomment{
-\begin{proof}
-We will use Theorem~\ref{thm:sequential} and Lemma~\ref{lem:nonintswap} to make repeated swaps
-of adjacent operations to transform $E'$ into $E_1 \dplus \ldots \dplus E_n$.  The symmetry of
-Lemma~\ref{lem:nonintswap} is then used to show that the validity of $E_1 \dplus \ldots \dplus E_n$
-under Theorem~\ref{thm:sequential} implies the validity of $E'$.
-
-The swapping algorithm as follows: Associate with each operation in $E'$ the index of that operation
-in $E_1 \dplus \ldots \dplus E_n$.  Any consecutive pair of operations $\epsilon_1$ and $\epsilon_2$
-for which $index(\epsilon_1) > index(\epsilon_2)$ is a {\em misordered pair}.  For any such pair,
-$\epsilon_1$ and $\epsilon_2$ will be from different constituent traces (if they were from the same
-trace, their misordering would mean that $E'$ was not an interleaving of $\oton{E}$).  Every pair of
-traces is non-interfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swapped while preserving
-validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
-\end{proof}
-}
-We next extend non-interference to privileges.  We 
-use the region mapping $M$ to translate the logical regions named in privileges into sets of
-locations (i.e. physical regions), and define non-interference between individual privileges and
-sets of privileges:
-$$
-\begin{array}{@{}l@{}}
-priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptyset)\ \vee \\
-\hspace{0.35in} (priv_1 = reads \wedge priv_2 = reads)\ \vee \\
-\hspace{0.35in} (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)
-\end{array}
-$$
-%% \begin{center}
-%% \begin{tabular}{llc}
-%% \multicolumn{1}{c}{$\phi_1$} & \multicolumn{1}{c}{$\phi_2$} & $\phi_1 \nonint[M] \phi_2$? \\
-%% \multirow{3}{*}{$reads(r_1)$} & $reads(r_2)$ & true \\
-%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% \cline{1-1}
-%% \multirow{3}{*}{$writes(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% \cline{1-1}
-%% \multirow{3}{*}{$reduces_{id_1}(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
-%% & $reduces_{id_2}(r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
-%% \end{tabular}
-%% \end{center}
-
-$$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2$$
+As region non-interference is an approximation of memory trace non-interference, we must show that it is sound.  We
+state the Lemma here, and give the proof in \cite{LegionTypes12}.
 
 \begin{lem}
 \label{lem:nonintpriv}
 \rm
 Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\privconsist{E_1}{\Phi_1}$ and $\privconsist{E_2}{\Phi_2}$.  If $\Phi_1$ and $\Phi_2$ are non-interfering under $M$, then $E_1$ and $E_2$ must be non-interfering.
 \end{lem}
-\texcomment{
-\begin{proof}
-The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
-$\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
-reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (it contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
-\end{proof}
-}
-We can now state the key result that allows the Legion runtime to safely evaluate subexpressions as
-separate tasks in parallel.
+
+We are now able to put all the pieces together and state the theorem that allows the Legion runtime to perform hierarchical
+and parallel scheduling of non-interfering tasks:
 
 \begin{thm}
 \label{thm:parallelexec}
