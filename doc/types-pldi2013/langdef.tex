@@ -718,8 +718,8 @@ difficult to map into a hierarchical one in which decisions must necessarily be 
 Instead we use a bottom-up approach with large-step semantics in which each expression is evaluated with limited 
 information about the overall environment.  The information consists of the initial state of the heap $S$, and a
 set of memory locations that might be modified by other concurrent evaluations.  This is the clobber set $C$,
-and is used to relax the constraints the evaluation of an expression.  Whereas the requirement for locations not
-in the clobber set is the usual one of {\em consistency} (i.e. a read from a location observes the effect of all 
+and is used to relax the constraints on the evaluation of an expression.  Whereas the requirement for locations not
+in the clobber set is the usual one of {\em coherence} (i.e. a read from a location observes the effect of all 
 previous modifications applied in order), the value read from a location in the clobber set may be hypothesized
 to be any value at all.  The validation of these hypotheses is deferred until all potentially-concurrent
 modifications to a location can be observed (i.e. the evaluation of a parent expression whose clobber set does
@@ -1673,7 +1673,7 @@ the runtime requires no communication for scheduling.
 Although determining that $e_1$
 and $e_2$ are non-interfering guarantees $e_3$ and $e_4$ are
 non-interfering, the converse is not true.  It is possible for $e_1$
-and $e_2$ to be judged to be potentially interfering and be serialized
+and $e_2$ to be judged to be interfering and be executed sequentially 
 even when the subexpressions are non-interfering.  This loss of
 precision can impact performance, and did in a few instances in our
 experiments.  

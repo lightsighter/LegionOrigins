@@ -45,7 +45,7 @@ include transactional memory \cite{Harris05} and thread-level speculation \cite{
 
 These two approaches illustrate different mechanisms for dealing with
 the problem of data aliasing in parallel programs.  The fully static approach disallows aliasing
-by requiring a single static partitioning of data.  Our own experience with writing high-performance 
+by requiring a single disjoint partitioning of data.  Our own experience with writing high-performance 
 applications in both Sequoia and the current industry standard mix of MPI, shared-memory
 threads, and CUDA, has taught us that for many practical situations a
 single, static partitioning is insufficient.  In practice, the
@@ -64,15 +64,15 @@ dynamic partitions of program data which can result in aliasing.  We prove
 the soundness of our type system and show that through a combination of
 static and dynamic analysis we can implement it in a way that minimizes dynamic
 runtime checks and results in low actual runtime overhead.  We then show 
-that the soundness of our type system permits a scalable, hierarchical 
-distributed scheduling algorithm that enables Legion programs to achieve
+that the soundness of our type system permits a hierarchical,
+distributed scheduling algorithm that enables Legion programs to scale to 
 high performance on current supercomputers.  
 
 Legion presents {\em logical regions} as an
 abstraction for capturing {\em locality} (data that will be used together,
 and therefore should be colocated) and {\em independence} (disjoint data
 that may be operated on in parallel).  Logical regions have the following
-properties that allows programmers to dynamically communicate information
+properties that allow programmers to dynamically communicate information
 about the structure of program data to Legion:
 \begin{itemize}
 \item  logical regions are first-class values in Legion
@@ -113,7 +113,7 @@ regions instead of individual heap locations.  To that end, our type system supp
 static verification of all pointer dereferences and passing of region privileges at 
 task calls boundaries.  The Legion runtime then leverages its knowledge of logical
 region aliasing to perform dynamic safety checks for the unpacking
-and packing of logical regions to/from heap with regards to task privileges.  
+and packing of logical regions to/from the heap with regards to task privileges.  
 These checks are then amortized over all the uses of the logical region 
 which significantly reduces their cost.
 
