@@ -7545,6 +7545,15 @@ namespace LegionRuntime {
         filtered(false), to_be_invalidated(false)
     //--------------------------------------------------------------------------
     {
+      // If we have a parent, tell the parent that it has a child
+      if (parent != NULL)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(logical_region->parent != NULL);
+#endif
+        parent->add_child_view(logical_region->parent->row_source->color,
+                               logical_region->row_source->color, this);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -7588,7 +7597,6 @@ namespace LegionRuntime {
         PartitionNode *pnode = logical_region->get_child(pc);
         RegionNode *rnode = pnode->get_child(rc);
         InstanceView *subview = context->create_view(manager, this, rnode, true/*make local*/); 
-        children[key] = subview;
         return subview;
       }
       return children[key];
@@ -8551,12 +8559,6 @@ namespace LegionRuntime {
         derez.deserialize(redop);
         result->epoch_copy_users[copy_event] = copy_mask;
         result->copy_users[copy_event] = redop;
-      }
-      // Now we need to add this view to the parent if it has one
-      if (parent != NULL)
-      {
-        parent->add_child_view(reg_node->row_source->parent->color,
-                               reg_node->row_source->color,result);
       }
     }
 
