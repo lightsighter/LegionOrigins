@@ -1343,14 +1343,14 @@ in the presence of aliasing.
 To determine whether an interleaving of two or more memory traces is valid, we consider three sets of addresses:
 \begin{itemize}
 \item exclusive locations ($l \in L_{excl}$) are those which have at least one access in exclusive mode in the traces
-and are not in the clobber set.  For these locations, we require the standard {\em sequential consistency} - all
+and are not in the clobber set.  For these locations, we require sequential execution semantics - all
 reads to these locations see the effect of previous writes and reductions, and the resulting state of the store is
 as if all writes and reductions were applied from each trace in order.
 \item atomic locations ($l \in L_{atomic}$) are those which have at least one access in atomic mode in the traces and
 are in neither $L_{excl}$ nor the clobber set.  For these locations, we allow permutations of the original
 subexpression trace order.
 \item for locations that have only access in {\em simult} mode or are in the clobber set, no constraints are
-enforced.  The validity of the interleaving of these accesses will be performed in the an enclosing expression.
+enforced.  The validity of the interleaving of these accesses will be performed in the enclosing expression.
 \end{itemize}
 
 \begin{figure*}
@@ -1494,9 +1494,9 @@ The cases where both subtasks have read-only privileges or both subtasks have re
 for regions, which can be tested statically.  Detecting the case where the two sets of memory addresses are disjoint is 
 approximated by two tests.  The first uses (logical) region disjointness constraints from the type system to 
 statically infer non-interference.  The second uses the region mapping $M$ to dynamically determine the
-disjointness of the two physical regions.  Although still a dynamic test, it is performed
-once per pair of regions rather than for for every pair of memory operations.  Details on how to perform
-this test efficiently at runtime can be found in \cite{Legion12}.
+disjointness of the two regions.  Although still a dynamic test, it is performed
+once per pair of regions rather than for every pair of memory operations.  Details on how to perform
+the dynamic test efficiently at runtime can be found in \cite{Legion12}.
 %and often need not be performed at all
 %(if one of the other three conditions is shown to hold at compile-time).
 
@@ -1559,7 +1559,7 @@ annotations on individual regions passed to a task.
 %be avoided through the use of relaxed coherence.
 
 The first form of relaxed coherence is the {\em atomic} mode, which specifies that although two
-tasks access aliased regions cannot run concurrently, they may execute in either order, allowing
+tasks access interfere due to accessing aliased regions, they may execute in either order, allowing
 the task issued later in program order to run as soon as its ready, even before the task issued earlier 
 in program order.  This relaxation only applies if all aliased regions are annotated with atomic coherence.
 %or a more relaxed coherence mode (see Section~\ref{subsec:coherencesimult}).
@@ -1568,7 +1568,7 @@ To show that this is safe, we define a relaxed version of non-interference for a
 follows:
 $$
 \begin{array}{l@{}l}
-op_1(l_1, c_1, v_1)\ \nonint^A\ op_2(l_2, c_2, v_2) \Leftrightarrow &op_1(l_1, c_1, v_1)\ \nonint^A\ op_2(l_2, c_2, v_2) \vee \\
+op_1(l_1, c_1, v_1)\ \nonint^A\ op_2(l_2, c_2, v_2) \Leftrightarrow &op_1(l_1, c_1, v_1)\ \nonint\ op_2(l_2, c_2, v_2) \vee \\
 & (c_1 = atomic \wedge c_2 = atomic)
 \end{array}$$
 
