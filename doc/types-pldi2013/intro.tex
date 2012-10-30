@@ -53,7 +53,7 @@ best way to partition data is often a function of the data
 itself---i.e., the partitions need to be dynamically computed.
 Furthermore, it is useful to allow multiple, simultaneous partitions of
 the same data, providing different views on to that data.  Alternatively, 
-the fully dynamic approach enables arbitrary data aliasing, but requires 
+the fully dynamic approach permits arbitrary data aliasing, but requires 
 centralized control logic to perform conflict detection between every pair 
 of parallel computations. This results in runtime overhead and is 
 not scalable on distributed-memory machines.
@@ -64,7 +64,7 @@ dynamic partitions of program data which can result in aliasing.  We prove
 the soundness of our type system and show that through a combination of
 static and dynamic analysis we can implement it in a way that minimizes dynamic
 runtime checks and results in low actual runtime overhead.  We then show 
-that the soundness of our type system enables a scalable, hierarchical 
+that the soundness of our type system permits a scalable, hierarchical 
 distributed scheduling algorithm that enables Legion programs to achieve
 high performance on current supercomputers.  
 
@@ -72,7 +72,7 @@ Legion presents {\em logical regions} as an
 abstraction for capturing {\em locality} (data that will be used together,
 and therefore should be colocated) and {\em independence} (disjoint data
 that may be operated on in parallel).  Logical regions have the following
-properties that enable programmers to dynamically communicate information
+properties that allows programmers to dynamically communicate information
 about the structure of program data to Legion:
 \begin{itemize}
 \item  logical regions are first-class values in Legion

@@ -1325,7 +1325,7 @@ in the presence of aliasing.
 
 To determine whether an interleaving of two or more memory traces is valid, we consider three sets of addresses:
 \begin{itemize}
-\item exclusive locations ($l \in L_{excl}$) are those which have at least once access in exclusive mode in the traces
+\item exclusive locations ($l \in L_{excl}$) are those which have at least one access in exclusive mode in the traces
 and are not in the clobber set.  For these locations, we require the standard {\em sequential consistency} - all
 reads to these locations see the effect of previous writes and reductions, and the resulting state of the store is
 as if all writes and reductions were applied from each trace in order
