@@ -198,7 +198,7 @@ struct InitGlobalArgs {
 // Arguments to step_task.
 ////////////////////////////////////////////////////////////////////////
 struct StepGlobalArgs {
-  StepGlobalArgs(int nx, int ny, int nz, dim_t dim, dir_t dir,
+  StepGlobalArgs(int nx, int ny, int nz, dim_t dim, dir_t dir, double dtdx,
                  FieldID field_write, FieldID field_read1, FieldID field_read2)
     : n(nx, ny, nz), dim(dim), dir(dir),
       field_write(field_write), field_read1(field_read1), field_read2(field_read2) {}
@@ -208,6 +208,7 @@ struct StepGlobalArgs {
   dim_t dim;
   // Direction to look for ghost cells.
   dir_t dir;
+  double dtdx;
   // Fields to read and write.
   FieldID field_write, field_read1, field_read2;
 };
@@ -550,6 +551,7 @@ void main_task(const void *input_args, size_t input_arglen,
   double t_sim = 1.0;     // FIXME (Elliott): Full simulation takes forever.
   double courant = 0.5;
   double dt = courant/a;
+  double dtdx = courant;
 
   printf("+---------------------------------------------+\n");
   printf("| FDTD simulation parameters                  |\n");
@@ -736,7 +738,7 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
-      StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_POS,
+      StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_POS, dtdx,
                                  field_e[dim], field_h[(dim + 1)%NDIMS], field_h[(dim + 2)%NDIMS]);
 
       fs.push_back(
@@ -768,7 +770,7 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
-      StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_NEG,
+      StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_NEG, dtdx,
                                  field_h[dim], field_e[(dim + 1)%NDIMS], field_e[(dim + 2)%NDIMS]);
 
       fs.push_back(
@@ -849,6 +851,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   vec3 &n = global_args.n;
   dim_t &dim = global_args.dim;
   dir_t &dir = global_args.dir;
+  double &dtdx = global_args.dtdx;
   FieldID &field_write = global_args.field_write;
   FieldID &field_read1 = global_args.field_read1;
   FieldID &field_read2 = global_args.field_read2;
@@ -890,7 +893,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
       for (int z = rmin[2]; z < rmax[2]; z++) {
         vec3 v = rot3(vec3(x, y, z), -(dim + 1));
         ptr_t<double> i = cell_id(v, n);
-        f.write(i, f.read(i) + (g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
+        f.write(i, f.read(i) - dtdx*(g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
       }
     }
   }
