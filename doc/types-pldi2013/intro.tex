@@ -107,7 +107,7 @@ mandates a functional restriction: a sub-task can only be passed a subset
 of the privileges possesed by its parent task.  
 
 To enforce this restriction, our type system relies on a combination of static 
-and dynamic analyses.  The key observation behind our type system is that dynamic
+and dynamic analyses.  The key observation is that dynamic
 analysis is very easy and relatively cheap when done at the granularity of
 regions instead of individual heap locations.  To that end, our type system supports
 static verification of all pointer dereferences and passing of region privileges at 
@@ -127,7 +127,7 @@ programmer specified parallel execution in the presence of aliasing.  For exampl
 accessing aliased data may only need to be serialized
 with respect to each other (e.g. run atomically) or are permitted to run
 simultaneously with the programmer using separate synchronization mechanisms
-to control access (e.g. locks).  To support these relaxed access modes
+to control access (e.g. locks).  To support these relaxed access paradigms 
 Legion provides {\em cohrence modes} on logical regions.  For each region
 argument to a task, a programmer specifies the coherence in which other tasks
 can access aliased data while the task is running.  We present an operational semantics

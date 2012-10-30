@@ -785,8 +785,7 @@ valid\_interleave(S, C, E', \oton{E}) & \Rightarrow & any\_interleave(E', \oton{
 \end{array}
 \end{array}
 $}
-\caption{Operational Semantics Helper Functions}
-\label{fig:opsemfns}
+\caption{Operational Semantics Helper Functions \label{fig:opsemfns}}
 \vspace{-5mm}
 \end{figure*}
 
@@ -1315,12 +1314,18 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 \section{Coherence}
 \label{sec:coherence}
 
-Theorem~\ref{thm:effects} guarantees that a function call produces a value of the
-correct type and does so within the regions of memory for which privileges are held.  In fact, this results holds
-even if the {\em valid\_interleave} constraint is weakened to only require an arbitrary interleaving of the memory
-traces of subexpressions (i.e. the {\em any\_interleave} predicated defined in Figure~\ref{fig:opsecfns}).  The 
-additional constraints on {\em valid\_interleave} in Figure~\ref{fig:validinterleave} address the coherence of 
-heap accesses and allow for the per-region relaxation of coherence that is introduced in Legion to enable parallelism
+An important insight in the proof of Theorem~\ref{thm:effects} was that 
+it did not rely on the definition of {\em valid\_interleave}.  Weakening 
+{\em valid\_interleave} to {\em any\_interleave} (Figure~\ref{fig:opsemfns}), 
+which only requires any arbitrary interleaving of memory
+traces from subexpressions, 
+would have been a sufficient condition for the proof.  
+The additional constraints in {\em valid\_interleave}
+(Figure~\ref{fig:validinterleave}) address the {\em coherence} of heap accesses.
+Coherence defines the permissible ordering of operations to each individual heap 
+location by parallel computations.  The constraints enforced by {\em valid\_interleave}
+specify exactly what interleavings of memory traces are permitted based on
+the per-region coherence modes introduced by Legion for supporting parallelism
 in the presence of aliasing.
 
 To determine whether an interleaving of two or more memory traces is valid, we consider three sets of addresses:
@@ -1328,7 +1333,7 @@ To determine whether an interleaving of two or more memory traces is valid, we c
 \item exclusive locations ($l \in L_{excl}$) are those which have at least one access in exclusive mode in the traces
 and are not in the clobber set.  For these locations, we require the standard {\em sequential consistency} - all
 reads to these locations see the effect of previous writes and reductions, and the resulting state of the store is
-as if all writes and reductions were applied from each trace in order
+as if all writes and reductions were applied from each trace in order.
 \item atomic locations ($l \in L_{atomic}$) are those which have at least one access in atomic mode in the traces and
 are in neither $L_{excl}$ nor the clobber set.  For these locations, we allow permutations of the original
 subexpression trace order.
@@ -1374,7 +1379,7 @@ serial execution being the fallback behavior of the hierarchical schedule, our p
 soundness of the parallel scheduling will depend on this result.
 
 Serial execution is achieved by ignoring the coherence mode $Q$ in all function calls, using $Q' = \emptyset$
-instead, and by forming ``interleaved'' traces by simply concatenating the subexpressions' traces.  By ignoring
+instead, and simply interleaving traces by concatenating the subexpressions' traces in program order.  By ignoring
 the coherence modes, the clobber set remains empty, making the result of all {\em read} expressions fully
 determined.  The following lemma and theorem (proofs of which can be found in \cite{LegionTypes12}) show that the
 value and memory trace that result from a serialized execution of an expression are always valid executions of
@@ -1401,11 +1406,17 @@ $valid\_interleave(S_0, C, E', \oton{E})$.
 \label{subsec:coherenceparallel}
 
 To determine when parallel execution is safe, we start from the serial execution trace and allow the reordering of 
-adjacent heap operations that do not change the behavior of the application.  If we can show that reordering is allowed
-between any two operations that come from different constituent traces, any interleaving of the constituent traces will
-be equivalent to the serialized execution and parallel execution was safe.  Finally, to allow the safety of parallel
-execution to be determined {\em before} the execution is actually performed, we show that a test based on the subtask
-privileges and the current region mapping can soundly predict when this property will hold.
+adjacent heap operations that do not change the behavior of the application.  If we can show that it is safe to 
+reorder any pair of operations that come from two different constituent traces, then any interleaving of the constituent
+traces will be equivalent to a sequential execution, thereby enabling parallel execution.  To
+efficiently implement this requirement at runtime, we require a test that can determine this property prior
+to the actual execution of the tasks that create the traces.  We show that a test based on the subtask privileges and current region 
+mapping can soundly predict when this property will hold.
+%If we can show that reordering is allowed
+%between any two operations that come from different constituent traces, any interleaving of the constituent traces will
+%be equivalent to the serialized execution and parallel execution was safe.  Finally, to allow the safety of parallel
+%execution to be determined {\em before} the execution is actually performed, we show that a test based on the subtask
+%privileges and the current region mapping can soundly predict when this property will hold.
 
 We define a {\em non-interference} operator $\epsilon_1 \nonint \epsilon_2$ on two memory operations as follows:
 $$
@@ -1463,12 +1474,14 @@ $
 \multicolumn{2}{l}{\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2}
 \end{array}$
 The ``two readers'' and ``two reducers'' conditions for memory operation non-interference have exact equivalents
-for regions, which can be performed at compile-time.  The ``different address'' condition is approximated by two
+for regions, which can be performed statically.  The ``different address'' condition is approximated by two
 tests.  The first uses (logical) region disjointness constraints from the type system to statically infer
 non-interference.  The second uses the region mapping $M$ to determine
 the two physical regions and performs a run-time test for overlapping.  Although still a dynamic test, it is performed
-once per pair of regions rather than for for every pair of memory operations, and often need not be performed at all
-(if one of the other three conditions is shown to hold at compile-time).
+once per pair of regions rather than for for every pair of memory operations.  Details on how to perform
+this test efficiently at runtime can be found in \cite{Legion12}.
+%and often need not be performed at all
+%(if one of the other three conditions is shown to hold at compile-time).
 
 As region non-interference is an approximation of memory trace non-interference, we must show that it is sound.  We
 state the Lemma here, and give the proof in \cite{LegionTypes12}.
