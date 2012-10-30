@@ -3068,6 +3068,15 @@ namespace LegionRuntime {
       InstanceView *result = new InstanceView(manager, parent, reg, this, making_local);
       views[key] = result;
       manager->add_view(result);
+      // If there is a parent, tell the parent that it has a child
+      if (parent != NULL)
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(reg->parent != NULL);
+#endif
+        parent->add_child_view(reg->parent->row_source->color,
+                               reg->row_source->color, result);
+      }
       return result;
     }
 
@@ -7544,16 +7553,7 @@ namespace LegionRuntime {
         context(contx), valid_references(0), local_view(made_local),
         filtered(false), to_be_invalidated(false)
     //--------------------------------------------------------------------------
-    {
-      // If we have a parent, tell the parent that it has a child
-      if (parent != NULL)
-      {
-#ifdef DEBUG_HIGH_LEVEL
-        assert(logical_region->parent != NULL);
-#endif
-        parent->add_child_view(logical_region->parent->row_source->color,
-                               logical_region->row_source->color, this);
-      }
+    { 
     }
 
     //--------------------------------------------------------------------------
