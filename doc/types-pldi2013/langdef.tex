@@ -1381,18 +1381,18 @@ $$
 \vspace{-5mm}
 \end{figure*}
 
-\subsection{Serial Execution}
-\label{subsec:coherenceserial}
+\subsection{Sequential Execution}
+\label{subsec:coherenceseq}
 
 Although it is our goal to enable parallel execution whenever possible, we briefly
-consider sequential execution of a Legion program.  We show that a serial execution trivially
+consider sequential execution of a Legion program.  We show that a sequential execution trivially
 satisfies the interleaving criteria required by the Legion operational semantics.  Our proof
 of the soundness of parallel scheduling depends on this result.
 %In addition to
 %sequential execution being the default behavior of the hierarchical scheduler, our proof of the
 %soundness of the parallel scheduling will depend on this result.
 
-Serial execution is achieved by ignoring the coherence mode $Q$ in all function calls, using $Q' = \emptyset$
+Sequential execution is achieved by ignoring the coherence mode $Q$ in all function calls, using $Q' = \emptyset$
 instead, and simply interleaving traces by concatenating the subexpressions' traces in program order.  By ignoring
 the coherence modes, the clobber set remains empty, making the result of all {\em read} expressions fully
 determined.  The following lemma and theorem (proofs of which can be found in \cite{LegionTypes12}) show that the
@@ -1419,7 +1419,7 @@ $valid\_interleave(S_0, C, E', \oton{E})$.
 \subsection{Parallel Execution}
 \label{subsec:coherenceparallel}
 
-To determine when parallel execution is safe, we start from the serial execution trace and allow the reordering of 
+To determine when parallel execution is safe, we start from the sequential execution trace and allow the reordering of 
 adjacent heap operations that do not change the behavior of the application.  If we can show that it is safe to 
 reorder any pair of operations that come from two different constituent traces, then any interleaving of the constituent
 traces will be equivalent to a sequential execution and parallel execution is safe.  To
@@ -1461,8 +1461,9 @@ We now extend the notion of non-interference to whole memory traces, with two tr
 trace interferes with any operation from the other:
 $$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
 
-If whole memory traces are non-interfering, then any interleaving of them can be sorted via pairwise swaps to match the serial memory
-trace and we get the result that shows parallel execution is safe:
+If whole memory traces are non-interfering, then any interleaving of them can be sorted via 
+pairwise swaps to match the sequential memory
+trace. This gives us the following result which permits safe parallel execution:
 
 \begin{lem}
 \label{lem:noninteffects}
@@ -1473,10 +1474,11 @@ $any\_interleave(E', \oton{E}) \Rightarrow$ \\
 \hspace*{0pt} \hfill $valid\_interleave(S, C, E', \oton{E})$.
 \end{lem}
 
-We now show that we can turn this result into an efficient runtime test that can be performed before 
-the subtasks are executed.  The key to this is the privileges on Legion tasks and their ability to
+We now show that we can turn this result into an efficient runtime test for non-interface that can be 
+performed task execution.  The key to this test is the privileges on Legion tasks and their ability to
 provide bounds on the accesses that may be performed during execution.  Our non-interference operator is
 extended to work on privileges and sets of privileges:
+
 $
 \begin{array}{l@{}l}
 \multicolumn{2}{l}{priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow} \\
@@ -1490,9 +1492,9 @@ $
 
 The cases where both subtasks have read-only privileges or both subtasks have reduce-only privileges have exact equivalents
 for regions, which can be tested statically.  Detecting the case where the two sets of memory addresses are disjoint is 
-approximated by twotests.  The first uses (logical) region disjointness constraints from the type system to 
-statically infer non-interference.  The second uses the region mapping $M$ to determine
-the two physical regions and performs a run-time test for disjointness.  Although still a dynamic test, it is performed
+approximated by two tests.  The first uses (logical) region disjointness constraints from the type system to 
+statically infer non-interference.  The second uses the region mapping $M$ to dynamically determine the
+disjointness of the two physical regions.  Although still a dynamic test, it is performed
 once per pair of regions rather than for for every pair of memory operations.  Details on how to perform
 this test efficiently at runtime can be found in \cite{Legion12}.
 %and often need not be performed at all
@@ -1557,7 +1559,7 @@ annotations on individual regions passed to a task.
 %be avoided through the use of relaxed coherence.
 
 The first form of relaxed coherence is the {\em atomic} mode, which specifies that although two
-tasks accessing aliased regions cannot run concurrently, they may execute in either order, allowing
+tasks access aliased regions cannot run concurrently, they may execute in either order, allowing
 the task issued later in program order to run as soon as its ready, even before the task issued earlier 
 in program order.  This relaxation only applies if all aliased regions are annotated with atomic coherence.
 %or a more relaxed coherence mode (see Section~\ref{subsec:coherencesimult}).
