@@ -156,7 +156,7 @@ namespace LegionRuntime {
       virtual bool perform_operation(void);
       virtual void trigger(void);
     public:
-      bool flush(void);
+      Event flush(void);
     private:
       void perform_internal(void);
     private:
@@ -180,6 +180,7 @@ namespace LegionRuntime {
       LogicalRegion region;
       LogicalPartition partition;
       bool performed;
+      UserEvent termination_event;
     };
 
     /////////////////////////////////////////////////////////////
@@ -446,7 +447,7 @@ namespace LegionRuntime {
       void initialize_region_tree_contexts(void);
     protected:
       void release_source_copy_instances(void);
-      void flush_deletions(void);
+      void flush_deletions(std::set<Event> &cleanup_events);
       void issue_restoring_copies(std::set<Event> &wait_on_events, Event single, Event multi);
       void invalidate_owned_contexts(void);
     protected:
