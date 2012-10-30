@@ -893,7 +893,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
       for (int z = rmin[2]; z < rmax[2]; z++) {
         vec3 v = rot3(vec3(x, y, z), -(dim + 1));
         ptr_t<double> i = cell_id(v, n);
-        f.write(i, f.read(i) + dtdx*(g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
+        f.write(i, f.read(i) - dtdx*(g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
       }
     }
   }
