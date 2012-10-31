@@ -164,6 +164,7 @@ $v$ & ::= & & values &
 
 \begin{figure*}
 {
+\scalebox{0.9}{
 \begin{tikzpicture}[x=1in,y={(0,-1in)}]
 %\draw[thin] (0,0) to (7,0);
 %\draw[thin] (0,0) to (0,6);
@@ -177,16 +178,30 @@ $v$ & ::= & & values &
 %  \draw[blue,very thick] (0,\y) to (7,\y);
 }
 
-\draw[very thin] (3.0,0.1) -- (3.0,7.6);
+% column positions
+% \XA - left edge of type rules
+% \XB - center of type rule names
+% \XC - vertical line
+% \XD - left edge of semantics rules
+% \XE - center of semantics rule names
+
+\newcommand{\XA}{0.0}
+\newcommand{\XB}{2.8}
+\newcommand{\XC}{3.4}
+\newcommand{\XD}{3.65}
+\newcommand{\XE}{7.3}
  
+
+\draw[very thin] (\XC,0.1) -- (\XC,7.6);
+
 % start with read/write/reduce rules
-\ruleat{0.0,0.0}{2.6,0.2}{T-Read}
+\ruleat{\XA,0.0}{\XB,0.2}{T-Read}
 {\begin{array}{l}
 \typeenvx e_1 : T@(\oton{r}) \\
 \forall i, reads(r_i) \in \Phi^*\end{array}}
 {\typeenvx \text{read}(e_1) : T}
 
-\ruleat{0.0,0.6}{2.6,0.8}{T-Write}
+\ruleat{\XA,0.6}{\XB,0.8}{T-Write}
 {\begin{array}{l}
 \typeenvx e_1 : T@(\oton{r}) \\
 \typeenvx e_2 : T \\
@@ -194,7 +209,7 @@ $v$ & ::= & & values &
 \end{array}}
 {\typeenvx \text{write}(e_1, e_2) : T@(\oton{r})}
 
-\ruleat{0.0,1.3}{2.6,1.5}{T-Reduce}
+\ruleat{\XA,1.3}{\XB,1.5}{T-Reduce}
 {\begin{array}{l}
 \Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \\
 \typeenvx e_1 : T_1@(\oton{r}) \\
@@ -203,27 +218,27 @@ $v$ & ::= & & values &
 \end{array}}
 {\typeenvx \text{reduce}(id, e_1, e_2) : T_1@(\oton{r})}
 
-\axiomat{0.0,2.2}{2.6,2.2}{T-New}
+\axiomat{\XA,2.2}{\XB,2.2}{T-New}
 {\typeenvx \text{new }T@r : T@r}
 
-\ruleat{0.0,2.5}{2.6,2.55}{T-UpRgn}
+\ruleat{\XA,2.5}{\XB,2.55}{T-UpRgn}
 {\begin{array}{l}
 \typeenvx e : T@(r'_1, \ldots r'_k) \\
 \forall i. \exists j, r'_i \leq r_j \in \Omega^* \\
 \end{array}}
 {\typeenvx upregion(e,\oton{r}) : T@(\oton{r})}
 
-\ruleat{0.0,3.1}{2.6,3.05}{T-DnRgn}
+\ruleat{\XA,3.1}{\XB,3.05}{T-DnRgn}
 {\begin{array}{l}
 \typeenvx e : T@(r'_1, \ldots r'_k) \\
 %\forall j. \exists i, r_j \leq r'_i \in \Omega^* \\
 \end{array}}
 {\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
 
-\axiomat{0.0,3.6}{2.6,3.6}{T-NewColor}
+\axiomat{\XA,3.6}{\XB,3.6}{T-NewColor}
 {\typeenvx \text{newcolor }r : \text{coloring}(r)}
 
-\ruleat{0.0,3.9}{2.6,4.1}{T-Color}
+\ruleat{\XA,3.9}{\XB,4.1}{T-Color}
 {\begin{array}{l}
 \typeenvx e_1 : \text{coloring}(r) \\
 \typeenvx e_2 : T@r \\
@@ -231,7 +246,7 @@ $v$ & ::= & & values &
 \end{array}}
 {\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)}
 
-\ruleat{0.0,4.6}{2.6,4.55}{T-Partition}
+\ruleat{\XA,4.6}{\XB,4.55}{T-Partition}
 {\begin{array}{l}
 \typeenvx e_1 : \text{coloring}(r_p) \\
 \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\
@@ -240,7 +255,7 @@ $v$ & ::= & & values &
 \end{array}}
 {\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
 
-\ruleat{0,5.5}{2.6,5.7}{T-Pack}
+\ruleat{0,5.5}{\XB,5.7}{T-Pack}
 {\begin{array}{l}
 T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\
 \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\
@@ -248,7 +263,7 @@ T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\
 \end{array}}
 {\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1}
 
-\ruleat{0.0,6.2}{2.6,6.4}{T-Unpack}
+\ruleat{\XA,6.2}{\XB,6.4}{T-Unpack}
 {\begin{array}{l}
 T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \typeenvx e_1 : T_1 \\
@@ -259,7 +274,7 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \end{array}}
 {\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3}
 
-\ruleat{0.0,7.4}{2.6,7.6}{T-Call}
+\ruleat{\XA,7.4}{\XB,7.6}{T-Call}
 {\begin{array}{l}
 \Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\
 \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\
@@ -269,42 +284,42 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 
 % now the operational semantics versions
 
-\ruleatx{3.1,0.0}{6.7,0.2}{E-Read}{
+\ruleatx{\XD,0.0}{\XE,0.2}{E-Read}{
 \opsenvx e \mapsto l, E \andalso S' = \text{apply}(S, E) \\
 v = \begin{cases} S'(l), & \text{if } l \not\in C \\
 v' : H(l), & \text{otherwise} \end{cases}
 }{\opsenvx \text{read}(e) \mapsto v, E \dplus [ read(l, excl, v) ]}
 
-\ruleatx{3.1,0.9}{6.7,0.85}{E-Write}{
+\ruleatx{\XD,0.9}{\XE,0.85}{E-Write}{
 \opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
 }{\opsenvx \text{write}(e_1, e_2) \mapsto l, E' \dplus [ write(l, excl, v) ]}
 
-\ruleatx{3.1,1.5}{6.7,1.45}{E-Reduce}{
+\ruleatx{\XD,1.5}{\XE,1.45}{E-Reduce}{
 \opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
 \opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
 }{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto l, E' \dplus [ reduce_{id}(l, excl, v) ]}
 
-\ruleatx{3.1,2.1}{6.7,2.2}{E-New}{
+\ruleatx{\XD,2.1}{\XE,2.2}{E-New}{
 l \in M(r) \andalso
 H(l) = M \llbracket T \rrbracket
 }{\opsenvx \text{new }T@r \mapsto l, []}
 
-\ruleat{3.1,2.6}{6.7,2.7}{E-UpRgn}{
+\ruleat{\XD,2.6}{\XE,2.7}{E-UpRgn}{
 \opsenvx e \mapsto v, E
 }{\opsenvx \text{upregion}(e, \oton{r}) \mapsto v, E}
 
-\ruleatx{3.1,3.1}{6.7,3.3}{E-DnRgn}{
+\ruleatx{\XD,3.1}{\XE,3.3}{E-DnRgn}{
 \opsenvx e \mapsto l, E \\
 v = \begin{cases} l, & \text{if $\exists i, l \in M(r_i)$}. \\ null, & \text{otherwise}. \end{cases}
 }{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E}
 
-\ruleatx{3.1,4.0}{6.7,4.2}{E-NewColor}{
+\ruleatx{\XD,4.0}{\XE,4.2}{E-NewColor}{
 K = \{ (l_1, iv_1), \ldots, (l_p, iv_p) \}, \text{ where } \\
 (\forall i \in [1,p]. l_i \in M(r)) \wedge (\forall i,j \in [1,p]. l_i \not= l_j)
 }{\opsenvx \text{newcolor }r \mapsto K, []}
 
-\ruleatx{3.1,4.7}{6.7,4.9}{E-Color}{
+\ruleatx{\XD,4.7}{\XE,4.9}{E-Color}{
 \opsenvx e_1 \mapsto K, E_1 \andalso S' = \text{apply}(S, E_1) \\
 \opsenvx[S=S'] e_2 \mapsto l, E_2 \andalso S'' = \text{apply}(S', E_2) \\
 \opsenvx[S=S''] e_3 \mapsto v, E_3 \\
@@ -312,24 +327,24 @@ K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \} \\
 valid\_interleave(S, C, E', E_1, E_2, E_3)
 }{\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E'} 
 
-\ruleatx{3.1,5.7}{6.7,5.55}{E-Partition}{
+\ruleatx{\XD,5.7}{\XE,5.55}{E-Partition}{
 \opsenv{e_1}{K}{E_1} \andalso \rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
 M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \andalso S' = \text{apply}(S, E_1) \\
 \opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
 }{\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'}
 
-\ruleatx{3.1,6.5}{6.7,6.6}{E-Pack}{
+\ruleatx{\XD,6.5}{\XE,6.6}{E-Pack}{
 \opsenvx e_1 \mapsto v, E \andalso \rho_i = M[r_i], \text{ for } 1 \leq i \leq k \\
 v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle
 }{\opsenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] \mapsto v', E}
 
-\ruleatx{3.1,7.1}{6.7,6.95}{E-Unpack}{
+\ruleatx{\XD,7.1}{\XE,6.95}{E-Unpack}{
 \opsenvx e_1 \mapsto \langle \langle \otok{k}{\rho} , v_1 \rangle \rangle, E_1 \andalso M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
 L' = L[v_1/id] \andalso S' = \text{apply}(S, E_1) \\
 \opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)
 }{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E'}
 
-\ruleatx{0.0,8.1}{6.7,8.4}{E-Call}{
+\ruleatx{\XA,8.1}{\XE,8.4}{E-Call}{
 \opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
 valid\_interleave(S, C, E', \oton{E}) \andalso \text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
 M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \andalso L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \andalso S' = \text{apply}(S, E') \\
@@ -337,7 +352,37 @@ C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \v
 \opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})
 }{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
 
+% try to fit helper rules at the bottom instead of in a separate figure
+
+\draw (0.05,9.12) -- (7.6,9.12);
+
+\node[below right] at (\XA,9.15) {
+$
+\begin{array}{@{}l@{}}
+\begin{array}{@{}l@{}l@{}} 
+\begin{array}{@{}lll}
+apply(S, []) & = & S \\
+apply(S, E \dplus [ read(l, c, v) ]) & = & apply(S, E) \\
+apply(S, E \dplus [ write(l, c, v) ]) & = & apply(S, E)[v/l] \\
+apply(S, E \dplus [ reduce_{id}(l, c, v) ]) & = & S'[id(S'(l), v)/l], \\
+& & \text{ where } S' = apply(S, E)
+\end{array} &
+\begin{array}{@{}ll}
+mark\_coherence([], \hat Q) & = [] \\
+mark\_coherence([ op(l, c, v) ] \dplus E, \hat Q) & = [ op(l, c', v) ] \dplus mark\_coherence(E, \hat Q), \\
+\multicolumn{2}{@{}l}{ \hspace{1.0in} \text{ where } c' =
+\begin{cases}
+simult, & \text{if }\exists \rho. l \in \rho \wedge simult(\rho) \in \hat Q \\
+atomic, & \text{if }\exists \rho. l \in \rho \wedge atomic(\rho) \in \hat Q \\
+excl, & \text{otherwise}
+\end{cases}}
+\end{array}
+\end{array}
+\end{array}
+$};
+
 \end{tikzpicture}
+}
 \vspace*{-0.5cm}
 \texcomment{
 \framebox[7in]{
@@ -767,6 +812,7 @@ to those locations within the resulting memory trace ($E_{n+1}$) are marked with
 allowing the {\em valid\_interleave} check within the caller's environment to verify the consistency of the overall
 memory trace.
 
+\texcomment{
 \begin{figure*}
 \centering{
 $
@@ -800,6 +846,7 @@ $}
 \caption{Operational Semantics Helper Functions \label{fig:opsemfns}}
 \vspace{-5mm}
 \end{figure*}
+}
 
 \begin{comment}
 \begin{figure*}
@@ -1355,25 +1402,49 @@ enforced.  The validity of the interleaving of these accesses will be performed 
 
 \begin{figure*}
 $$
-\begin{array}{lll}
-valid\_interleave(S, C, E', \oton{E}) & = & any\_interleave(E', \oton{E}) \wedge \\
-& & coherent(S, L_{excl}(E', C), L_{excl}(E', C), E')\ \wedge \\
-& & seq\_equiv(S, L_{excl}(E', C), L_{excl}(E', C), E', \oton{E})\ \wedge \\
-& & coherent(S, L_{atomic}(E', C), \emptyset, E')\ \wedge \\
-& & \exists \oton{\pi}, (\oton{\pi}) \text{ is a permutation of } (1,\ldots,n)\ \wedge \\
-& & \ \ \ seq\_equiv(S, L_{atomic}(E', C), \emptyset, E', E_{\pi_1}, \ldots, E_{\pi_n}) \\
-coherent(S, L_1, L_2, []) & = & \text{true} \\
-coherent(S, L_1, L_2, [ \epsilon ] \dplus E) & = &\
+\begin{array}{@{}l@{}}
+\begin{array}{@{}lll@{}}
+any\_interleave([], [], \ldots, []) & = & true \\
+any\_interleave([ \epsilon ] \dplus E', E_1, \ldots, [ \epsilon ] \dplus E_i, \ldots, E_n) & = & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
+\\
+\multicolumn{3}{@{}l}{
+\begin{array}{@{}l|l@{}}
+\begin{array}{@{}l@{}}
+valid\_interleave(S, C, E', \oton{E}) = \vspace{0.03in} \\
+\hspace{0.2in} any\_interleave(E', \oton{E})\ \wedge \vspace{0.03in} \\
+\hspace{0.2in} coherent(S, L_{excl}(E', C), L_{excl}(E', C), E')\ \wedge \vspace{0.03in} \\
+\hspace{0.2in} seq\_equiv(S, L_{excl}(E', C), L_{excl}(E', C), E', \oton{E})\ \wedge \vspace{0.03in} \\
+\hspace{0.2in} coherent(S, L_{atomic}(E', C), \emptyset, E')\ \wedge \vspace{0.03in} \\
+\hspace{0.2in} \exists \oton{\pi}, (\oton{\pi}) \text{ is a permutation of } (1,\ldots,n)\ \wedge \\
+\hspace{0.3in} seq\_equiv(S, L_{atomic}(E', C), \emptyset, E', E_{\pi_1}, \ldots, E_{\pi_n})
+\end{array} &
+\begin{array}{@{}l@{}}
+coherent(S, L_1, L_2, []) = \text{true} \\
+coherent(S, L_1, L_2, [ \epsilon ] \dplus E) = \\
+\hspace{0.2in}
 \begin{cases}
 (l \in L_2 \Rightarrow S(l) = v)\ \wedge \\
 \ \ \ coherent(S, L_1, L_2, E), & \text{if $\epsilon = read(l, c, v)$} \\
-coherent(apply(S, \epsilon), L_1, L_2 \cup \{ l \}, E), & \text{if $\epsilon = write(l, c, v)$ and $l \in L_1$} \\
+coherent(apply(S, \epsilon), L_1, L_2 \cup \{ l \}, E), & \text{if $\epsilon = write(l, c, v)$} \\
+& \hspace{0.25in} \text{and $l \in L_1$} \\
 coherent(apply(S, \epsilon), L_1, L_2, E), & \text{otherwise}
-\end{cases} \\
-seq\_equiv(S, L_1, L_2, E', \oton{E}) & = & coherent(S, L_1, L_2, E_1 \dplus \ldots \dplus E_2)\ \wedge \\
-& & \forall l \in L_1. apply(S, E')(l) = apply(S, E_1 \dplus \ldots \dplus E_n)(l) \\
+\end{cases} 
+\end{array}
+\end{array}
+} \\
+\\
+\end{array} \\
+\begin{array}{@{}ll@{}}
+\begin{array}{@{}l@{}}
+seq\_equiv(S, L_1, L_2, E', \oton{E}) = \\
+\hspace{0.2in} coherent(S, L_1, L_2, E_1 \dplus \ldots \dplus E_2)\ \wedge \\
+\hspace{0.2in} \forall l \in L_1. apply(S, E')(l) = apply(S, E_1 \dplus \ldots \dplus E_n)(l)
+\end{array} &
+\begin{array}{@{\hspace{0.2in}}lll@{}}
 L_{excl}(E, C) & = & \{ l : op(l, excl, v) \text{ in } E  \} \setminus C \\
 L_{atomic}(E, C) & = & \{ l : op(l, atomic, v) \text{ in } E \} \setminus (C \cup L_{excl}(E, C)) \\
+\end{array}
+\end{array}
 \end{array}
 $$
 \caption{Valid Interleaving Test}
