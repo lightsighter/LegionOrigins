@@ -91,6 +91,7 @@ enum {
   MAIN_TASK,
   INIT_TASK,
   STEP_TASK,
+  DUMP_TASK,
 };
 
 ////////////////////////////////////////////////////////////////////////
@@ -191,6 +192,7 @@ struct InitGlobalArgs {
       fields[NDIMS + dim] = field_h[dim];
     }
   }
+  // Fields to be initialized.
   FieldID fields[NDIMS*2];
 };
 
@@ -220,6 +222,25 @@ struct StepLocalArgs {
     : min(x_span.first, y_span.first, z_span.first),
       max(x_span.second, y_span.second, z_span.second) {}
   vec3 min /* inclusive */, max /* exclusive */;
+};
+
+////////////////////////////////////////////////////////////////////////
+// Arguments to dump_task.
+////////////////////////////////////////////////////////////////////////
+struct DumpArgs {
+  DumpArgs(int nx, int ny, int nz, FieldID (&field_e)[NDIMS], FieldID (&field_h)[NDIMS])
+    : nx(nx), ny(ny), nz(nz) {
+    for (unsigned dim = 0; dim < NDIMS; dim++) {
+      fields[dim] = field_e[dim];
+    }
+    for (unsigned dim = 0; dim < NDIMS; dim++) {
+      fields[NDIMS + dim] = field_h[dim];
+    }
+  }
+  // Number of cells.
+  int nx, ny, nz;
+  // Fields to dump.
+  FieldID fields[NDIMS*2];
 };
 
 ////////////////////////////////////////////////////////////////////////
@@ -534,6 +555,7 @@ void main_task(const void *input_args, size_t input_arglen,
                Context ctx, HighLevelRuntime *runtime) {
   log_app.info("In main_task...");
 
+  assert(input_args && input_arglen == sizeof(MainArgs));
   MainArgs &args = *(MainArgs *)input_args;
   double &sx = args.sx, &sy = args.sy, &sz = args.sz, &a = args.a;
   int &nbx = args.nbx, &nby = args.nby, &nbz = args.nbz;
@@ -547,9 +569,9 @@ void main_task(const void *input_args, size_t input_arglen,
   runtime->unmap_region(ctx, regions[0]);
 
   // Decide how long to run the simulation.
-  //double t_sim = 5.0 + 1e5/(nx*ny*nz);
-  double t_sim = 1.0;     // FIXME (Elliott): Full simulation takes forever.
   double courant = 0.5;
+  //double t_sim = 5.0 + 1e5/(nx*ny*nz);
+  double t_sim = courant/a;     // FIXME (Elliott): Full simulation takes forever.
   double dt = courant/a;
   double dtdx = courant;
 
@@ -624,9 +646,9 @@ void main_task(const void *input_args, size_t input_arglen,
   }
   printf("\n");
 
-  printf("  simulation time    : %.2f\n", t_sim);
-  printf("  timestep size      : %.2f\n", dt);
-  printf("  timesteps          : %d\n", (int)(t_sim / dt));
+  printf("  simulation time     : %.2f\n", t_sim);
+  printf("  timestep size       : %.2f\n", dt);
+  printf("  timesteps           : %d\n", (int)(t_sim / dt));
   printf("+---------------------------------------------+\n");
 
   // Choose color space for partitions.
@@ -777,6 +799,23 @@ void main_task(const void *input_args, size_t input_arglen,
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
                                      TaskArgument(&global_args, sizeof(global_args)), position_arg_map, Predicate::TRUE_PRED, false));
     }
+
+    // TODO (Elliott): Disable when not debugging.
+    {
+      std::vector<FieldID> instance_fields;
+      instance_fields.insert(instance_fields.end(), field_e, field_e + NDIMS);
+      instance_fields.insert(instance_fields.end(), field_h, field_h + NDIMS);
+
+      std::vector<RegionRequirement> regions;
+      regions.push_back(RegionRequirement(cells, as_set<FieldID>(instance_fields), instance_fields,
+                                          WRITE_ONLY, EXCLUSIVE, cells));
+
+      DumpArgs dump_args(nx, ny, nz, field_e, field_h);
+
+      runtime->execute_task(ctx, DUMP_TASK, indexes, fields, regions,
+                            TaskArgument(&dump_args, sizeof(dump_args)),
+                            Predicate::TRUE_PRED, false);
+    }
   }
 
   while(!fs.empty()) {
@@ -810,7 +849,7 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
 
   PhysicalRegion cells = regions[0];
 
-  LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> accessor[NDIMS*2];
+  Accessor accessor[NDIMS*2];
   for (int field = 0; field < NDIMS*2; field++) {
     accessor[field] = cells.get_accessor<AccessorGeneric>(fields[field]);
   }
@@ -899,6 +938,39 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   }
 }
 
+////////////////////////////////////////////////////////////////////////
+// Dumps debug information about the state of the program to stdout.
+////////////////////////////////////////////////////////////////////////
+void dump_task(const void *input_args, size_t input_arglen,
+               const std::vector<RegionRequirement> & /* reqs */,
+               const std::vector<PhysicalRegion> &regions,
+               Context ctx, HighLevelRuntime *runtime) {
+  assert(input_args && input_arglen == sizeof(DumpArgs));
+  DumpArgs &args = *(DumpArgs *)input_args;
+  int &nx = args.nx, &ny = args.ny, &nz = args.nz;
+  FieldID (&fields)[NDIMS*2] = args.fields;
+
+  PhysicalRegion cells = regions[0];
+
+  Accessor accessor[NDIMS*2];
+  for (int field = 0; field < NDIMS*2; field++) {
+    accessor[field] = cells.get_accessor<AccessorGeneric>(fields[field]);
+  }
+
+  for (int x = 1; x < nx + 1; x++) {
+    for (int y = 1; y < ny + 1; y++) {
+      for (int z = 1; z < nz + 1; z++) {
+        int c = cell_id(x, y, z, nx, ny, nz);
+        printf("Elliott:");
+        for (int f = 0; f < NDIMS*2; f++) {
+          printf(" %.3f", accessor[f].read(ptr_t<double>(c)));
+        }
+        printf("\n");
+      }
+    }
+  }
+}
+
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
                     ProcessorGroup local_group) {
   // TODO (Elliott): Customize mappers
@@ -911,6 +983,7 @@ int main(int argc, char **argv) {
   HighLevelRuntime::register_single_task<main_task>(MAIN_TASK, Processor::LOC_PROC, false, "main_task");
   HighLevelRuntime::register_index_task<int, 1, init_task>(INIT_TASK, Processor::LOC_PROC, false, "init_task");
   HighLevelRuntime::register_index_task<int, 1, step_task>(STEP_TASK, Processor::LOC_PROC, false, "step_task");
+  HighLevelRuntime::register_single_task<dump_task>(DUMP_TASK, Processor::LOC_PROC, false, "dump_task");
 
   return HighLevelRuntime::start(argc, argv);
 }
