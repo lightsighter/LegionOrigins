@@ -32,7 +32,8 @@
 
 \begin{document}
 
-\title{A Type System for Structured Aliasing in Parallel Programs}
+%\title{A Type System for Structured Aliasing in Parallel Programs}
+\title{Supporting Dynamic Data Partitioning in Parallel Programs}
 %\title{Scalable and Safe Parallelism using Logical Regions}
 \authorinfo{Sean Treichler \and Michael Bauer \and Alex Aiken}{Stanford University}{\{sjt,mebauer,aiken\}@cs.stanford.edu}
 %\authorinfo{Sean Treichler}{Stanford Unviersity}{sjt@cs.stanford.edu}
@@ -41,20 +42,18 @@
 \maketitle
 
 \begin{abstract}
-Aliasing introduces a significant impediment to reasoning about the
-structure and usage of data in parallel programs.  Traditional approaches
-have either disallowed aliasing to enable static analyses, or have permitted
-aliasing at the cost of dynamic runtime analyses.  In this paper we introduce a
-type system for the Legion programming model that uses a hybrid static and
-dynamic approach to manage aliasing with minimal runtime overhead.  We prove 
-that our type system can soundly reason about the privilege and coherence 
-properties in Legion programs. Furthermore, we prove that type soundness 
-enables a hierarchical, distributed scheduling algorithm for Legion programs 
-even in the presence of aliasing. We show that an implementation of a Legion 
-type checker improves the performance of Legion programs up to 71\% by 
-eliding memory checks that the type system proves safe.  We also demonstrate 
-that an implementation of the Legion runtime based on the hierarchical 
-scheduling algorithm scales well for three real-world applications running
+Many distributed-memeory parallel applications dynamically partition 
+data, but current language designs either 
+require fully static partitioning or rely on entirely dynamic techniques.
+We describe Legion, a programming system with a combination
+of language features and static and dynamic checks to support 
+dynamic data partitions with minimal overhead.
+We describe the novel aspects of the Legion design, prove the soundness of the Legion type system,
+ and show Legion type checking improves performance by up to 71\% by eliding provably
+safe memory checks.  Furthermore, we show how the language design and type safety
+enables a hierarchical, distributed runtime scheduling algorithm, and how
+a system of data coherence annotations improves expressivity without compromising
+soundness. We report results for three real-world applications running
 on distributed memory machines, achieving up to 62.5X speedup on 96 GPUs 
 on the Keeneland supercomputer.
 %Legion is a programming model that introduces

@@ -3,16 +3,18 @@
 \section{Introduction}
 \label{sec:intro}
 
-In the past decade machine architectures, particularly at the high
-performance end of the spectrum, have undergone a revolution.  The
+Recently machine architecture, particularly at the high
+performance end of the spectrum, has undergone a revolution.  The
 latest supercomputers are now composed of heterogeneous processors
-and deep memory hierarchies.  Programming this class of machines is
-increasingly difficult.  Current programming systems for these
-machines have intricate features for describing parallelism, but contain
-few abstractions for describing properties of program data
-(e.g. independence).  Consequently, the burden of managing
-the correctness of parallel computations and movement of data
-through the memory hierarchy is placed on the programmer.
+and deep memory hierarchies.  Current programming systems for these
+machines have elaborate features for describing parallelism, but 
+few abstractions for describing the organization of data.  However, as the architecture
+of distributed memory has become increasingly complex, the placement and movement of dat has
+become a first order programming concern.
+
+%Consequently, the burden of managing
+%the correctness of parallel computations and movement of data
+%through the memory hierarchy is placed on the programmer.
 
 %However,
 %these systems relegate to the programmer the responsibility for:
@@ -28,34 +30,31 @@ through the memory hierarchy is placed on the programmer.
 %need programming systems capable of reasoning both statically and dynamically
 %about the structure of program data.
 
-To combat this problem, researchers have previously explored programming
-systems that are capable of reasoning about the structure of data in
-parallel programs.  Traditionally, these attempts have taken one of two approaches.   
-The first approach relies on fully static analyses that
-have no runtime overhead, but limited expressivity.  Two recent examples, 
+Previous work has explored two approaches to expressing the organization of data
+in distributed memory parallel programs.
+One class of work uses fully static analysis 
+with no runtime overhead but limited expressivity.  Two recent examples, 
 Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a 
-mechanism to statically partition the heap recursively into a tree of collections 
+mechanism to statically partition the heap into a tree of collections 
 of data.  The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that must be fully checked statically 
-(see Section~\ref{sec:related} for more discussion of related work).  The
-second approach relies on a totally dynamic analysis of program data that doesn't
-limit expressivity, but incurs runtime overhead.  Examples of this approach 
+(see Section~\ref{sec:related}).  The
+second approach relies on fully dynamic analysis of program data that doesn't
+limit expressivity but incurs runtime overhead;  examples 
 include transactional memory \cite{Harris05} and thread-level speculation \cite{Steffan00}.
 
-These two approaches illustrate different mechanisms for dealing with
-the problem of data aliasing in parallel programs.  The fully static approach disallows aliasing
-by requiring a single disjoint partitioning of data.  Our own experience with writing high-performance 
+Our own experience writing high-performance 
 applications in both Sequoia and the current industry standard mix of MPI, shared-memory
-threads, and CUDA, has taught us that for many practical situations a
-single, static partitioning is insufficient.  In practice, the
+threads, and CUDA, has taught us that a
+single, static data partitioning is insufficient.  In practice, the
 best way to partition data is often a function of the data
-itself---i.e., the partitions need to be dynamically computed.
-Furthermore, it is useful to allow multiple, simultaneous partitions of
+itself---i.e., the partitions must be dynamically computed.
+Furthermore, applications often need multiple, simultaneous partitions of
 the same data, providing different views on to that data.  Alternatively, 
-the fully dynamic approach permits arbitrary data aliasing, but requires 
+the fully dynamic approach permits arbitrary partitioning, but requires 
 centralized control logic to perform conflict detection between every pair 
-of parallel computations. This results in runtime overhead and is 
+of parallel computations, resulting in runtime overhead that isn
 not scalable on distributed-memory machines.
 
 In this work, we present a type system and operational semantics for
