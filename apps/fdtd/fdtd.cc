@@ -90,6 +90,7 @@ enum {
   TOP_LEVEL_TASK,
   MAIN_TASK,
   INIT_TASK,
+  SOURCE_TASK,
   STEP_TASK,
   DUMP_TASK,
 };
@@ -109,6 +110,15 @@ enum dim_t {
   NDIMS = 3, // Must be last entry in enum.
 };
 
+static inline const char * dim_name(dim_t dim) {
+  switch (dim) {
+  case DIM_X: return "x";
+  case DIM_Y: return "y";
+  case DIM_Z: return "z";
+  default: assert(0 && "unreachable");
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////
 // During the computation, each block will only require access to
 // ghost cells in one direction. Thus each block will partitioned six
@@ -119,6 +129,14 @@ enum dir_t {
   DIR_NEG = 1,
   NDIRS = 2, // Must be last entry in enum.
 };
+
+static inline const char * dir_name(dir_t dir) {
+  switch (dir) {
+  case DIR_POS: return "+";
+  case DIR_NEG: return "-";
+  default: assert(0 && "unreachable");
+  }
+}
 
 static inline int sign(dir_t dir) {
   return dir == DIR_POS ? 1 : -1;
@@ -197,6 +215,29 @@ struct InitGlobalArgs {
 };
 
 ////////////////////////////////////////////////////////////////////////
+// Arguments to source_task.
+////////////////////////////////////////////////////////////////////////
+struct SourceGlobalArgs {
+  SourceGlobalArgs(int nx, int ny, int nz, dim_t dim, FieldID field)
+    : n(nx, ny, nz), dim(dim), field(field) {}
+  // Number of cells.
+  vec3 n;
+  // Dimension to source.
+  dim_t dim;
+  // Field to update.
+  FieldID field;
+};
+
+struct PositionLocalArgs {
+  PositionLocalArgs(std::pair<int, int> &x_span,
+                    std::pair<int, int> &y_span,
+                    std::pair<int, int> &z_span)
+    : min(x_span.first, y_span.first, z_span.first),
+      max(x_span.second, y_span.second, z_span.second) {}
+  vec3 min /* inclusive */, max /* exclusive */;
+};
+
+////////////////////////////////////////////////////////////////////////
 // Arguments to step_task.
 ////////////////////////////////////////////////////////////////////////
 struct StepGlobalArgs {
@@ -213,15 +254,6 @@ struct StepGlobalArgs {
   double dtdx;
   // Fields to read and write.
   FieldID field_write, field_read1, field_read2;
-};
-
-struct StepLocalArgs {
-  StepLocalArgs(std::pair<int, int> &x_span,
-                std::pair<int, int> &y_span,
-                std::pair<int, int> &z_span)
-    : min(x_span.first, y_span.first, z_span.first),
-      max(x_span.second, y_span.second, z_span.second) {}
-  vec3 min /* inclusive */, max /* exclusive */;
 };
 
 ////////////////////////////////////////////////////////////////////////
@@ -649,6 +681,8 @@ void main_task(const void *input_args, size_t input_arglen,
   printf("  simulation time     : %.2f\n", t_sim);
   printf("  timestep size       : %.2f\n", dt);
   printf("  timesteps           : %d\n", (int)(t_sim / dt));
+  printf("  field IDs (Exyz)    : %2d %2d %2d\n", field_e[DIM_X], field_e[DIM_Y], field_e[DIM_Z]);
+  printf("  field IDs (Hxyz)    : %2d %2d %2d\n", field_h[DIM_X], field_h[DIM_Y], field_h[DIM_Z]);
   printf("+---------------------------------------------+\n");
 
   // Choose color space for partitions.
@@ -712,13 +746,13 @@ void main_task(const void *input_args, size_t input_arglen,
     f.wait_all_results();
   }
 
-  // Preload argument map for step task.
+  // Preload argument map for source and step tasks.
   ArgumentMap position_arg_map = runtime->create_argument_map(ctx);
   for (int bx = 0; bx < nbx; bx++) {
     for (int by = 0; by < nby; by++) {
       for (int bz = 0; bz < nbz; bz++) {
         int point[1] = { block_id(bx, by, bz, nbx, nby, nbz) };
-        StepLocalArgs step_args(x_divs[bx], y_divs[by], z_divs[bz]);
+        PositionLocalArgs step_args(x_divs[bx], y_divs[by], z_divs[bz]);
         position_arg_map.set_point_arg<int, 1>(point, TaskArgument(&step_args, sizeof(step_args)));
       }
     }
@@ -731,11 +765,30 @@ void main_task(const void *input_args, size_t input_arglen,
 
   std::vector<FutureMap> fs;
   for (double t = 0.0; t < t_sim; t += dt) {
+    fs.clear(); // Only wait on futures from last iteration of loop.
+
     std::vector<IndexSpaceRequirement> indexes;
     indexes.push_back(IndexSpaceRequirement(ispace, NO_MEMORY, ispace));
 
     std::vector<FieldSpaceRequirement> fields;
     fields.push_back(FieldSpaceRequirement(fspace, NO_MEMORY));
+
+    // Update sources.
+    {
+      std::vector<FieldID> write_fields;
+      write_fields.push_back(field_e[DIM_Z]);
+
+      std::vector<RegionRequirement> regions;
+      regions.push_back(RegionRequirement(owned_partition, 0 /* default projection */,
+                                          as_set<FieldID>(write_fields), write_fields,
+                                          READ_WRITE, EXCLUSIVE, cells));
+
+      SourceGlobalArgs global_args(nx, ny, nz, DIM_Z, field_e[DIM_Z]);
+
+      runtime->execute_index_space(ctx, SOURCE_TASK, colors, indexes, fields, regions,
+                                   TaskArgument(&global_args, sizeof(global_args)), position_arg_map,
+                                   Predicate::TRUE_PRED, false);
+    }
 
     // Update electric field.
     for (int dim = 0; dim < NDIMS; dim++) {
@@ -802,13 +855,13 @@ void main_task(const void *input_args, size_t input_arglen,
 
     // TODO (Elliott): Disable when not debugging.
     {
-      std::vector<FieldID> instance_fields;
-      instance_fields.insert(instance_fields.end(), field_e, field_e + NDIMS);
-      instance_fields.insert(instance_fields.end(), field_h, field_h + NDIMS);
+      std::vector<FieldID> read_fields;
+      read_fields.insert(read_fields.end(), field_e, field_e + NDIMS);
+      read_fields.insert(read_fields.end(), field_h, field_h + NDIMS);
 
       std::vector<RegionRequirement> regions;
-      regions.push_back(RegionRequirement(cells, as_set<FieldID>(instance_fields), instance_fields,
-                                          WRITE_ONLY, EXCLUSIVE, cells));
+      regions.push_back(RegionRequirement(cells, as_set<FieldID>(read_fields), read_fields,
+                                          READ_ONLY, EXCLUSIVE, cells));
 
       DumpArgs dump_args(nx, ny, nz, field_e, field_h);
 
@@ -877,7 +930,43 @@ static inline bool is_boundary(dir_t dir, int x, int x_min, int x_max) {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// Updates simulation by one timestep.
+// Updates each emission source in the simulation.
+////////////////////////////////////////////////////////////////////////
+void source_task(const void * input_global_args, size_t input_global_arglen,
+               const void *input_local_args, size_t input_local_arglen,
+               const int /* point */ [1],
+               const std::vector<RegionRequirement> & /* reqs */,
+               const std::vector<PhysicalRegion> &regions,
+               Context ctx, HighLevelRuntime *runtime) {
+  assert(input_global_args && input_global_arglen == sizeof(SourceGlobalArgs));
+  SourceGlobalArgs &global_args = *(SourceGlobalArgs *)input_global_args;
+  vec3 &n = global_args.n;
+  FieldID &field = global_args.field;
+
+  assert(input_local_args && input_local_arglen == sizeof(PositionLocalArgs));
+  PositionLocalArgs &local_args = *(PositionLocalArgs *)input_local_args;
+  vec3 &min = local_args.min, &max = local_args.max;
+
+  log_app.info("In source_task cells %d..%d x %d..%d x %d..%d for field %d ...",
+               min[0], max[0], min[1], max[1], min[2], max[2],
+               field);
+
+  PhysicalRegion cells = regions[0];
+
+  Accessor f = cells.get_accessor<AccessorGeneric>(field);
+
+  for (int x = min[0]; x < max[0]; x++) {
+    for (int y = min[1]; y < max[1]; y++) {
+      for (int z = min[2]; z < max[2]; z++) {
+        ptr_t<double> i = cell_id(vec3(x, y, z), n);
+        f.write(i, f.read(i) + 0.1);
+      }
+    }
+  }
+}
+
+////////////////////////////////////////////////////////////////////////
+// Updates the field values at each grid point in the simulation.
 ////////////////////////////////////////////////////////////////////////
 void step_task(const void * input_global_args, size_t input_global_arglen,
                const void *input_local_args, size_t input_local_arglen,
@@ -895,11 +984,12 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
   FieldID &field_read1 = global_args.field_read1;
   FieldID &field_read2 = global_args.field_read2;
 
-  assert(input_local_args && input_local_arglen == sizeof(StepLocalArgs));
-  StepLocalArgs &local_args = *(StepLocalArgs *)input_local_args;
+  assert(input_local_args && input_local_arglen == sizeof(PositionLocalArgs));
+  PositionLocalArgs &local_args = *(PositionLocalArgs *)input_local_args;
   vec3 &min = local_args.min, &max = local_args.max;
 
-  log_app.info("In step_task cells %d..%d x %d..%d x %d..%d writing field %d reading fields %d, %d ...",
+  log_app.info("In step_task %s%s cells %d..%d x %d..%d x %d..%d writing field %d reading fields %d, %d ...",
+               dim_name(dim), dir_name(dir),
                min[0], max[0], min[1], max[1], min[2], max[2],
                field_write, field_read1, field_read2);
 
@@ -932,7 +1022,9 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
       for (int z = rmin[2]; z < rmax[2]; z++) {
         vec3 v = rot3(vec3(x, y, z), -(dim + 1));
         ptr_t<double> i = cell_id(v, n);
-        f.write(i, f.read(i) - dtdx*(g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
+        // Elliott: Debugging
+        f.write(i, 1.0);
+        //f.write(i, f.read(i) - dtdx*(g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
       }
     }
   }
@@ -957,13 +1049,23 @@ void dump_task(const void *input_args, size_t input_arglen,
     accessor[field] = cells.get_accessor<AccessorGeneric>(fields[field]);
   }
 
-  for (int x = 1; x < nx + 1; x++) {
-    for (int y = 1; y < ny + 1; y++) {
-      for (int z = 1; z < nz + 1; z++) {
-        int c = cell_id(x, y, z, nx, ny, nz);
-        printf("Elliott:");
-        for (int f = 0; f < NDIMS*2; f++) {
-          printf(" %.3f", accessor[f].read(ptr_t<double>(c)));
+  for (int f = 0; f < NDIMS*2; f++) {
+    printf("Field %s%s:\n", (f < NDIMS ? "E" : "H"), dim_name((dim_t)(f % NDIMS)));
+    for (int z = 1; z < nz + 1; z++) {
+      printf("z = %d", z);
+
+      if (z == 1) {
+        for (int x = 1; x < nx + 1; x++) {
+          printf("  x = %d", x);
+        }
+      }
+      printf("\n");
+
+      for (int y = 1; y < ny + 1; y++) {
+        printf("y = %d", y);
+        for (int x = 1; x < nx + 1; x++) {
+          int c = cell_id(x, y, z, nx, ny, nz);
+          printf("  %.3f", accessor[f].read(ptr_t<double>(c)));
         }
         printf("\n");
       }
@@ -982,6 +1084,7 @@ int main(int argc, char **argv) {
   HighLevelRuntime::register_single_task<top_level_task>(TOP_LEVEL_TASK, Processor::LOC_PROC, false, "top_level_task");
   HighLevelRuntime::register_single_task<main_task>(MAIN_TASK, Processor::LOC_PROC, false, "main_task");
   HighLevelRuntime::register_index_task<int, 1, init_task>(INIT_TASK, Processor::LOC_PROC, false, "init_task");
+  HighLevelRuntime::register_index_task<int, 1, source_task>(SOURCE_TASK, Processor::LOC_PROC, false, "source_task");
   HighLevelRuntime::register_index_task<int, 1, step_task>(STEP_TASK, Processor::LOC_PROC, false, "step_task");
   HighLevelRuntime::register_single_task<dump_task>(DUMP_TASK, Processor::LOC_PROC, false, "dump_task");
 
