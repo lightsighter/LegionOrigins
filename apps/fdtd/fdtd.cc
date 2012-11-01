@@ -746,7 +746,7 @@ void main_task(const void *input_args, size_t input_arglen,
     f.wait_all_results();
   }
 
-  // Preload argument map for step task.
+  // Preload argument map for source and step tasks.
   ArgumentMap position_arg_map = runtime->create_argument_map(ctx);
   for (int bx = 0; bx < nbx; bx++) {
     for (int by = 0; by < nby; by++) {
