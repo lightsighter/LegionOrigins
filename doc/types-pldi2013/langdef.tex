@@ -401,7 +401,7 @@ $};
 \rule{0.1pt}{6in}
 }}
 }
-\caption{Type System and Operational Semantics Rules}
+\caption{Type System and Operational Semantics}
 \label{fig:langrules}
 \end{figure*}
 
@@ -416,78 +416,84 @@ $};
 \label{sec:legioncore}
 
 Figure~\ref{fig:langdef} defines Core Legion, a subset of the full Legion language
-that still illustrates all of the important issues.  Types
-include booleans, integers, tuples, and pointers.  Pointers
-are annotated with a list of regions---a non-null pointer must point to a 
+that still illustrates all of the important issues.  
+%Types include booleans, integers, tuples, and pointers.  
+Pointers are annotated with a list of regions---a non-null pointer must point to a 
 location that is contained in at least one of the regions. There is a special
-type for {\em colorings}, which
-are used to specify partitions of regions into subregions.
-Functions in Legion are named, accept one or more arguments and
-return a value of some type.  A function also declares the region
-access privileges and coherence it requires.  A function may be executed
-within the current task or run in parallel as a separate subtask---this decision is made
+{\em coloring} type, used to specify partitions of regions into subregions.
+%Functions in Legion are named, accept one or more arguments and
+%return a value of some type.  
+Functions declare the region
+access privileges and coherence they require.  Some function instances are {\em tasks}; a function may be executed
+within the current task or run in parallel as a separate (sub)task---this decision is made
 by the Legion task scheduler.  Function types are
 universally quantified over all region names appearing in the type.
-The final type is a region relationship, an instance of which captures a value and
+The other important type is a {\em region relationship}, an instance of which captures a value and
 one or more regions satisfying associated constraints.  A region relation instance
 can be written into the heap and later read and
 unpacked, giving new local names to the regions contained in
 the instance.
 
-To achieve high performance in the presence of aliasing, the Legion type system has 
-been designed to efficiently leverage both static and dynamic checks.
-Consequently, both the type system and the operational
-semantics have been extended in interesting ways from a basic expression language.  We
-describe these extensions in the next two subsections, and explain how they 
-were chosen to preserve a straightforward proof of soundness for the type system.
+To achieve high performance in the presence of aliasing, the Legion type system
+leverages both static and dynamic checks, resulting in interesting extensions beyond
+a basic expression language to both the type system and the operational semantics.
+The following two subsections illustrate these decisions and how they have been
+chosen to preserve a straightforward proof of type soundness.
 
 \subsection{Core Type System}
 \label{subsec:coretypes}
 
 Core Legion is explicitly typed using judgments of the form
 $$\typeenv{e}{T}$$
-
-In addition to the traditional type environment $\Gamma$, a Legion type judgment includes the
-set of access privileges $\Phi$ for the logical regions in the expression as well as a set of
+Besides a type environment $\Gamma$, type judgments include the
+access privileges $\Phi$ for the logical regions in the expression $e$ as well as 
 constraints $\Omega$ that must hold between those logical regions.
 
-Both $\Phi$ and $\Omega$ are used in the heap access expressions: {\em read}, {\em write}, and {\em reduce}.
-For a heap access to be valid, the the appropriate permission must exist for logical region(s) in the
-pointer's type.  As regions are hierarchical, the exact region need not be named in $\Phi$ if permissions
-exist for a logical region that is known to contain the pointer's region.  To simplify this check, we
-define closure operations in Figure~\ref{fig:closure} that expand $\Omega$ into an $\Omega^*$, which is
-then used to expand $\Phi$ into a $\Phi^*$ that does explicitly name every logical region for which
-privileges are known to exist.
+A representative selection of the type rules is given in Figure~\ref{fig:langrules}.  Both $\Phi$ and $\Omega$ are used in the heap access expressions {\em read}, {\em write}, and {\em reduce}.
+A valid heap access has the needed permission for logical region(s) in the
+pointer's type.  Note the exact region need not be named in $\Phi$ if permissions
+exist for a logical region that provably contains the pointer's region.  To simplify this check, Figure~\ref{fig:closure}
+defines closure operations $\Omega^*$ (all constraints implied by $\Omega$) and
+$\Phi^*$ (all privileges implied by $\Phi$ and $\Omega^*$).
 
 Core Legion provides no automatic pointer type conversions.  Valid pointers are created via the {\em new}
-expression in specified region and invalid (i.e. {\em null}) pointers must also be typed.  Pointers can be
-``upcast'' via the {\em upregion} expression, which uses the expanded constraints $\Omega^*$ to verify that
-every possible region a pointer might point into is covered by at least one of the regions in the desired
-pointer type.  In contrast, a ``downcast'' using the {\em downregion} expression must perform a dynamic
-test to verify which region a run-time pointer value points into.  A static test similar to the one used
-for {\em upregion} could be used to catch cases in which the downcast can never succeed at runtime, but we
-have left it out for simplicity.
+expression in the specified region.
+% and invalid (i.e. {\em null}) pointers must also be typed.  
+Pointers can be
+``upcast'' via the {\em upregion} expression; the type rule verifies 
+every possible region the pointer might point into is covered by at least one of the regions in the target
+pointer type.  A ``downcast'' using the {\em downregion} expression performs a dynamic
+test to verify the region a run-time pointer value points into.  
+%A static test similar to the one used
+%for {\em upregion} could be used to catch cases in which the downcast can never succeed at runtime, but we
+%have left it out for simplicity.
 
-The introduction of constraints into $\Omega$ occurs through the use of the {\em partition} expression,
-which makes use of a new type specific to Legion, a {\em coloring}.  A coloring is an opaque mapping from
-pointers (which must point into the region being colored) to integer {\em color} values.  (For simplicity, 
-Core Legion allows only an iterative construction of a coloring via a {\em newcolor} expression that generates
-an empty map, and a {\em color} expression which adds a new entry to an existing map. The opacity of the
-coloring allows for more efficient generation (and storage) of colorings as needed.)  The {\em partition} 
-expression introduces names for subregions corresponding to each color in the coloring, guaranteeing that each
-subregion is disjoint from the other subregions and all are included in the original region.
+Region constraints are introduced by the {\em partition} expression,
+which makes use of {\em colorings}, a new type specific to Legion.  A coloring is an opaque mapping from
+pointers (which must point into the region being colored) to integer {\em color} values.  
+%(For simplicity, 
+%Core Legion allows only an iterative construction of a coloring via a {\em newcolor} expression that generates
+%an empty map, and a {\em color} expression which adds a new entry to an existing map. The opacity of the
+%coloring allows for more efficient generation (and storage) of colorings as needed.)  
+Partitioning introduces names for subregions corresponding to each color in the coloring, guaranteeing that each
+subregion is disjoint from the others and all are subregions of the original region.
 
-The {\em pack} and {\em unpack} expressions allow the storage of pointers in the heap.  Logical region names
-are lexically scoped and if stored in the heap as-is, can only be read within the same scope.  A region relationship
-is used instead to capture the (dynamic) physical regions while preserving the statically known constraints
-between those regions.  Because the {\em pack} expression is able to verify these constraints hold when the 
-region relationship value is created, the {\em unpack} expression is able to reintroduce these constraints on
-the (fresh) logical region names given to the contents of an unwrapped region relationship value.
-
-Finally, the task call expression handles the aliasing of logical region names between the caller and callee and
-verifies the functional requirement that the privileges held by a called task are always a subset of those held
+The {\em pack} and {\em unpack} expressions allow regions to be stored in the heap.
+%  Logical region names are lexically scoped and if stored in the heap as-is, can only be read within the same scope.  
+A {\em region relationship} captures statically known constraints between regions;
+because the {\em pack} rule verifies these constraints hold when the 
+region relationship value is created,{\em unpack} can reintroduce these constraints on
+the (fresh) logical region names when the value is read and unpacked from the heap.
+Crucially for soundness,  region relationships do not capture privileges.
+%
+% FIXME  It would be nice to add some comments about unpack here, and how the constraints introduced by unpack
+% must be sufficient to allow access to the new regions if they are to be used, which generally requires the type
+% have a free region variable capturing subregioning relationships between the packed regions and some existing region
+% in scope for which privileges are held.
+% 
+Finally, task calls verify the requirement that the privileges held by a called task are a subset of those held
 by the caller.  In addition to being necessary for the proof of soundness, this property is critical to
-enable the hierarchical scheduling model used by the Legion runtime.
+enabling hierarchical and distributed scheduling of tasks.
 
 \begin{comment}
 \begin{figure*}
@@ -737,74 +743,85 @@ reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \Rightarrow reduces_{id}(r) \in 
 \subsection{Operational Semantics}
 \label{subsec:opsemantics}
 
-Core Legion's operational semantics rules have the following form:
+Core Legion's operational semantics rules have the form
 $$\opsenv{e}{v}{E}$$
-and specify that, given a certain environment, the evaluation of expression $e$ yields a value $v$ and a
-{\em dynamic memory trace} $E$ which is a sequence of all heap operations (reads, writes, reductions) performed
-during the evaluation, including their location and the value read or written.
-
-In addition to the usual value mappings for local variables $L$ and store (i.e. heap) locations $S$, the Legion
-operational semantics environments includes an immutable heap typing $H$ that maps locations to types, and a region
-mapping $M$ that maps logical regions $r_i$ to physical regions $\rho_i$, which are sets of concrete memory
+and specify the evaluation of expression $e$ yields a value $v$ and a
+{\em dynamic memory trace} $E$, which is a sequence of all heap operations (reads, writes, reductions) $e$ performs.
+%during the evaluation, including their location and the value read or written.
+In addition to  mappings for local variables $L$ and the store (i.e. heap) $S$, the 
+environment includes an immutable heap typing $H$ assigning types to heap locations, and a region
+mapping $M$ mapping logical regions $r_i$ to physical regions $\rho_i$, which are sets of concrete memory
 locations.
 
-The final element of the environment is the {\em clobber set} $C$.  Our goal is to show that parallel Legion
-programs can
-be scheduled in a hierarchical fashion.  We therefore require a formulation of operational semantics
-that is both parallel and hierarchical.  Because Legion allows constrained nondeterminism (in the order in which
-reductions are applied and in cases of relaxed coherence with aliasing), it is possible for the heap accesses performed by
-one expression's evaluation to observe interference from other concurrent evaluations.  The traditional way of
-handling this in operational semantics (\cite{CML} is a well-known example) is to use a top-down approach with
-small-step semantics and a global view of all
-partially-evaluated expressions.  Rules are specified for which expression(s) are valid choices for the next small
-step of execution.  This approach has the benefit of being constructive but the implicit global scheduler is
-difficult to map into a hierarchical one in which decisions must necessarily be made with limited information.
+The environment also has a {\em clobber set} $C$.
+We will show that parallel Legion programs can be scheduled in
+a hierarchical fashion.  We therefore require an
+operational semantics that is parallel and hierarchical.  Now
+Legion allows limited nondeterminism, specifically because of relaxed coherence on
+regions shared between parallel tasks and choices of reduction orderings.
+Thus, heap accesses performed by one expression may observe side-effects from 
+concurrent evaluations.  The traditional solution to this issue
+is to use a top-down, small-step semantics with a global view of all concurrently executing expressions (e.g., \cite{CML}).  
+%Rules are specified for which
+%expression(s) are valid choices for the next small step of execution.
+This approach is incompatible with a hierarchical view in which local
+decisions are made with limited information.
 
-Instead we use a bottom-up approach with large-step semantics in which each expression is evaluated with limited 
-information about the overall environment.  The information consists of the initial state of the heap $S$, and a
-set of memory locations that might be modified by other concurrent evaluations.  This is the clobber set $C$,
-and is used to relax the constraints on the evaluation of an expression.  Whereas the requirement for locations not
-in the clobber set is the usual one of {\em coherence} (i.e. a read from a location observes the effect of all 
-previous modifications applied in order), the value read from a location in the clobber set may be hypothesized
-to be any value at all.  The validation of these hypotheses is deferred until all potentially-concurrent
-modifications to a location can be observed (i.e. the evaluation of a parent expression whose clobber set does
-not include the location) and a consistent interleaving of the subexpressions' memory traces can be determined.
-With this formulation, the criteria for when a hierarchical scheduler may execute subexpressions in parallel can be
-made clear, but they are no longer constructive.  Instead, we will have to show that the scheduling algorithm
-used by the Legion runtime satisfies these constraints, guaranteeing the soundness of the Legion programming model.
+Instead we use a bottom-up approach with big-step semantics.
+Each expression has a clobber set $C$ of memory locations that might 
+be modified by concurrent evaluations.  While a read from a location not in $C$ is {\em coherent}
+(returning the most recently written value), the value read from a location $l$ in $C$ may be any
+value.  Determing which value is deferred until all potentially-concurrent
+modifications to $l$ are observable in the evaluation of a parent expression whose clobber set does
+not include $l$ and a consistent interleaving of the subexpressions' memory traces is determined.
+%With this formulation, the criteria for when a hierarchical scheduler may execute subexpressions in parallel can be
+%made clear, but they are no longer constructive.  Instead, we will have to show that the scheduling algorithm
+%used by the Legion runtime satisfies these constraints, guaranteeing the soundness of the Legion programming model.
 
-The complete operational semantics rules can be found in \cite{LegionTypes12}; we show the most interesting ones
-in Figure~\ref{fig:semantics}.  The rules for the {\em read}, {\em write}, and {\em reduce} show how dynamic memory
-traces are constructed and how the result of a read expression is relaxed when the location falls within the
-clobber set.  Additionally, the write and reduce operations, with their two subexpressions, demonstrate how the
-traces of subexpressions are interleaved within the environment (and clobber set) of the parent expression.
-(A formal definition of the {\em valid\_interleave} predicate can be found in Figure~\ref{fig:validinterleave}, and
-will be discussed in Section~\ref{sec:coherence}.)
+%FIXME  need to add much earlier that the complete report has all missing type and operational rules and proofs
 
-The first use of the region mapping $M$ occurs in the {\em new} and {\em downregion} expressions.  The new
-expression is constrained to select a location (with the right heap typing) from the set that the specified logical
-region has been mapped to.  (Although one would expect the new expression to also return a location that is not
-currently in use, our soundness result does not require this additional constraint, so we have omitted it for
-simplicity.)  Similarly, the downregion expression checks whether a location is within the set of locations the
-logical region(s) have been mapped to, returning {\em null} if not.  As discussed above, the corresponding 
-{\em upregion} expression checks are performed statically.
+We show the most interesting operational rules for Core Legion in
+Figure~\ref{fig:langrules}.  The rules for the {\em read}, {\em
+write}, and {\em reduce} show how dynamic memory traces are
+constructed and how the result of a read expression is relaxed when
+the location falls within the clobber set.  Additionally, the write
+and reduce operations, with their two subexpressions, demonstrate how
+the traces of subexpressions are interleaved within the environment
+(and clobber set) of the parent expression.  (A formal definition of
+the {\em valid\_interleave} predicate can be found in
+Figure~\ref{fig:validinterleave}, and will be discussed in
+Section~\ref{sec:coherence}.)
 
-The general form of a coloring being an abitrary mapping of locations to ``colors'' (integers) is shown in the
-operational semantics rules for the {\em newcolor} and {\em color} expressions.  The color expression accepts an
-existing coloring and returns one in which the specified location is given the specified color, replacing an
-existing coloring for that location (if present).  The behavior of the newcolor expression is more subtle.
-Since Legion supports the {\em partition-then-allocate} model (see Section~\ref{sec:example}) in which the {\em new} expression may be called
-on subregions, each subregion that results from a partitioning may need an arbitrary number of locations for which
-the program does not know the name at partitioning time.  The semantics for the newcolor expression allow this while
-guaranteeing that any explicit colorings performed by the program are honored.
+%The first use of the region mapping $M$ occurs in the {\em new} and {\em downregion} expressions.  
+The {\em new} expression selects a location (with the right heap typing) from those assigned to 
+the logical region argument.
+%(Although one would expect the new expression to also return a location that is not
+%currently in use, our soundness result does not require this additional constraint, so we have omitted it for
+%simplicity.)  
+Similarly, {\em downregion} checks whether a location is within the set assigned to the logical region.
+%logical region(s) have been mapped to, returning {\em null} if not.  
+As discussed above, 
+{\em upregion} checks are performed statically.
 
-The semantics for the {\em pack} and {\em unpack} expressions are straightforward.  Packing a region relationship
-is just a matter of capturing the physical regions to which the logical regions are currently mapped, whereas 
-unpacking takes those physical regions and gives them fresh logical names within the evaluation of the body.
+% FIXME The explanation of newcolor is confusing.
+%
+%The general form of a coloring being an abitrary mapping of locations to ``colors'' (integers) is shown in the
+%operational semantics rules for the {\em newcolor} and {\em color} expressions.  
+The {\em color} expression updates an existing coloring with a new color for a location, replacing any
+existing coloring for that location.  The behavior of {\em newcolor} is subtler.
+Legion supports first partitioning regions and then allocating data in the subregions.
+%the {\em partition-then-allocate} model (see Section~\ref{sec:example}) in which the {\em new} expression may be called
+%on subregions, 
+Thus, each subregion resulting from a partitioning may need an arbitrary number of locations that are
+unknown at partitioning time.  The semantics of newcolor allows this while
+guaranteeing all explicit colorings performed by the program are honored.
 
-Finally, although the semantics for calls to subtasks appear complicated at first glance, the bulk of the rules
-are just handling the evaluation of each actual argument expression and the creation of the called subtask's 
-environment (with potentially different names for logical regions).  The key difference in Legion task calls is the
+%The semantics for the {\em pack} and {\em unpack} expressions are straightforward.  
+Packing a region relationship captures the physical regions to which the logical regions are mapped;
+unpacking simply gives those physical regions fresh logical names. 
+
+Finally, calls to subtasks evaluate actual arguments and create the subtasks's
+environment (with potentially different names for logical regions).  A key point in Legion task calls is the
 handling of relaxed coherence.  Any location that falls within
 a logical region whose coherence has been relaxed (via {\em atomic} or {\em simult}) is added to the clobber set
 $C'$, allowing non-deterministic evaluation within the subtask with respect to those locations.  All actual accesses
@@ -1158,10 +1175,9 @@ valid\_interleave(S, C, E', E_1, E_2)
 \section{Soundness of Privileges}
 \label{sec:soundness}
 
-A key property of the Legion type system is that any expression that is well-typed is
-guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
-A judgment $\privconsist{E}{\Phi}$ holds if all the memory operations in memory trace $E$ are of the types and
-to locations covered by the privileges in $\Phi$:
+Our first results shows a well-typed expression accesses the heap in ways consistent with its static privileges.
+A judgment $\privconsist{E}{\Phi}$ holds if memory operations in memory trace $E$ have types and
+locations covered by privileges $\Phi$:
 \[ 
 \begin{array}{l}
 \privconsist{E}{\Phi} \Leftrightarrow \forall \epsilon \in E. \\
@@ -1171,14 +1187,15 @@ to locations covered by the privileges in $\Phi$:
 \end{array}
 \]
 
-Our goal is to show $\privconsist{E}{\Phi}$ holds for any execution of an expression $e$ with static privileges $\Phi$.
-As usual, even stating such a claim requires that corresponding parts of the initial static and dynamic environments be consistent.
+\noindent
+%We must show $\privconsist{E}{\Phi}$ holds for any execution of an expression $e$ with static privileges $\Phi$.
+As usual, the soundness claim is proven assuming the initial type and execution environments are consistent.
 For our results, three consistency properties are needed:
 \begin{itemize}
-\item mapping consistency, written $\mapconsist{\Omega}$, guarantees a region mapping $M$ satisfies the region constraints $\Omega$ under
-which an expression was typed
-\item local value consistency, written $\localconsist{L}{\Gamma}$, guarantees local values in $L$ have types consistent with the environment under which the expression was typed
-\item store consistency, written $\storeconsist{S}{H}$, guarantees every location in the store $S$ contains a value consistent with the location's type in the heap typing $H$
+\item mapping consistency, written $\mapconsist{\Omega}$, guarantees a region mapping $M$ satisfies the region constraints $\Omega$% under which an expression was typed
+\item local value consistency, written $\localconsist{L}{\Gamma}$, guarantees local values in $L$ have types consistent with the environment $\Gamma$
+%under which the expression was typed
+\item store consistency, written $\storeconsist{S}{H}$, guarantees locations in $S$ have values consistent with heap typing $H$
 \end{itemize}
 
 \noindent Two additional properties are proven for each subexpression:
@@ -1186,7 +1203,7 @@ which an expression was typed
 \item result value consistency, written $\valueconsist{v}{T}$, guarantees any evaluation of an expression yields a value of the right type
 \item memory trace consistency, written $\traceconsist{E}$, guarantees that all writes and reductions use values of the right types
 \end{itemize}
-Figure~\ref{fig:constprop} gives the precise definition of these properties.
+Figure~\ref{fig:constprop} defines these properties.
 
 \begin{figure*}
 \centering{\footnotesize
@@ -1235,13 +1252,13 @@ then
 $\valueconsist{v}{T}$, $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
 \end{thm}
 
-The proof, which can be found in \cite{LegionTypes12}, is lengthy but
-straightforward due to the way in which the operational semantics were
-constructed.  It proceeds by standard induction on the structure of the
-derivation in the operational semantics, at each step showing that
-subexpressions have consistent starting environments and that the
-value and trace consistency of the subexpressions is sufficient to prove
-the consistency of the parent expression.
+The proof, which can be found in the submitted appendix, is lengthy but
+straightforward due to the compositional operational semantics.
+%It proceeds by standard induction on the structure of the
+%derivation in the operational semantics, at each step showing that
+%subexpressions have consistent starting environments and that the
+%value and trace consistency of the subexpressions is sufficient to prove
+%the consistency of the parent expression.
 
 \texcomment{
 We spare the reader the lengthy proof, which can be found in
