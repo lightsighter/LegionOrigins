@@ -45,23 +45,23 @@ limit expressivity but incurs runtime overhead and centralized control logic tha
 difficult to scale to distributed memory machines;  examples 
 include transactional memory \cite{Harris05} and thread-level speculation \cite{Steffan00}.
 
-Our own experience writing high-performance 
+Our own experience writing high-performance applications
 using the current industry standard mix of MPI, shared-memory
 threads, and CUDA, has taught us that a
 single, static data partitioning is insufficient.  In practice, the
 best way to partition data is often a function of the data
 itself---i.e., the partitions must be dynamically computed.
 Furthermore, applications often need multiple, simultaneous partitions of
-the same data, providing different views on to that data.
+the same data, each providing different views on to that data.
 
-In this work, we present the design of Legion \cite{Legion12},
+In this work, we present the static and dynamic semantics of Legion \cite{Legion12},
 a parallel programming model that efficiently supports multiple, dynamic partitions
 of data. Legion's {\em logical regions} are an
 abstraction capturing {\em locality} (data that will be used together,
 and therefore should be colocated) and {\em independence} (disjoint data
 that may be operated on in parallel).  Logical regions have 
-properties that allow programmers to dynamically communicate information
-about the structure of program data to Legion:
+properties that allow programmers to communicate information
+about the structure of program data to the Legion implementation:
 \begin{itemize}
 \item  logical regions are first-class values in Legion
 and may be dynamically allocated and stored in data structures;
@@ -71,31 +71,29 @@ the programmer can express arbitrary partitions of regions;
 
 \item  a logical region may be dynamically partitioned in multiple different ways;
 
-\item programmers give logical regions {\em privilege} and {\em coherence} properties that
-describe how the region's data may be used by computations.
+\item {\em privilege} and {\em coherence} properties that
+describe how a logical region's data may be used by computations.
 \end{itemize}
 
-While data in Legion is organized in a hierarchy of logical region forests, 
+While data in Legion is organized in a hierarchy of logical regions,
 computation is organized in a hierarchy of tasks.  Logical regions and tasks interact
-through a system of privileges specifying operations that a task
+through a system of {\em privileges} specifying operations that a task
 can perform on a logical region argument (read, write, or reduce).  
 Tasks can only access logical regions for which they 
-possess privileges.  Tasks acquire privileges from their calling task
-or by creating new logical regions.  A key restriction is that 
-a sub-task can only be passed a subset of the privileges of its parent task.  
+possess privileges.  
+%Tasks acquire privileges from their calling task
+%or by creating new logical regions.  A key restriction is that 
+%a sub-task can only be passed a subset of the privileges of its parent task.  
 
 Through multiple partitions of a logical region, a given datum may
 belong to multiple different regions.  Thus, allowing multiple
 simultaneous partitions of the same data introduces
-aliasing---distinct regions may have overlapping data.\footnote{This
-  is why we use the term {\em logical} regions: language-level regions
+{\em aliasing}---distinct regions may have overlapping data.\footnote{Thus
+  the term {\em logical} regions: language-level regions
   name sets of data but do not imply a physical layout or placement in
   the memory hierarchy. A separate system of {\em physical regions} at
   runtime holds copies of data in the language-level logical regions
-  \cite{Legion12}.}  We believe permitting very flexible aliasing is
-necessary, but it is also presents a major challenge. For example, to
-detect that tasks can execute in parallel it is sufficient to prove
-that they work on disjoint data.
+  \cite{Legion12}.}
 
 Legion also provides {\em coherence} modes for regions, which allows
 programmers to permit parallel execution even in cases where tasks in
@@ -105,48 +103,49 @@ order, the default), {\em atomically} with respect to each other, or even
 {\em simultaneously} if the programmer uses their own synchronization mechanisms
 to control access (e.g., locks).
 
-To efficiently enforce restrictions that guarantee the safety and
-correctness of program executions for uses of first-class regions,
-their privilege and coherence properties, and arbitrary region
-aliasing, the Legion runtime relies on a combination of static and
+To efficiently guarantee the safety and
+correctness of programs using first-class regions,
+privilege and coherence properties, and arbitrary region
+aliasing, Legion relies on a combination of static and
 dynamic checks.  A key theme that runs through the design is that very
-hard static analysis problems (e.g., alias analysis) are often both easy and
+hard static analysis problems (specifically, alias analysis) are often both easy and
 inexpensive if they can be done dynamically at the granularity of regions instead of individual
-heap locations, while checks that must be done on individual heap locations are only
+heap locations, while checks that must be done on individual values are only
 cheap if done statically.  Explicating and evaluating the design of Legion's
-static and dynamic semantics and its implications is the main topic of this paper,
+static and dynamic semantics and its implications are the topics of this paper,
 which we present as a series of contributions:
 \begin{itemize}
 \item We present a type system for {\em Core Legion} programs that statically
-  verifies the safety of individual pointer references and region
+  verifies the safety of individual pointers and region
   privileges at task call boundaries (Section~\ref{subsec:coretypes}).
-  A subtle issue arises in checking privileges when regions are
-  stored in and later retrieved from heap data structures.  The type
-  system provides enough static information that the Legion runtime
-  can leverage its dynamic information about region aliasing to
-  perform dynamic privelege checks guaranteeing safety.
+%  A subtle issue arises in checking privileges when regions are
+%  stored in and later retrieved from heap data structures.  The type
+%  system provides enough static information that the Legion runtime
+%  can leverage its dynamic information about region aliasing to
+%  perform dynamic privelege checks guaranteeing safety.
 
 \item We present a parallel operational semantics for Core Legion that
   may be of independent interest.  This semantics is compositional,
   hierarchical, and asynchronous, reflecting the way such programs
-  actually execute on the hardware.  However, the semantics also
-  directly models conflicting memory operations between tasks in cases of relaxed
+  actually execute on the hardware.  The semantics also
+  models conflicting memory operations between tasks in cases of relaxed
   coherence, making explicit the boundary between deterministic and
   possible non-deterministic behavior (Section~\ref{subsec:opsemantics}).
 
-\item We prove the soundness of Legion's privelege system (Section~\ref{sec:soundness}).
+\item We prove the soundness of Legion's static type and privelege system (Section~\ref{sec:soundness}).
 
 
-\item We use the soundness of privileges to prove the soundness of
+\item We use soundness of the type system to prove the soundness of
   Legion's region coherence modes (Section~\ref{sec:coherence}).
 
 
-\item We show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
+\item Again using the sounds of the type system,  we show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
 $e_1'$ of $e_1$ and $e_2'$ of $e_2$ are also non-interfering (Section~\ref{sec:scheduling}).  
 This result is the basis
 for a hierarchical, distributed scheduler in the Legion implementation which is crucial for high performance
-on the target class of machines;  any form of centralized scheduling would be a bottleneck because of the
-large communication latencies in the target class of machines.
+on the target class of machines.
+%  any form of centralized scheduling would be a bottleneck because of the
+%large communication latencies in the target class of machines.
 %; on the target class of machines, any centralized
 %scheduler would be a serious bottleneck.
 
@@ -154,7 +153,7 @@ large communication latencies in the target class of machines.
   real-world applications, we show that dynamic region pointer checks
   would be expensive, justifying checking this aspect of the type
   system statically.  We also show that the cost of region aliasing
-  checks is low, showing that a much more expressive and dynamic
+  checks is low, showing that an expressive and dynamic
   language with aliasing is not incompatible with both high
   performance and safety (Section~\ref{sec:evaluation}).
 
