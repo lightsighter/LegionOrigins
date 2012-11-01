@@ -754,8 +754,8 @@ be scheduled in a hierarchical fashion.  We therefore require a formulation of o
 that is both parallel and hierarchical.  Because Legion allows constrained nondeterminism (in the order in which
 reductions are applied and in cases of relaxed coherence with aliasing), it is possible for the heap accesses performed by
 one expression's evaluation to observe interference from other concurrent evaluations.  The traditional way of
-handling this in operational semantics \cite{XYZ} is to use a top-down approach with small-step semantics and
-a global view of all
+handling this in operational semantics (\cite{CML} is a well-known example) is to use a top-down approach with
+small-step semantics and a global view of all
 partially-evaluated expressions.  Rules are specified for which expression(s) are valid choices for the next small
 step of execution.  This approach has the benefit of being constructive but the implicit global scheduler is
 difficult to map into a hierarchical one in which decisions must necessarily be made with limited information.
