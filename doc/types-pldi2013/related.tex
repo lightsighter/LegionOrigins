@@ -46,13 +46,13 @@ There have been many type and effect systems for ownership types
 \cite{Boyapati03} including ones that leverage nested regions for describing
 relationships (e.g., \cite{Clarke02}).  However, ownership type and effect systems
 are primarily used for reasoning about determinism in object oriented languages and
-don't capture the range of disjointness properties that can be specified in Legion.
+don't capture the range of disjointness properties in Legion.
 Reasoning about disjoint data is the strong suit of separation logic \cite{Reynolds02}.  
 %Concurrent separation logic\cite{Brookes04} has been 
 %used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provide 
 %a mechanism for reasoning about independence\cite{Hayman06}.
-While we have borrowed some separation logic notation, we ultimately chose to use a 
-privileges system as our primary formalism because separation logic does not easily
+While we have borrowed some separation logic notation, we chose to use a 
+privileges system because separation logic does not easily
 support reasoning about the interleaving of operations to aliased regions of memory.
 
 % I'm also not sure how much detail to go into here.  DPJ spends a lot of time

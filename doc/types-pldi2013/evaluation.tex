@@ -10,17 +10,17 @@ and performance  (does the performance increase from relaxed coherence modes
 warrant the increased semantic complexity---Section~\ref{subsec:relaxedperf}).
 %Our evaluation uses a prototype implementation of the Legion language and programming model.
 Our prototype implementation has two components: a type checker
-for the language introduced in Section~\ref{sec:legioncore} and a C++ runtime library
+for the language of Section~\ref{sec:legioncore} and a C++ runtime library
 for executing programs written in the Legion programming model.  All experiments
-are conducted on the Keeneland supercomputer\cite{Keeneland}.  Each node of the Keeneland
-machine consists of two Xeon 5660 CPUs, three Tesla M2090 GPUs, and 24 GB of DRAM.  Nodes
+are conducted on the Keeneland supercomputer\cite{Keeneland}.  Each node of Keeneland
+consists of two Xeon 5660 CPUs, three Tesla M2090 GPUs, and 24 GB of DRAM.  Nodes
 are connected by a QDR Infiniband interconnect.
 
 \subsection{Expressivity}
 \label{subsec:expressivity}
 We evaluate Legion on three real-world applications.  To qualitatively gauge the 
-expressivity of the Legion type system, we introduce these applications
-by describing features of the Legion type system used in their implementations.
+expressivity of Legion, we introduce these applications
+by describing features used in their implementations.
 The Circuit example was already covered in detail in Section~\ref{sec:example}.
 
 %\subsubsection{Circuit Simulation}
@@ -68,8 +68,8 @@ randomly placed on the surface.
 Every level of refinement uses a separate region, which is partitioned several ways to support multiple views of
 the cells.  One partitioning separates cells into pieces that can be updated in
 parallel.  Additional partitions are created for viewing data from coarser and finer levels of
-the simulation.  Two types of region relationships are created: one for describing the pieces at 
-each level of refinement, and another for describing the relationship between pieces at different
+the simulation.  Two types of region relationships are created: one describes pieces at 
+each level of refinement, and another describes relationships between pieces at different
 levels of refinement.  
 %These region relationships capture both intra- and inter-level disjointness information.  
 The dynamic nature of AMR requires that regions be created and partitioned at runtime.  
@@ -82,9 +82,12 @@ The dynamic nature of AMR requires that regions be created and partitioned at ru
 %expressing real applications with both regular (Fluid, AMR) and 
 %irregular (Circuit) pointer data structures.
 
-Being able to dynamically create and partition regions at runtime is crucial to Legion's
-ability to handle applications that make runtime decisions about data organization (AMR).  Legion
-is able to capture both allocate-then-partition (Circuit) and partition-then-allocate (Fluid) algorithms. 
+Dynamically creating and partitioning regions at runtime is crucial to Legion's
+ability to handle applications that make runtime decisions about data organization (AMR).  
+% FIXME
+% I've deemphasized the point about allocate-then-partition vs. partition-then-allocate.
+% If we want to put it back in it needs to be go in multiple places, not just here.
+%Legion is able to capture both allocate-then-partition (Circuit) and partition-then-allocate (Fluid) algorithms. 
 Having multiple partitions of regions is necessary for describing the many ways 
 that data can be accessed (Circuit, AMR).  All the types of privileges and coherence 
 are needed in some application;  region relationships
@@ -99,9 +102,9 @@ sufficiently expressive to handle real-world applications.
 
 \subsection{Checking Overhead}
 \label{subsec:overhead}
-Our first Legion implementation consisted of a C++ library of Legion primitives
+The first Legion implementation consisted of a C++ library of Legion primitives
 \cite{Legion12} with no checking of region memory accesses.  
-When testing applications we frequently encountered memory corruption due to
+When testing applications on this system we frequently encountered memory corruption due to
 illegal region accesses caused by application bugs.
 In many cases, this corruption occurred between nodes in the cluster or on 
 GPUs, environments for which debugging tools are primitive at best.
@@ -109,11 +112,11 @@ GPUs, environments for which debugging tools are primitive at best.
 %for observing execution on different nodes simultaneously or using {\tt printf} for debugging on
 %GPUs.  
 To locate the application bugs causing these illegal accesses, we initially added 
-dynamic checks on  all region accesses for both CPUs and GPUs.  
-Unsurprisingly, these checks added considerable runtime overhead.  
+dynamic checks on  all region accesses for both CPUs and GPUs which  
+added considerable runtime overhead.  
 To preserve the benefit of checking every access, but eliminate the cost of dynamic checks we implemented the type, privilege, and coherence checker we have described. 
-We then rewrote all of our applications in this language and used our type checker to verify them.  Once the applications type checked we were
-able to safely elide all the dynamic region access checks.
+We then rewrote the applications in this language and type checked them, at which point the
+dynamic region access checks could be safely elided.
 
 %\begin{figure}
 %\subfigure[48 Piece Data Set]
@@ -156,8 +159,8 @@ how overhead is affected by changing problem size (weak scaling).  For cases whe
 is an existing implementation to compare against we have included a dotted line indicating
 baseline performance.  In a few cases (Figures~\ref{fig:fluid_overhead} and 
 \ref{fig:amr4096}) checking overhead is the difference
-between better and worse performance than the baseline.  For an explanation of overall
-performance relative to the baseline implementations see \cite{Legion12}.
+between better and worse performance than the baseline.  The overall
+performance relative to the baseline implementations is discussed in \cite{Legion12}.
 
 \begin{figure}
 \begin{center}
