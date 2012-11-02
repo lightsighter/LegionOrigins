@@ -32,33 +32,36 @@ for supporting the management of parallelism and the movement of data.
 %about the structure of program data.
 
 Previous work has explored two approaches for describing the organization of data
-in distributed memory parallel programs.  One class of work disallows
-potential data aliasing to enable fully static analyses with no
-runtime overhead, but limited expressivity. Two recent examples, 
-Sequoia \cite{Fatahalian06} and 
+in distributed memory parallel programs.
+
+One class of work uses fully static analyses with no runtime overhead, but must
+disallow potential data aliasing to make the analyis tractable, limiting expressivity.
+Two recent examples, Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a 
-mechanism to statically partition the heap into a tree of collections 
-of data.  The two designs are different in many aspects, but agree that there is
-a single tree-shaped partitioning of data that must be fully checked statically 
+mechanism to statically partition the heap.
+% into a tree of collections of data.
+The two designs are different in many aspects, but agree that there is
+a single tree-shaped partitioning of data that must be checked statically 
 (see Section~\ref{sec:related}).  The second approach permits potential data
-aliasing and uses fully dynamic analyses of program data that do not 
-limit expressivity.  However, this approach incurs significant runtime overhead and requires 
+aliasing, allowing greater expressivity, but must fully dynamic analyses of
+program execution to detect aliasing situations and guarantee correct results.
+However, this approach incurs significant runtime overhead and requires 
 centralized control logic that is difficult to scale to distributed 
 memory machines; examples include transactional memory \cite{Harris05} 
 and thread-level speculation \cite{Steffan00}.
 
 Our own experience writing high-performance applications
 using the current industry standard mix of MPI, shared-memory
-threads, and CUDA, has taught us that a
-single, static data partitioning is insufficient.  In practice, the
+threads, and CUDA has taught us that a
+single, static data partitioning is often insufficient.  In many cases, the
 best way to partition data is often a function of the data
 itself---i.e., the partitions must be dynamically computed.
 Furthermore, applications often need multiple, simultaneous partitions of
 the same data, each providing different views on to that data.  
 
 In this work, we present the static and dynamic semantics of Legion \cite{Legion12},
-a parallel programming model that efficiently reason about the data
-aliasing introduced by multiple, dynamic data partitions. 
+a parallel programming model that supports multiple, dynamic data partitions and is
+able to efficiently reason about potential aliasing.
 Legion's {\em logical regions} are an abstraction capturing {\em locality} 
 (data that will be used together, and therefore should be colocated) 
 and {\em independence} (disjoint data that may be operated on in parallel).  
@@ -69,29 +72,31 @@ about the structure of program data to the Legion implementation:
 and may be dynamically allocated and stored in data structures;
 
 \item logical regions can be dynamically {\em partitioned} into {\em subregions}; 
-the programmer can express arbitrary partitions of regions;
-
-\item  a logical region may be dynamically partitioned in multiple different ways;
-
-\item {\em privilege} and {\em coherence} properties that
-describe how a logical region's data may be used by computations (explained below).
-\end{itemize}
-
-Both dynamically computed partitions
-and simultaneous partitions of the same data introduce the possibility
-of {\em aliasing}---distinct regions may have overlapping data.\footnote{Thus
+the programmer can express arbitrary partitions of regions
+\footnote{Thus
   the term {\em logical} regions: language-level regions
   name sets of data but do not imply a physical layout or placement in
   the memory hierarchy. A separate system of {\em physical regions} at
   runtime holds copies of data in the language-level logical regions
-  \cite{Legion12}.}
+  \cite{Legion12}.};
+
+\item  a logical region may be dynamically partitioned in multiple different ways.
+Subregions from multiple partitions may include the same data, introducing aliasing.
+
+%\item {\em privilege} and {\em coherence} properties that
+%describe how a logical region's data may be used by computations (explained below).
+\end{itemize}
+
+%Both dynamically computed partitions
+%and simultaneous partitions of the same data introduce the possibility
+%of {\em aliasing}---distinct regions may have overlapping data.
 
 While data in Legion is organized in a hierarchy of logical regions,
 computation is organized in a hierarchy of tasks.  Logical regions and tasks interact
-through a system of {\em privileges} specifying operations that a task
-can perform on a logical region argument (read, write, or reduce).  
-Tasks can only access logical regions for which they 
-possess privileges.  
+through a system of {\em privileges} that specify which operations (read, write, or reduce)
+a task (or any of its subtasks) may perform on each logical region argument.  
+%Tasks can only access logical regions for which they 
+%possess privileges.  
 %Tasks acquire privileges from their calling task
 %or by creating new logical regions.  A key restriction is that 
 %a sub-task can only be passed a subset of the privileges of its parent task.  
@@ -100,13 +105,13 @@ possess privileges.
 %belong to multiple different regions.  
 
 To support additional parallelism in the presence of aliased data,
-Legion also provides {\em coherence} modes for regions, which allows
-programmers to permit relaxed models execution even in cases where tasks in
-fact do access the same data.  The programmer may
+Legion provides {\em coherence} modes at the granularity of regions, which allows
+relaxed constraints on the execution order of tasks, even in case where they
+do access the same region.  The programmer may
 specify that tasks conflicting on a region  must execute serially (in program
 order, the default), {\em atomically} with respect to each other, or even
-{\em simultaneously} if the programmer uses their own synchronization mechanisms
-to control access (e.g., locks).
+{\em simultaneously} if the application has alternative methods for ensuring
+determinism or can tolerate non-deterministic behavior in that region..
 
 To efficiently guarantee the safety and
 correctness of programs using first-class regions,
@@ -144,7 +149,7 @@ which we present as a series of contributions:
   Legion's region coherence modes (Section~\ref{sec:coherence}).
 
 
-\item Again using the sounds of the type system,  we show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
+\item Again using the soundness of the type system,  we show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
 $e_1'$ of $e_1$ and $e_2'$ of $e_2$ are also non-interfering (Section~\ref{sec:scheduling}).  
 This result is the basis
 for a hierarchical, distributed scheduler in the Legion implementation which is crucial for high performance
@@ -154,7 +159,7 @@ on the target class of machines.
 %; on the target class of machines, any centralized
 %scheduler would be a serious bottleneck.
 
-\item We give experimental evidence for the Legion design.  On three
+\item We give experimental evidence that supports the Legion design choices.  On three
   real-world applications, we show that dynamic region pointer checks
   would be expensive, justifying checking this aspect of the type
   system statically.  We also show that the cost of region aliasing

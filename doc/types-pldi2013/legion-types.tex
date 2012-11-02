@@ -42,14 +42,14 @@
 \maketitle
 
 \begin{abstract}
-Many distributed-memory parallel applications dynamically partition 
-data in a way that makes static reasoning of data organization difficult 
-due to potential data aliasing. Current language designs either 
-disallow aliasing to enable static analyses of program data, 
-or have permitted aliasing at the cost of expensive dynamic analyses.
+Applications written for distributed-memory architectures must
+partition their data in order to enable parallel execution.
+Current language designs either analyze the partitioning of data
+statically, disallowing any aliasing of data, or use expensive dynamic
+checks to detect aliasing and ensure correct execution.
 We describe Legion, a programming system that relies on a hybrid system
-of static and dynamic checks to support reasoning about the aliasing introduced
-by dynamic data partitions with minimal overhead.  We describe the novel aspects of the Legion design, 
+of static and dynamic analyses to support reasoning about potential aliasing introduced
+by dynamic data partitions with minimal overhead.  We present the novel aspects of the Legion design, 
 prove the soundness of the Legion type system, and show Legion type checking 
 improves performance by up to 71\% by eliding provably safe memory checks.  
 Furthermore, we show how the language design and type safety
