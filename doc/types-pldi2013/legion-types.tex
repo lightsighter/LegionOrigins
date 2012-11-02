@@ -43,17 +43,19 @@
 
 \begin{abstract}
 Many distributed-memory parallel applications dynamically partition 
-data, but current language designs either 
-require fully static partitioning or rely on expensive dynamic checks.
-We describe Legion, a programming system with a combination
-of language features and static and dynamic checks to support 
-dynamic data partitions with minimal overhead.
-We describe the novel aspects of the Legion design, prove the soundness of the Legion type system,
- and show Legion type checking improves performance by up to 71\% by eliding provably
-safe memory checks.  Furthermore, we show how the language design and type safety
+data in a way that makes static reasoning of data organization difficult 
+due to potential data aliasing. Current language designs either 
+disallow aliasing to enable static analyses of program data, 
+or have permitted aliasing at the cost of expensive dynamic analyses.
+We describe Legion, a programming system that relies on a hybrid system
+of static and dynamic checks to support reasoning about the aliasing introduced
+by dynamic data partitions with minimal overhead.  We describe the novel aspects of the Legion design, 
+prove the soundness of the Legion type system, and show Legion type checking 
+improves performance by up to 71\% by eliding provably safe memory checks.  
+Furthermore, we show how the language design and type safety
 enables a hierarchical, distributed runtime scheduling algorithm, and how
-a system of data coherence annotations improves expressivity without compromising
-soundness. We report results for three real-world applications running
+a system of data coherence annotations improves performance in the presence
+of aliased data.  We report results for three real-world applications running
 on distributed memory machines, achieving up to 62.5X speedup on 96 GPUs 
 on the Keeneland supercomputer.
 %Legion is a programming model that introduces
