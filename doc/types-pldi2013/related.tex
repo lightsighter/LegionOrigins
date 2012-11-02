@@ -11,17 +11,17 @@ aware\cite{Bocchino09}.  While there are similarities between DPJ's effects and 
 there are differences stemming from DPJ's static approach.
 Regions in Legion are first-class and can be created, partitioned, packed, and unpacked 
 dynamically, allowing programmers to compute data organization at runtime; like Sequoia, DPJ
-partition schemes must be statically decided.  Legion allows 
+partition schemes are static.  Legion allows 
 programmers to create multiple partitions of the same region to give different 
 views onto the same data, which is not possible in DPJ.  DPJ supports both
 exclusive and atomic tasks which are similar to Legion's coherence modes, but only
 allows specification at the coarser granularity of tasks and not individual regions.
-DPJ does not support any modes analogous to simultaneous coherence.
+%DPJ does not support any modes analogous to simultaneous coherence.
 %DPJ only supports the 
 %equivalent to Legion's exclusive and atomic coherence modes \cite{Bocchino11} 
 %while Legion provides safe execution even in simultaneous environments.  
-There is also a difference in emphasis: DPJ requires shared memory, while Legion 
-is designed for distributed heterogeneous machines.
+%There is also a difference in emphasis: DPJ requires shared memory, while Legion 
+%is designed for distributed heterogeneous machines.
 
 Chapel \cite{Chamberlain:Chapel} and X10 \cite{X1005} also provide some Legion-like facilities.
 Chapel's domains and X10's places provide the programmer with a 
@@ -44,14 +44,13 @@ Our system is more closely affiliated with dynamic region systems used for expre
 
 There have been many type and effect systems for ownership types
 \cite{Boyapati03} including ones that leverage nested regions for describing
-relationships \cite{Clarke02,Cameron07}.  However, ownership type and effect systems
+relationships (e.g., \cite{Clarke02}).  However, ownership type and effect systems
 are primarily used for reasoning about determinism in object oriented languages and
 don't capture the range of disjointness properties that can be specified in Legion.
-
-Reasoning about disjoint heap data is the strong suit of separation logic \cite{Reynolds02}.  
-Concurrent separation logic\cite{Brookes04} has been 
-used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provide 
-a mechanism for reasoning about independence\cite{Hayman06}.
+Reasoning about disjoint data is the strong suit of separation logic \cite{Reynolds02}.  
+%Concurrent separation logic\cite{Brookes04} has been 
+%used both to parallelize sequential programs\cite{Raza09,Gotsman07} and to provide 
+%a mechanism for reasoning about independence\cite{Hayman06}.
 While we have borrowed some separation logic notation, we ultimately chose to use a 
 privileges system as our primary formalism because separation logic does not easily
 support reasoning about the interleaving of operations to aliased regions of memory.

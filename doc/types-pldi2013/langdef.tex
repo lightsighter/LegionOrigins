@@ -1693,16 +1693,23 @@ $\Phi_i \nonint[M]^{AS} \Phi_j$.
 \section{Hierarchical Scheduling}
 \label{sec:scheduling}
 
-The enforcement of a (locally) valid interleaving at every step in the operational semantics
-captures the hierarchical nature of the scheduler used by the Legion runtime.  As the cost of
-a scheduling decision is quadratic in the number of function calls (more precisely, the number of 
-privileges for those calls), it should be clear that a hierarchical scheduling algorithm will
-be vastly more efficient than a global algorithm that must consider the privileges of every
-concurrently executing expression.
-However, a scheduling algorithm that makes decisions hierarchically must do so with limited
-information, and must respect all required scheduling dependencies while ideally imposing as
-few extra dependencies as possible.  The following theorem forms the basis of the 
-Legion scheduler.
+Because testing non-interference of tasks is a pairwise operation, scheduling $n$ tasks can require ${\cal O}(n^2)$
+tests.  Thus, a scheduler that must globally consider all pairs of tasks will be impractical for large machines 
+and large numbers of tasks.  The following theorem, however, shows that Legion programs enjoy a locality property that
+limits the scope of needed non-interference tests.
+
+
+
+%The enforcement of a (locally) valid interleaving at every step in the operational semantics
+%captures the hierarchical nature of the scheduler used by the Legion runtime.  As the cost of
+%a scheduling decision is quadratic in the number of function calls (more precisely, the number of 
+%privileges for those calls), it should be clear that a hierarchical scheduling algorithm will
+%be vastly more efficient than a global algorithm that must consider the privileges of every
+%concurrently executing expression.
+%However, a scheduling algorithm that makes decisions hierarchically must do so with limited
+%information, and must respect all required scheduling dependencies while ideally imposing as
+%few extra dependencies as possible.  The following theorem forms the basis of the 
+%Legion scheduler.
 
 \texcomment{
 Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
@@ -1718,10 +1725,10 @@ Lemma~\ref{lem:noninteffects}).
 \begin{thm}
 \label{thm:hiersched}
 \rm
-Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
+Let $e_1$ and $e_2$ be well-typed expressions using privileges $\Phi_1$ and
 $\Phi_2$ respectively, where $\Phi_1 \nonint[M] \Phi_2$.  Let $e_3$ be a subexpression of $e_1$ and $e_4$ be a 
 subexpression of $e_2$.  Any memory traces $E_3$ of $e_3$ and $E_4$ of $e_4$ resulting from evaluation of
-$e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), must be
+$e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$) are 
 non-interfering.
 \end{thm}
 \texcomment{
@@ -1749,21 +1756,27 @@ guarantees that there is no communication required between $e_1$ and $e_2$
 to perform non-interference tests between their sub-tasks.  Therefore,
 the runtime requires no communication for scheduling.
 
-Although determining that $e_1$
-and $e_2$ are non-interfering guarantees $e_3$ and $e_4$ are
-non-interfering, the converse is not true.  It is possible for $e_1$
-and $e_2$ to be judged to be interfering and be executed sequentially 
-even when the subexpressions are non-interfering.  This loss of
-precision can impact performance, and did in a few instances in our
-experiments.  
+%
+% FIXME
+% This is a nice and useful discussion, but also not on the main track and good candidate for space savings.
+% Marking this with a FIXME so we can reconsider if we like.
+%
+% 
+%Although determining that $e_1$
+%and $e_2$ are non-interfering guarantees $e_3$ and $e_4$ are
+%non-interfering, the converse is not true.  It is possible for $e_1$
+%and $e_2$ to be judged to be interfering and be executed sequentially 
+%even when the subexpressions are non-interfering.  This loss of
+%precision can impact performance, and did in a few instances in our
+%experiments.  
 %When the performance impact is significant, two options
 %exist to improve matters.  
-In cases where $e_1$ and $e_2$ are in fact
-non-interfering, region partitions can be further refined to make the
-disjointness visible in the privileges.  Alternately, the code can be
-refactored to lift the subexpressions up to the same level, allowing
-the dynamic test based on the region mapping to infer non-interference
-in more cases.  
+%In cases where $e_1$ and $e_2$ are in fact
+%non-interfering, region partitions can be further refined to make the
+%disjointness visible in the privileges.  Alternately, the code can be
+%refactored to lift the subexpressions up to the same level, allowing
+%the dynamic test based on the region mapping to infer non-interference
+%in more cases.  
 %Although this can increase the overhead of scheduling
 %decisions, judicious use of this technique in practice has not shown
 %any measurable performance degradation.

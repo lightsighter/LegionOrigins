@@ -2,18 +2,16 @@
 \section{Evaluation}
 \label{sec:evaluation}
 
-We evaluate the Legion type system on four criteria:
-\begin{itemize}
-\item Expressivity: Can real applications be written (Section~\ref{subsec:expressivity})?
-\item Overhead: Does it reduce dynamic checking costs (Section~\ref{subsec:overhead})?
-\item Scalability: Can it enable hierarchical scheduling (Section~\ref{subsec:scalability})?
-\item Performance: Does the performance increase from relaxed coherence modes 
-warrant the increased complexity in the operational semantics (Section~\ref{subsec:relaxedperf})?
-\end{itemize}
+We evaluate the design of Legion's static and dynamic semantics on four criteria:
+expressivity (can real applications be written---Section~\ref{subsec:expressivity}),
+overhead  (what are the dynamic checking costs---Section~\ref{subsec:overhead}),
+scalability (can it enable hierarchical scheduling---Section~\ref{subsec:scalability}),
+and performance  (does the performance increase from relaxed coherence modes 
+warrant the increased semantic complexity---Section~\ref{subsec:relaxedperf}).
 %Our evaluation uses a prototype implementation of the Legion language and programming model.
 Our prototype implementation has two components: a type checker
 for the language introduced in Section~\ref{sec:legioncore} and a C++ runtime library
-for executing programs written in the Legion programming model\cite{Legion12}.  All experiments
+for executing programs written in the Legion programming model.  All experiments
 are conducted on the Keeneland supercomputer\cite{Keeneland}.  Each node of the Keeneland
 machine consists of two Xeon 5660 CPUs, three Tesla M2090 GPUs, and 24 GB of DRAM.  Nodes
 are connected by a QDR Infiniband interconnect.
@@ -42,20 +40,23 @@ The Circuit example was already covered in detail in Section~\ref{sec:example}.
 %from other pieces.  The tasks for the three phases of the computation use different combinations of
 %read, write, and reduce privileges as well as exclusive and simultaneous coherence.
 
-\subsubsection{Fluid Simulation}
-\label{subsec:fluid}
+%\subsubsection{Fluid Simulation}
+%\label{subsec:fluid}
 Fluid is based on the {\tt fluidanimate} benchmark from the PARSEC 
 suite\cite{bienia11benchmarking}.  Fluid simulates the flow of an incompressible fluid
 using particles that move within a regular grid of cells.  To perform operations in 
 parallel the array of cells is partitioned.  Unlike
 Circuit, Fluid creates and partitions regions before
-allocating cells in them (i.e., partition-then-allocate).  Another difference is that Fluid
+allocating cells in them. 
+%(i.e., partition-then-allocate).  
+Another difference is that Fluid
 maintains separate regions for ghost cells rather using multiple partitions of
 the regions containing shared data.  Region relationships are used for remembering
 which regions are required for each grid.
 
-\subsubsection{Adaptive Mesh Refinement}
-\label{subsec:amr}
+%\subsubsection{Adaptive Mesh Refinement}
+%\label{subsec:amr}
+
 The third application is a Legion port of an adaptive mesh refinement (AMR) benchmark 
 from BoxLib \cite{BoxLib}.  The algorithm solves the two
 dimensional heat diffusion equation on a grid of cells using three levels of refinement with sub-refinements
@@ -80,16 +81,18 @@ The dynamic nature of AMR requires that regions be created and partitioned at ru
 %These applications demonstrate Legion is capable of 
 %expressing real applications with both regular (Fluid, AMR) and 
 %irregular (Circuit) pointer data structures.
+
 Being able to dynamically create and partition regions at runtime is crucial to Legion's
 ability to handle applications that make runtime decisions about data organization (AMR).  Legion
 is able to capture both allocate-then-partition (Circuit) and partition-then-allocate (Fluid) algorithms. 
 Having multiple partitions of regions is necessary for describing the many ways 
-that data can be accessed (Circuit, AMR).  All the types of privileges and coherence we have
-described are needed in different applications.  Region relationships
+that data can be accessed (Circuit, AMR).  All the types of privileges and coherence 
+are needed in some application;  region relationships
 are used in all applications.   Finally, all applications introduce aliasing of
 data through both multi-colorings or having multiple partitions.  Our implementations of
 these applications both type check and execute, proving that our type system is
-sufficiently expressive to handle real-world applications written in the Legion programming model.
+sufficiently expressive to handle real-world applications.
+% written in the Legion programming model.
 %, region relationships convey disjointness information.
 % despite
 %regions being a first-class feature that cannot be fully tracked statically.
