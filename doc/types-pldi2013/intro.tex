@@ -11,7 +11,8 @@ machines have elaborate features for describing parallelism, but
 few abstractions for describing the organization of data.  However, as 
 distributed memory machines increase in complexity,
 reasoning about the organization of program data will be imperative
-for supporting the management of parallelism and the movement of data.
+for supporting the management of parallelism and the movement of data
+through the memory hierarchy.
 
 %Consequently, the burden of managing
 %the correctness of parallel computations and movement of data
@@ -32,7 +33,7 @@ for supporting the management of parallelism and the movement of data.
 %about the structure of program data.
 
 Previous work has explored two approaches for describing the organization of data
-in distributed memory parallel programs.
+in distributed memory programs.
 One class of work uses fully static analyses with no runtime overhead, but 
 disallows potential data aliasing to make the analyis tractable, limiting expressivity.
 Two recent examples, Sequoia \cite{Fatahalian06} and 
@@ -43,7 +44,7 @@ The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that must be checked statically 
 (see Section~\ref{sec:related}).  The second approach permits potential data
 aliasing, allowing greater expressivity, but uses fully dynamic analyses of
-program execution to detect aliasing situations and guarantee correct results.
+program execution to detect data aliasing and guarantee correct results.
 This approach incurs significant runtime overhead and requires 
 centralized control logic that is difficult to scale to distributed 
 memory machines; examples include transactional memory \cite{Harris05} 
@@ -71,16 +72,16 @@ about the structure of program data to the Legion implementation:
 and may be dynamically allocated and stored in data structures;
 
 \item logical regions can be dynamically {\em partitioned} into {\em subregions}; 
-the programmer can express arbitrary partitions of regions
-\footnote{Thus
+the programmer can express arbitrary partitions of regions;
+
+\item  a logical region may be dynamically partitioned in multiple different ways;
+subregions from multiple partitions may include the same data, introducing 
+aliasing\footnote{Thus
   the term {\em logical} regions: language-level regions
   name sets of data but do not imply a physical layout or placement in
   the memory hierarchy. A separate system of {\em physical regions} at
   runtime holds copies of data in the language-level logical regions
-  \cite{Legion12}.};
-
-\item  a logical region may be dynamically partitioned in multiple different ways;
-subregions from multiple partitions may include the same data, introducing aliasing.
+  \cite{Legion12}.}.
 
 %\item {\em privilege} and {\em coherence} properties that
 %describe how a logical region's data may be used by computations (explained below).
@@ -104,7 +105,7 @@ a task (or any of its subtasks) may perform on each logical region argument.
 %belong to multiple different regions.  
 
 To support additional parallelism in the presence of aliased data,
-Legion provides {\em coherence} modes at the granularity of regions, which allows
+Legion provides {\em coherence} modes at the granularity of regions, which allow
 relaxed constraints on the execution order of tasks, even in case where they
 do access the same region.  The programmer may
 specify that tasks conflicting on a region  must execute serially (in program
