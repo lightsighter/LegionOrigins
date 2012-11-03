@@ -1514,7 +1514,7 @@ namespace LegionRuntime {
         //fprintf(stdout,"This is processor %d\n",proc.id);
         //fflush(stdout);
         // Check to see if there is an initialization task
-        if (is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end()))
+        if (task_table.find(Processor::TASK_ID_PROCESSOR_INIT) != task_table.end())
         {
           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_INIT];
           func(NULL, 0, proc);
@@ -1638,24 +1638,6 @@ namespace LegionRuntime {
           // Now we need to return since we no longer hold the lock
           return;
         }
-#if 0
-	// Check to see how many tasks there are
-	// If there are too few, invoke the scheduler
-        // If we've been told to shutdown, never invoke the scheduler
-        // Utility proc can't have an idle task
-	if (is_utility_proc && has_scheduler && idle_task_enabled && 
-            !scheduler_invoked && !shutdown)
-	{
-                // Mark that we're invoking the scheduler
-                scheduler_invoked = true;
-		PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
-                Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
-                scheduler(NULL, 0, proc);
-		// Return from the scheduler, so we can reevaluate status
-                scheduler_invoked = false;
-		return;
-	}
-#endif
 	if (ready_queue.empty())
 	{	
 		if (shutdown && permit_shutdown && waiting_queue.empty())
@@ -1671,7 +1653,7 @@ namespace LegionRuntime {
                         // to do even though we've already exited
                         PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
                         // Check to see if there is a shutdown method
-                        if (is_utility_proc && (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end()))
+                        if (task_table.find(Processor::TASK_ID_PROCESSOR_SHUTDOWN) != task_table.end())
                         {
                           // If there is, call the shutdown method before triggering
                           Processor::TaskFuncPtr func = task_table[Processor::TASK_ID_PROCESSOR_SHUTDOWN];

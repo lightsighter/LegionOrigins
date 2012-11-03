@@ -3547,15 +3547,18 @@ namespace LegionRuntime {
     void HighLevelRuntime::initialize_runtime(const void *args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      // Yay for in-place allocation
-      runtime_map[(p.id & 0xffff)] = new HighLevelRuntime(Machine::get_machine(), p);
+      // Only do this for utility processors
+      if (p.get_utility_processor() == p)
+        runtime_map[(p.id & 0xffff)] = new HighLevelRuntime(Machine::get_machine(), p);
     }
 
     //--------------------------------------------------------------------------------------------
     void HighLevelRuntime::shutdown_runtime(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      get_runtime(p)->HighLevelRuntime::~HighLevelRuntime();
+      // Only do this for utility processors
+      if (p.get_utility_processor() == p)
+        delete get_runtime(p);
     }
 
     //--------------------------------------------------------------------------------------------
