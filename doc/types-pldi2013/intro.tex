@@ -33,9 +33,8 @@ for supporting the management of parallelism and the movement of data.
 
 Previous work has explored two approaches for describing the organization of data
 in distributed memory parallel programs.
-
-One class of work uses fully static analyses with no runtime overhead, but must
-disallow potential data aliasing to make the analyis tractable, limiting expressivity.
+One class of work uses fully static analyses with no runtime overhead, but 
+disallows potential data aliasing to make the analyis tractable, limiting expressivity.
 Two recent examples, Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a 
 mechanism to statically partition the heap.
@@ -43,9 +42,9 @@ mechanism to statically partition the heap.
 The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that must be checked statically 
 (see Section~\ref{sec:related}).  The second approach permits potential data
-aliasing, allowing greater expressivity, but must fully dynamic analyses of
+aliasing, allowing greater expressivity, but uses fully dynamic analyses of
 program execution to detect aliasing situations and guarantee correct results.
-However, this approach incurs significant runtime overhead and requires 
+This approach incurs significant runtime overhead and requires 
 centralized control logic that is difficult to scale to distributed 
 memory machines; examples include transactional memory \cite{Harris05} 
 and thread-level speculation \cite{Steffan00}.
@@ -80,8 +79,8 @@ the programmer can express arbitrary partitions of regions
   runtime holds copies of data in the language-level logical regions
   \cite{Legion12}.};
 
-\item  a logical region may be dynamically partitioned in multiple different ways.
-Subregions from multiple partitions may include the same data, introducing aliasing.
+\item  a logical region may be dynamically partitioned in multiple different ways;
+subregions from multiple partitions may include the same data, introducing aliasing.
 
 %\item {\em privilege} and {\em coherence} properties that
 %describe how a logical region's data may be used by computations (explained below).
@@ -113,15 +112,27 @@ order, the default), {\em atomically} with respect to each other, or even
 {\em simultaneously} if the application has alternative methods for ensuring
 determinism or can tolerate non-deterministic behavior in that region..
 
-To efficiently guarantee the safety and
-correctness of programs using first-class regions,
-privilege and coherence properties in the presence of arbitrary region
-aliasing, Legion relies on a combination of static and
-dynamic checks.  A key theme that runs through the design is that 
-alias analysis is a very hard static analysis problem, but is both easy and
-inexpensive if they done dynamically at the granularity of regions instead of individual
-heap locations, while checks that must be done on individual values are only
-cheap if done statically.  Explicating and evaluating the design of Legion's
+To guarantee the safety and correctness of programs, Legion relies on
+a combination of static and dynamic analysis based on the privilege
+and coherence systems.  
+%To efficiently guarantee the safety and
+%correctness of programs using first-class regions,
+%privilege and coherence properties in the presence of arbitrary region
+%aliasing, Legion relies on a combination of static and
+%dynamic checks.  
+The critical feature in Legion that makes static analysis tractable
+and dynamic analysis efficient in the presence of potential aliasing is logical regions.
+Alias analysis is a very hard static analysis problem, but is both easy and
+inexpensive if done dynamically at the granulatiry of logical regions instead
+of individual memory locations; similarly
+checks on individual memory accesses are expensive if done dynamically, but
+cheap if done statically within the context of local logical region privileges.
+%A key theme that runs through the design is that 
+%alias analysis is a very hard static analysis problem, but is both easy and
+%inexpensive if done dynamically at the granularity of regions instead of individual
+%heap locations, while checks that must be done on individual values are only
+%cheap if done statically.  
+Explicating and evaluating the design of Legion's
 static and dynamic semantics and its implications are the topics of this paper,
 which we present as a series of contributions:
 \begin{itemize}
@@ -149,7 +160,8 @@ which we present as a series of contributions:
   Legion's region coherence modes (Section~\ref{sec:coherence}).
 
 
-\item Again using the soundness of the type system,  we show that if expressions $e_1$ and $e_2$ are {\em non-interfering} (can be executed in parallel), then subexpressions
+\item Again using the soundness of the type system,  we show that if expressions $e_1$ and $e_2$ 
+are {\em non-interfering} (can be executed in parallel), then subexpressions
 $e_1'$ of $e_1$ and $e_2'$ of $e_2$ are also non-interfering (Section~\ref{sec:scheduling}).  
 This result is the basis
 for a hierarchical, distributed scheduler in the Legion implementation which is crucial for high performance
@@ -283,6 +295,7 @@ on the target class of machines.
   stepnumber=1,
   escapechar=\#,
   keepspaces=true,
+  belowskip=-10pt,
   literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
   morekeywords={function,rr,int,float,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,multicoloring,color,newcolor,atomic,simultaneous},
   deletekeywords={float,head,min,max}
