@@ -33,12 +33,14 @@
 \begin{document}
 
 %\title{A Type System for Structured Aliasing in Parallel Programs}
-\title{Supporting Dynamic Data Partitioning in Parallel Programs}
+%\title{Supporting Dynamic Data Partitioning in Parallel Programs}
 %\title{Scalable and Safe Parallelism using Logical Regions}
-\authorinfo{Sean Treichler \and Michael Bauer \and Alex Aiken}{Stanford University}{\{sjt,mebauer,aiken\}@cs.stanford.edu}
+\title{Supporting Dynamic Data Partitioning in Distributed Memory Architectures with Logical Regions}
+%\authorinfo{Sean Treichler \and Michael Bauer \and Alex Aiken}{Stanford University}{\{sjt,mebauer,aiken\}@cs.stanford.edu}
 %\authorinfo{Sean Treichler}{Stanford Unviersity}{sjt@cs.stanford.edu}
 %\authorinfo{Michael Bauer}{Stanford University}{mebauer@cs.stanford.edu}
 %\authorinfo{Alex Aiken}{Stanford University}{aiken@cs.stanford.edu}
+\authorinfo{}{}{}
 \maketitle
 
 \begin{abstract}
@@ -48,8 +50,9 @@ Current language designs either analyze the partitioning of data
 statically, disallowing any aliasing of data, or use expensive dynamic
 checks to detect aliasing and ensure correct execution.
 We describe Legion, a programming system that relies on a hybrid system
-of static and dynamic analyses to support reasoning about potential aliasing introduced
-by dynamic data partitions with minimal overhead.  We present the novel aspects of the Legion design, 
+of static and dynamic analyses on logical regions to support efficient
+reasoning about potential aliasing introduced by dynamic data partitions.  
+We present the novel aspects of the Legion design, 
 prove the soundness of the Legion type system, and show Legion type checking 
 improves performance by up to 71\% by eliding provably safe memory checks.  
 Furthermore, we show how the language design and type safety
