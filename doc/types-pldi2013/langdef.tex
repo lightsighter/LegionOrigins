@@ -418,7 +418,7 @@ $};
 Figure~\ref{fig:langdef} defines Core Legion, a subset of the full Legion language
 that still illustrates all of the important issues.  
 %Types include booleans, integers, tuples, and pointers.  
-Pointers are annotated with a list of regions---a non-null pointer must point to a 
+Pointers are annotated with a list of logical regions---a non-null pointer must point to a 
 location that is contained in at least one of the regions. There is a special
 {\em coloring} type, used to specify partitions of regions into subregions.
 %Functions in Legion are named, accept one or more arguments and
@@ -452,7 +452,7 @@ constraints $\Omega$ that must hold between those logical regions.
 A representative selection of the type rules is given in Figure~\ref{fig:langrules}.  Both $\Phi$ and $\Omega$ are used in the heap access expressions {\em read}, {\em write}, and {\em reduce}.
 A valid heap access has the needed permission for logical region(s) in the
 pointer's type.  Note the exact region need not be named in $\Phi$ if permissions
-exist for a logical region that provably contains the pointer's region.  To simplify this check, Figure~\ref{fig:closure}
+exist for logical regions that provably contain the pointer's region(s).  To simplify this check, Figure~\ref{fig:closure}
 defines closure operations $\Omega^*$ (all constraints implied by $\Omega$) and
 $\Phi^*$ (all privileges implied by $\Phi$ and $\Omega^*$).
 
@@ -475,10 +475,10 @@ pointers (which must point into the region being colored) to integer {\em color}
 %Core Legion allows only an iterative construction of a coloring via a {\em newcolor} expression that generates
 %an empty map, and a {\em color} expression which adds a new entry to an existing map. The opacity of the
 %coloring allows for more efficient generation (and storage) of colorings as needed.)  
-Partitioning introduces names for subregions corresponding to each color in the coloring, guaranteeing that each
+Partitioning introduces names for the subregions corresponding to each color in the coloring, guaranteeing that each
 subregion is disjoint from the others and all are subregions of the original region.
 
-The {\em pack} and {\em unpack} expressions allow regions to be stored in the heap.
+The {\em pack} and {\em unpack} expressions allow regions and pointers into those regions to be stored in the heap.
 %  Logical region names are lexically scoped and if stored in the heap as-is, can only be read within the same scope.  
 A {\em region relationship} captures statically known constraints between regions;
 because the {\em pack} rule verifies these constraints hold when the 
@@ -784,8 +784,8 @@ We show the most interesting operational rules for Core Legion in
 Figure~\ref{fig:langrules}.  The rules for the {\em read}, {\em
 write}, and {\em reduce} show how dynamic memory traces are
 constructed and how the result of a read expression is relaxed when
-the location falls within the clobber set.  Additionally, the write
-and reduce operations, with their two subexpressions, demonstrate how
+the location falls within the clobber set.  The write
+and reduce operations, with their two subexpressions, also demonstrate how
 the traces of subexpressions are interleaved within the environment
 (and clobber set) of the parent expression.  (A formal definition of
 the {\em valid\_interleave} predicate can be found in
@@ -1175,7 +1175,7 @@ valid\_interleave(S, C, E', E_1, E_2)
 \section{Soundness of Privileges}
 \label{sec:soundness}
 
-Our first results shows a well-typed expression accesses the heap in ways consistent with its static privileges.
+Our first result shows a well-typed expression accesses the heap in ways consistent with its static privileges.
 A judgment $\privconsist{E}{\Phi}$ holds if memory operations in memory trace $E$ have types and
 locations covered by privileges $\Phi$:
 \[ 
@@ -1391,7 +1391,7 @@ Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one fina
 \label{sec:coherence}
 
 An important insight from the proof of Theorem~\ref{thm:effects} is that 
-it does not rely on the definition of {\em valid\_interleave}.  Weakening 
+it does not rely on the full definition of {\em valid\_interleave}.  Weakening 
 {\em valid\_interleave} to {\em any\_interleave} (Figure~\ref{fig:validinterleave}), 
 which  allows arbitrary interleavings of memory traces from subexpressions, 
 is sufficient for the proof of soundness.  
@@ -1515,16 +1515,18 @@ the current region mapping can soundly predict when this property will hold.
 %be equivalent to the serialized execution and parallel execution was safe.  Finally, to allow the safety of parallel
 %execution to be determined {\em before} the execution is actually performed, we show that a test based on the subtask
 %privileges and the current region mapping can soundly predict when this property will hold.
-We define a {\em non-interference} operator $\epsilon_1 \nonint \epsilon_2$ on two memory operations:
+We begin by defining a {\em non-interference} operator on two memory operations
+$\epsilon_1 = op_1(l_1, c_1, v_1)$ and $\epsilon_2 = op_2(l_2, c_2, v_2)$:
 $$
 \begin{array}{l@{ }l}
-op_1(l_1, c_1,& v_1)\ \nonint\ op_2(l_2, c_2, v_2) \Leftrightarrow l_1 \not= l_2 \vee \\
-& (op_1 = read \wedge op_2 = read)\ \vee \\
-& (op_1 = reduce_{id_1} \wedge op_2 = reduce_{id_2} \wedge id_1 = id_2)
+\epsilon_1\ \nonint\ \epsilon_2 \Leftrightarrow & (op_1 = read \wedge op_2 = read)\ \vee \\
+& (op_1 = reduce_{id_1} \wedge op_2 = reduce_{id_2} \wedge id_1 = id_2) \vee \\
+& l_1 \not= l_2
 \end{array}
 $$
-Accesses to different locations cannot affect each other, and reads have no side-effects.  The safety of the third case
+Reads have no side effects, and cannot change what another read returns.  The safety of the second case
 follows from the requirement that reduction operations be commutative.  
+Finally, accesses to different locations cannot affect each other.
 We next show that this non-interference operator preserves the validity of an interleaving
 of two or more traces when reordering a pair of memory operations.
 \begin{lem}
@@ -1622,7 +1624,8 @@ memory \cite{Harris05}.
 %extract parallelism from operations that access aliased data. 
 At the other extreme are systems like 
 Jade \cite{Rinard98} and DPJ \cite{Bocchino11} that check non-interference 
-statically by disallowing aliasing.  In contrast, Legion checks non-interference of privileges
+statically, but must disallow aliasing to do so.  In contrast, Legion 
+can verify non-interference of privileges
 at runtime, which is much simpler and more efficient than checking
 non-interference of dynamic memory traces.  Even though the privileges
 themselves are static, the region mapping $M$ is dynamic.  Dynamically testing non-interference 
@@ -1633,9 +1636,9 @@ static analysis can achieve in the presence of aliasing.
 \label{subsec:coherenceatomic}
 
 In cases where Legion cannot safely infer non-interference of
-privileges (perhaps because two tasks actually access the same data in aliased regions) 
-parallel execution can
-still be requested by the programmer through the use of relaxed coherence 
+privileges (perhaps because two tasks actually access the same data in aliased regions),
+relaxation of the constraints on execution order can
+still be requested by the programmer through the use of coherence 
 annotations on individual regions passed to a task.
 %the default behavior of sequential execution can
 %be avoided through the use of relaxed coherence.
@@ -1713,11 +1716,11 @@ limits the scope of needed non-interference tests.
 
 \texcomment{
 Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
-$\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
-subexpression of $e_2$, with corresponding privileges $\Phi_3$ and $\Phi_4$.
+$\Phi_2$.  Now let $e_1'$ be some subexpression of $e_1$ and $e_2'$ be some 
+subexpression of $e_2$, with corresponding privileges $\Phi_1'$ and $\Phi_2'$.
 By Theorem~\ref{thm:parallelexec}, if the runtime can verify $\Phi_1 \nonint[M] \Phi_2$, then 
 expressions $e_1$ and $e_2$ may be evaluated in parallel.  The evaluation of the subexpressions
-$e_3$ and $e_4$ will therefore be allowed to run in parallel, and we must show that this is
+$e_1'$ and $e_2'$ will therefore be allowed to run in parallel, and we must show that this is
 permissible.  We do so by proving that any memory traces that can result from the evaluation
 of the subexpression must be non-interfering (allowing parallel execution by
 Lemma~\ref{lem:noninteffects}).
@@ -1726,21 +1729,21 @@ Lemma~\ref{lem:noninteffects}).
 \label{thm:hiersched}
 \rm
 Let $e_1$ and $e_2$ be well-typed expressions using privileges $\Phi_1$ and
-$\Phi_2$ respectively, where $\Phi_1 \nonint[M] \Phi_2$.  Let $e_3$ be a subexpression of $e_1$ and $e_4$ be a 
-subexpression of $e_2$.  Any memory traces $E_3$ of $e_3$ and $E_4$ of $e_4$ resulting from evaluation of
+$\Phi_2$ respectively, where $\Phi_1 \nonint[M] \Phi_2$.  Let $e_1'$ be a subexpression of $e_1$ and $e_2'$ be a 
+subexpression of $e_2$.  Any memory traces $E_1'$ of $e_1'$ and $E_2'$ of $e_2'$ resulting from evaluation of
 $e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$) are 
 non-interfering.
 \end{thm}
 \texcomment{
 \begin{proof}
-Let $E_1$ be the result of an evaluation of $e_1$, with $E_3$ being the memory trace from the
-evaluation of $e_3$ within the expression tree.  $E_1$ will be formed from a tree of valid
+Let $E_1$ be the result of an evaluation of $e_1$, with $E_1'$ being the memory trace from the
+evaluation of $e_1'$ within the expression tree.  $E_1$ will be formed from a tree of valid
 interleavings, each of which must include all the memory operations of each constituent trace.
-By induction over the number of intermediate subexpressions between $e_1$ and $e_3$, we
-can show that any memory operation $\epsilon_3$ that is in $E_3$ must also be in $E_1$.
-Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E_2$.  We have
-$E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_3 \nonint \epsilon_4$.  Since
-this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \nonint E_4$.
+By induction over the number of intermediate subexpressions between $e_1$ and $e_1'$, we
+can show that any memory operation $\epsilon_1'$ that is in $E_1'$ must also be in $E_1$.
+Similarly, any memory operation $\epsilon_2'$ that is in $E_2'$ must also be in $E_2$.  We have
+$E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_1' \nonint \epsilon_2'$.  Since
+this holds for all $\epsilon_1'$ in $E_1'$ and all $\epsilon_2'$ in $E_2'$, we have $E_1' \nonint E_2'$.
 \end{proof}
 } The Legion task scheduler uses Theorem~\ref{thm:hiersched} as follows: 
 sibling function calls (those invoked within the same
