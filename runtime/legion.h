@@ -52,9 +52,9 @@ namespace LegionRuntime {
       inline bool operator==(const LogicalRegion &rhs) const;
       inline bool operator<(const LogicalRegion &rhs) const;
     public:
-      inline RegionTreeID get_tree_id(void) const { return tree_id; }
       inline IndexSpace get_index_space(void) const;
       inline FieldSpace get_field_space(void) const;
+      inline RegionTreeID get_tree_id(void) const;
     private:
       // These are private so you can't just arbitrarily change them
       RegionTreeID tree_id;
@@ -82,6 +82,7 @@ namespace LegionRuntime {
     public:
       inline IndexPartition get_index_partition(void) const;
       inline FieldSpace get_field_space(void) const;
+      inline RegionTreeID get_tree_id(void) const;
     private:
       // These are private so you can't just arbitrary change them
       RegionTreeID tree_id;
@@ -152,27 +153,32 @@ namespace LegionRuntime {
         Processor::TaskFuncID low_id;
         Processor::Kind proc_kind;
         bool index_space;
-        bool leaf;
       public:
-        Variant(Processor::TaskFuncID id, Processor::Kind k, bool index, bool lf)
-          : low_id(id), proc_kind(k), index_space(index), leaf(lf) { }
+        Variant(void)
+          : low_id(0) { }
+        Variant(Processor::TaskFuncID id, Processor::Kind k, bool index)
+          : low_id(id), proc_kind(k), index_space(index) { }
       };
     public:
-      TaskVariantCollection(Processor::TaskFuncID uid, const char *n)
-        : user_id(uid), name(n) { }
+      TaskVariantCollection(Processor::TaskFuncID uid, const char *n, const bool lf)
+        : user_id(uid), name(n), leaf(lf) { }
     public:
       bool has_variant(Processor::Kind kind, bool index_space);
+      VariantID get_variant(Processor::Kind kind, bool index_space);
+      bool has_variant(VariantID vid);
+      const Variant& get_variant(VariantID vid);
     protected:
       friend class HighLevelRuntime;
       friend class TaskContext;
       friend class SingleTask;
-      void add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index, bool leaf);
+      void add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index);
       const Variant& select_variant(bool index, Processor::Kind kind);
     public:
       const Processor::TaskFuncID user_id;
       const char *name;
+      const bool leaf;
     private:
-      std::vector<Variant> variants;
+      std::map<VariantID,Variant> variants;
     };
 
     /////////////////////////////////////////////////////////////
@@ -455,22 +461,27 @@ namespace LegionRuntime {
                         ReductionOpID op, CoherenceProperty _prop,
                         LogicalRegion _parent,
 			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
-    protected:
+
+    public:
       // For use by the SizedRegionRequirement class
+      // Also allows for region requirements without having to pass in the fields explicitly
       RegionRequirement(LogicalRegion _handle,
                         PrivilegeMode _priv, CoherenceProperty _prop, LogicalRegion _parent,
-			MappingTagID _tag, bool _verified, TypeHandle _inst);
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
       RegionRequirement(LogicalPartition pid, ProjectionID _proj,
                         PrivilegeMode _priv, CoherenceProperty _prop,
                         LogicalRegion _parent,
-			MappingTagID _tag, bool _verified, TypeHandle _inst);
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
       RegionRequirement(LogicalRegion _handle,
                         ReductionOpID op, CoherenceProperty _prop, LogicalRegion _parent,
-			MappingTagID _tag, bool _verified, TypeHandle _inst);
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
       RegionRequirement(LogicalPartition pid, ProjectionID _proj, 
                         ReductionOpID op, CoherenceProperty _prop,
                         LogicalRegion _parent,
-			MappingTagID _tag, bool _verified, TypeHandle _inst);
+			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
+    public:
+      // For adding fields, will always add to privilege, optional add to instance
+      inline void add_field(FieldID fid, bool instance = true);
     public:
       bool operator==(const RegionRequirement &req) const;
       bool operator<(const RegionRequirement &req) const;
@@ -519,43 +530,6 @@ namespace LegionRuntime {
 			MappingTagID _tag = 0, bool _verified = false, TypeHandle _inst = 0);
     };
 
-    /////////////////////////////////////////////////////////////
-    // Coloring Functor 
-    /////////////////////////////////////////////////////////////
-    /**
-     * A functor for performing coloring operations.
-     * Given an index space for a logical region, and an index space
-     * specified by the programmer for sub-region colors, give back
-     * a mapping from colors to new sub-region index spaces.
-     */
-    class ColoringFunctor {
-    public:
-      template<typename T>
-      struct ColoredPoints {
-      public:
-        std::set<T> points;
-        std::set<std::pair<T,T> > ranges;
-      };
-    public:
-      /**
-       * Is the partitioning generated by this coloring disjoint?
-       */
-      virtual bool is_disjoint(void) = 0;
-      /**
-       * For each point in the color space, generate a color and a new sub-space of the region_space
-       * and put it in the coloring map.
-       * TODO: update this to handle more general point types
-       */
-      virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space, 
-                                    std::map<Color,ColoredPoints<unsigned> > &coloring) = 0;
-      /**
-       * (Optional) Assign a color for this partition
-       * Returning any number < 0 will automatically generate a unique color
-       */
-      virtual int get_partition_color(void) { return -1; };
-    };
-    
-
 // Namespaces and enums aren't very friendly with each
 // other (i.e. can't name an enum from one namespace as
 // an type in another namespace).  Hence we get to have
@@ -588,19 +562,19 @@ namespace LegionRuntime {
       void wait_until_valid(void);
       bool is_valid(void) const;
       LogicalRegion get_logical_region(void) const;
-      bool has_accessor(AccessorType at);
+      bool has_accessor(AccessorType at) const;
       template<AccessorType AT>
-      LowLevel::RegionAccessor<AT_CONV_DOWN(AT)> get_accessor(void);
+      LowLevel::RegionAccessor<AT_CONV_DOWN(AT)> get_accessor(void) const;
       template<AccessorType AT>
-      LowLevel::RegionAccessor<AT_CONV_DOWN(AT)> get_accessor(FieldID field);
+      LowLevel::RegionAccessor<AT_CONV_DOWN(AT)> get_accessor(FieldID field) const;
     protected:
       union Operation_t {
         PhysicalRegionImpl *impl;
         MappingOperation *map;
       } op;
       bool is_impl;
-      bool map_set;
-      unsigned accessor_map;
+      mutable bool map_set;
+      mutable unsigned accessor_map;
       GenerationID gen_id; // for checking validity of inline mappings
     };
 
@@ -620,11 +594,11 @@ namespace LegionRuntime {
       /**
        * Allocate new elements in the index space.
        */
-      inline unsigned alloc(unsigned num_elements = 1);
+      inline ptr_t alloc(unsigned num_elements = 1);
       /**
        * Free elements at the given location.
        */
-      inline void free(unsigned ptr, unsigned num_elements = 1);
+      inline void free(ptr_t ptr, unsigned num_elements = 1);
     public:
       inline bool operator<(const IndexAllocator &rhs) const;
       inline bool operator==(const IndexAllocator &rhs) const;
@@ -669,6 +643,36 @@ namespace LegionRuntime {
       FieldSpace space;
       Context parent;
       HighLevelRuntime *runtime;
+    };
+
+    /////////////////////////////////////////////////////////////
+    // Index Iterator 
+    /////////////////////////////////////////////////////////////
+    /**
+     * An iterator for points in an index space.  
+     * (Should never be copied)
+     */
+    class IndexIterator {
+    public:
+      explicit IndexIterator(IndexSpace space);
+      explicit IndexIterator(const LogicalRegion &handle);
+      ~IndexIterator(void);
+    public:
+      inline bool has_next(void) const;
+      inline ptr_t next(void);
+    private:
+      Enumerator *const enumerator;
+      bool finished;
+      int current_pointer;
+      int remaining_elmts;
+    };
+
+    // Colored Points struct for Colorings
+    template<typename T>
+    struct ColoredPoints {
+    public:
+      std::set<T> points;
+      std::set<std::pair<T,T> > ranges;
     };
 
     // InputArgs helper struct for HighLevelRuntime
@@ -795,7 +799,8 @@ namespace LegionRuntime {
       /**
        * Create and destroy partitions of index spaces
        */
-      IndexPartition create_index_partition(Context ctx, IndexSpace parent, IndexSpace colors, ColoringFunctor &coloring);
+      IndexPartition create_index_partition(Context ctx, IndexSpace parent, 
+                      const Coloring &coloring, bool disjoint, int part_color = -1);
       void destroy_index_partition(Context ctx, IndexPartition handle);
       /**
        * Get partitions and sub-spaces 
@@ -837,8 +842,10 @@ namespace LegionRuntime {
        */
       LogicalPartition get_logical_partition(Context ctx, LogicalRegion parent, IndexPartition handle);
       LogicalPartition get_logical_partition_by_color(Context ctx, LogicalRegion parent, Color c);
+      LogicalPartition get_logical_partition_by_tree(Context ctx, IndexPartition handle, FieldSpace fspace, RegionTreeID tid); 
       LogicalRegion get_logical_subregion(Context ctx, LogicalPartition parent, IndexSpace handle);
       LogicalRegion get_logical_subregion_by_color(Context ctx, LogicalPartition parent, Color c);
+      LogicalRegion get_logical_subregion_by_tree(Context ctx, IndexSpace handle, FieldSpace fspace, RegionTreeID tid);
 
       //////////////////////////////
       // Functions for ArgumentMaps
@@ -951,23 +958,17 @@ namespace LegionRuntime {
        * Create a predicate from the given future.  The future must be a boolean
        * future and the predicate will become the owner of the future so that 
        */
-      Predicate create_predicate(Future f, MapperID id = 0, MappingTagID tag = 0);
+      Predicate create_predicate(Future f, Processor proc, MapperID id = 0, MappingTagID tag = 0);
       Predicate create_predicate(PredicateFnptr function, const std::vector<Future> &futures, 
-                                 const TaskArgument &arg, MapperID id = 0, MappingTagID tag = 0);
+                                 const TaskArgument &arg, Processor proc, MapperID id = 0, MappingTagID tag = 0);
       // Special case predicate functions
-      Predicate predicate_not(Predicate p, MapperID id = 0, MappingTagID tag = 0);
-      Predicate predicate_and(Predicate p1, Predicate p2, MapperID id = 0, MappingTagID tag = 0);
-      Predicate predicate_or(Predicate p1, Predicate p2, MapperID id = 0, MappingTagID tag = 0);
+      Predicate predicate_not(Predicate p, Processor proc, MapperID id = 0, MappingTagID tag = 0);
+      Predicate predicate_and(Predicate p1, Predicate p2, Processor proc, MapperID id = 0, MappingTagID tag = 0);
+      Predicate predicate_or(Predicate p1, Predicate p2, Processor proc, MapperID id = 0, MappingTagID tag = 0);
     public:
-      // Functions for managing mappers
-      void add_mapper(MapperID id, Mapper *m);
-      void replace_default_mapper(Mapper *m);
-      Mapper* get_mapper(MapperID id) const;
-#ifdef LOW_LEVEL_LOCKS
-      Lock get_mapper_lock(MapperID id) const;
-#else
-      ImmovableLock get_mapper_lock(MapperID id) const;
-#endif
+      // Operations for manipulating mappers from the callback at the start of the HighLevelRuntime
+      void add_mapper(MapperID map_id, Mapper *mapper, Processor proc);
+      void replace_default_mapper(Mapper *mapper, Processor proc);
     public:
       // Methods for the wrapper functions to get information from the runtime
       const std::vector<RegionRequirement>& begin_task(Context ctx, 
@@ -1007,9 +1008,8 @@ namespace LegionRuntime {
       // Call this when an operation completes to tell the runtime that
       // an operation is no longer in flight in a given context.
       void notify_operation_complete(Context parent);
-      // Figure out if thie target processor is local or not to this runtime
+      // Figure out if this target processor is local or not to this runtime
       bool is_local_processor(Processor target) const;
-      bool is_local_group(ProcessorGroup target) const;
     private:
       // These tasks manage how big a task window is for each parent task
       // to prevent tasks from running too far into the future.  For each operation
@@ -1036,26 +1036,29 @@ namespace LegionRuntime {
       Color get_start_color(void) const;
       unsigned get_color_modulus(void) const;
     protected: 
-      void add_to_dependence_queue(GeneralizedOperation *op);
-      void add_to_ready_queue(IndividualTask *task, bool remote);
-      void add_to_ready_queue(IndexTask *task);
-      void add_to_ready_queue(SliceTask *task);
-      void add_to_ready_queue(PointTask *task);
-      void add_to_ready_queue(MappingOperation *op);
-      void add_to_ready_queue(DeletionOperation *op);
+      void add_to_dependence_queue(Processor proc, GeneralizedOperation *op);
+      void add_to_ready_queue(Processor proc, IndividualTask *task, bool remote);
+      void add_to_ready_queue(Processor proc, IndexTask *task);
+      void add_to_ready_queue(Processor proc, SliceTask *task);
+      void add_to_ready_queue(Processor proc, PointTask *task);
+      void add_to_ready_queue(Processor proc, MappingOperation *op);
+      void add_to_ready_queue(Processor proc, DeletionOperation *op);
 #ifdef INORDER_EXECUTION
       void add_to_inorder_queue(Context parent, TaskContext *task);
       void add_to_inorder_queue(Context parent, MappingOperation *op);
       void add_to_inorder_queue(Context parent, DeletionOperation *op);
 #endif
     protected:
-      // Send tasks to remote processors
-      void send_task(ProcessorGroup target_group, TaskContext *task) const;
-      void send_tasks(ProcessorGroup target_group, const std::set<TaskContext*> &tasks) const;
+      // Send things to remote processors
+      // (Also check to see if the target is local before sending it)
+      bool send_task(Processor target, TaskContext *task) const;
+      bool send_tasks(Processor target, const std::set<TaskContext*> &tasks) const;
+      void send_steal_request(const std::multimap<Processor,MapperID> &targets, Processor thief) const;
+      void send_advertisements(const std::set<Processor> &targets, MapperID map_id, Processor source) const;
     private:
       // Operations invoked by static methods
-      void process_tasks(const void * args, size_t arglen); 
-      void process_steal(const void * args, size_t arglen); 
+      void process_tasks(const void * args, size_t arglen, Processor proc); 
+      void process_steal(const void * args, size_t arglen, Processor proc); 
       void process_mapped(const void* args, size_t arglen); 
       void process_finish(const void* args, size_t arglen); 
       void process_notify_start(const void * args, size_t arglen);  
@@ -1064,10 +1067,7 @@ namespace LegionRuntime {
       void process_termination(const void * args, size_t arglen);    
       void process_advertisement(const void * args, size_t arglen); 
       // Where the magic happens!
-      void process_schedule_request(void); 
-      //void perform_maps_and_deletions(void); 
-      void perform_dependence_analysis(void);
-      void perform_other_operations(void);
+      void process_schedule_request(Processor p); 
 #ifdef INORDER_EXECUTION
       void perform_inorder_scheduling(void);
 #endif
@@ -1075,7 +1075,6 @@ namespace LegionRuntime {
       void perform_dynamic_tests(void);
       void request_dynamic_tests(RegionTreeForest *forest);
 #endif
-      void advertise(MapperID map_id); // Advertise work when we have it for a given mapper
     private:
       // Static variables
       static HighLevelRuntime **runtime_map;
@@ -1087,41 +1086,90 @@ namespace LegionRuntime {
 #ifdef DYNAMIC_TESTS
       static bool dynamic_independence_tests;
 #endif
-      static unsigned max_tasks_per_schedule_request;
       static unsigned max_task_window_per_context;
+      static unsigned min_tasks_to_schedule;
 #ifdef DEBUG_HIGH_LEVEL
     public:
       static bool logging_region_tree_state;
 #endif
     private:
+      // For managing execution of each processor
+      class ProcessorManager {
+      public:
+        ProcessorManager(Processor proc, Processor::Kind kind, HighLevelRuntime *rt,
+                        unsigned min_out, unsigned def_mappers, unsigned max_steals);
+        ~ProcessorManager(void);
+      public:
+        // Functions for managing mappers
+        void add_mapper(MapperID id, Mapper *m, bool check);
+        void replace_default_mapper(Mapper *m);
+        void initialize_mappable(Mappable *mappable, MapperID map_id);
+      public:
+        void perform_dependence_analysis(void);
+        void perform_other_operations(void);
+        void perform_scheduling(void);
+        void process_steal_request(Processor thief, const std::vector<MapperID> &thieves);
+        void process_advertisement(Processor advertiser, MapperID mid);
+      public:
+        // Handle mapper calls
+      public:
+        void add_to_dependence_queue(GeneralizedOperation *op);
+        void add_to_ready_queue(TaskContext *task);
+        void add_to_other_queue(GeneralizedOperation *op);
+      private:
+        // Should always be holding the queue lock when we call this
+        void enable_scheduler(void);
+        void advertise(MapperID map_id);
+      private:
+        HighLevelRuntime *const runtime;
+        const Processor local_proc;
+        const Processor::Kind proc_kind;
+        const unsigned min_outstanding;
+        unsigned current_outstanding;
+#ifdef LOW_LEVEL_LOCKS
+        Lock queue_lock;
+#else
+        ImmovableLock queue_lock;
+#endif
+        bool idle_task_enabled;
+        // A list of operations that need to perform dependence analysis
+        std::vector<GeneralizedOperation*> dependence_queue;
+        // For each mapper a list of tasks that are ready to map
+        std::vector<std::list<TaskContext*> > ready_queues;
+        // We'll keep all other operations separate and assume we should
+        // do them as soon as possible
+        std::vector<GeneralizedOperation*> other_ready_queue;
+        // Mapper objects
+        std::vector<Mapper*> mapper_objects;
+#ifdef LOW_LEVEL_LOCKS
+        std::vector<Lock> mapper_locks;
+        Lock mapping_lock;
+#else
+        std::vector<ImmovableLock> mapper_locks;
+        ImmovableLock mapping_lock; // Protect mapping data structures
+#endif
+        // Information for stealing
+        const unsigned int max_outstanding_steals;
+        std::map<MapperID,std::set<Processor> > outstanding_steals;
+        std::multimap<MapperID,Processor> failed_thiefs;
+#ifdef LOW_LEVEL_LOCKS
+        Lock unique_lock;
+        Lock stealing_lock;
+#else
+        ImmovableLock stealing_lock;
+        ImmovableLock thieving_lock;
+#endif
+      };
+    protected:
+      // Operations for getting managers and mapper information from managers
+      ProcessorManager* find_manager(Processor proc) const;
+      void initialize_mappable(Mappable *mappable, Processor target, MapperID map_id);
+    private:
       // Member variables
-      const UtilityProcessor utility_proc;
-      const Processor::Kind proc_kind;
-      const ProcessorGroup local_group;
+      const Processor utility_proc;
       const std::set<Processor> &local_procs;
       Machine *const machine;
-      std::vector<Mapper*> mapper_objects;
-#ifdef LOW_LEVEL_LOCKS
-      std::vector<Lock> mapper_locks;
-      Lock mapping_lock;
-#else
-      std::vector<ImmovableLock> mapper_locks;
-      ImmovableLock mapping_lock; // Protect mapping data structures
-#endif
-      // Task Contexts
-      bool idle_task_enabled; // Keep track if the idle task enabled or not
-      // A list of operations that need to perform dependence analysis
-      std::vector<GeneralizedOperation*> dependence_queue;
-      // For each mapper a list of tasks that are ready to map
-      std::vector<std::list<TaskContext*> > ready_queues;
-      // We'll keep all other operations separate and assume we should do them as soon as possible
-      std::vector<GeneralizedOperation*> other_ready_queue;
-      
-#ifdef LOW_LEVEL_LOCKS
-      Lock queue_lock;
-#else
-      ImmovableLock queue_lock; // Protect ready and waiting queues and idle_task_enabled
-#endif
+      std::map<Processor,ProcessorManager*> proc_managers;
 #ifdef LOW_LEVEL_LOCKS
       Lock available_lock;
 #else
@@ -1200,18 +1248,10 @@ namespace LegionRuntime {
       UniqueManagerID next_manager_id;
       Color start_color;
       const unsigned unique_stride; // Stride for ids to guarantee uniqueness
-      // Information for stealing
-      const unsigned int max_outstanding_steals;
-      std::map<MapperID,std::set<ProcessorGroup> > outstanding_steals;
-      std::multimap<MapperID,ProcessorGroup> failed_thiefs;
 #ifdef LOW_LEVEL_LOCKS
-      Lock unique_lock;
-      Lock stealing_lock;
       Lock thieving_lock;
       Lock forest_lock;
 #else
-      ImmovableLock stealing_lock;
-      ImmovableLock thieving_lock;
       ImmovableLock unique_lock; // Make sure all unique values are actually unique
       ImmovableLock forest_lock;
 #endif
@@ -1234,27 +1274,15 @@ namespace LegionRuntime {
     ///////////////////////////////////////////////////////////// 
     class Mapper {
     public:
-      // a handful of bit-packed hints that should be respected by a default
-      //  mapper (but not necessarily custom mappers)
-      enum {
-	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION   = (1U << 0),
-	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_0 = (1U << 0),
-	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_1 = (1U << 1),
-	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_2 = (1U << 2),
-	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_3 = (1U << 3),
-	MAPTAG_DEFAULT_MAPPER_NOMAP_REGION_4 = (1U << 4),
-	MAPTAG_DEFAULT_MAPPER_NOMAP_ANY_REGION = (1U << 5) - 1
-      };
-
       struct IndexSplit {
       public:
-        IndexSplit(IndexSpace sp, ProcessorGroup g, 
+        IndexSplit(IndexSpace sp, Processor p, 
                    bool rec, bool steal)
-          : space(sp), group(g), 
+          : space(sp), proc(p), 
             recurse(rec), stealable(steal) { }
       public:
         IndexSpace space;
-        ProcessorGroup group;
+        Processor proc;
         bool recurse;
         bool stealable;
       };
@@ -1292,15 +1320,7 @@ namespace LegionRuntime {
        * guarantee that the task will be run on the specified processor group if the
        * task has been spawned and the mapper allows stealing.
        */
-      virtual ProcessorGroup select_target_group(const Task *task) = 0;
-
-      /**
-       * If there are multiple processors in the current processor group
-       * the runtime will ask the mapper to select the final one on which
-       * to run.  Picking this processor guarantees that the task will be
-       * run on this processor.
-       */
-      virtual Processor select_final_processor(const Task *task, const std::set<Processor> &options) = 0;
+      virtual Processor select_target_processor(const Task *task) = 0; 
 
       /**
        * Select a processor from which to attempt a task steal.  The runtime
@@ -1308,14 +1328,14 @@ namespace LegionRuntime {
        * that failed and are blacklisted.  Any attempts to send a steal request
        * to a blacklisted processor will not be performed.
        */
-      virtual ProcessorGroup target_task_steal(const std::set<ProcessorGroup> &blacklisted) = 0;
+      virtual Processor target_task_steal(const std::set<Processor> &blacklisted) = 0;
 
       /**
        * The processor specified by 'thief' is attempting a steal on this processor.
        * Given the list of tasks managed by this mapper, specify which tasks are
        * permitted to be stolen by adding them to the 'to_steal' list.
        */
-      virtual void permit_task_steal(ProcessorGroup thief, const std::vector<const Task*> &tasks,
+      virtual void permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
                                       std::set<const Task*> &to_steal) = 0;
 
       /**
@@ -1324,6 +1344,11 @@ namespace LegionRuntime {
        */
       virtual void slice_index_space(const Task *task, const IndexSpace &index_space,
                                       std::vector<IndexSplit> &slice) = 0;
+
+      /**
+       * Select the variant of this task to run on the target processor.
+       */
+      virtual VariantID select_task_variant(const Task *task, Processor target) = 0;
 
       /**
        * Ask the given mapper if it wants to perform a virtual mapping for the given region.
@@ -1470,18 +1495,34 @@ namespace LegionRuntime {
     };
 
     /**
+     * Have a class which has mapper and mapper lock fields
+     * that can get set and pulled.
+     */
+    class Mappable {
+    public:
+      Mappable(void);
+    public:
+#ifdef LOW_LEVEL_LOCKS
+      void initialize_mappable(Mapper *map, Lock m_lock);
+#else
+      void initialize_mappable(Mapper *map, ImmovableLock m_lock);
+#endif
+    protected:
+      Mapper *mapper;
+#ifdef LOW_LEVEL_LOCKS
+      Lock mapper_lock;
+#else
+      ImmovableLock mapper_lock;
+#endif
+    };
+
+    /**
      * This is the base for the implementations of each of
      * the different kinds of Predicate operations.
      */
-    class PredicateImpl : public Collectable, public Notifiable {
+    class PredicateImpl : public Collectable, public Notifiable, public Mappable {
     public:
-      PredicateImpl(Mapper *m, 
-#ifdef LOW_LEVEL_LOCKS
-                    Lock m_lock,
-#else
-                    ImmovableLock m_lock,
-#endif
-                    MappingTagID tag);
+      PredicateImpl(MappingTagID tag);
     public:
       /**
        * Determine whether or not make a guess on the value or not.
@@ -1512,12 +1553,6 @@ namespace LegionRuntime {
     protected:
       // Mapper information
       bool mapper_invoked;
-      Mapper *mapper;
-#ifdef LOW_LEVEL_LOCKS
-      Lock mapper_lock;
-#else
-      ImmovableLock mapper_lock;
-#endif
       MappingTagID tag;
     protected:
       bool value;
@@ -1803,6 +1838,40 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    inline RegionTreeID LogicalRegion::get_tree_id(void) const
+    //--------------------------------------------------------------------------
+    {
+      return tree_id;
+    }
+
+    //--------------------------------------------------------------------------
+    inline bool IndexIterator::has_next(void) const
+    //--------------------------------------------------------------------------
+    {
+      return (!finished);
+    }
+    
+    //--------------------------------------------------------------------------
+    inline ptr_t IndexIterator::next(void)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(!finished);
+#endif
+      ptr_t result = current_pointer;
+      remaining_elmts--;
+      if (remaining_elmts > 0)
+      {
+        current_pointer++;
+      }
+      else
+      {
+        finished = !(enumerator->get_next(current_pointer, remaining_elmts));
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
     inline LogicalPartition& LogicalPartition::operator=(const LogicalPartition &rhs)
     //--------------------------------------------------------------------------
     {
@@ -1836,6 +1905,15 @@ namespace LegionRuntime {
         else
           return field_space < rhs.field_space;
       }
+    }
+
+    //--------------------------------------------------------------------------
+    inline void RegionRequirement::add_field(FieldID fid, bool instance/*= true*/)
+    //--------------------------------------------------------------------------
+    {
+      privilege_fields.insert(fid);
+      if (instance)
+        instance_fields.push_back(fid);
     }
 
     //--------------------------------------------------------------------------
@@ -1943,6 +2021,13 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    inline RegionTreeID LogicalPartition::get_tree_id(void) const
+    //--------------------------------------------------------------------------
+    {
+      return tree_id;
+    }
+
+    //--------------------------------------------------------------------------
     template<typename PT, unsigned DIM>
     void Task::get_index_point(PT buffer[DIM]) const
     //--------------------------------------------------------------------------
@@ -1956,17 +2041,19 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    inline unsigned IndexAllocator::alloc(unsigned num_elements /*= 1*/)
+    inline ptr_t IndexAllocator::alloc(unsigned num_elements /*= 1*/)
     //--------------------------------------------------------------------------
     {
-      return space.alloc(num_elements);
+      ptr_t result;
+      result.value = space.alloc(num_elements);
+      return result;
     }
 
     //--------------------------------------------------------------------------
-    inline void IndexAllocator::free(unsigned ptr, unsigned num_elements /*= 1*/)
+    inline void IndexAllocator::free(ptr_t ptr, unsigned num_elements /*= 1*/)
     //--------------------------------------------------------------------------
     {
-      space.free(ptr, num_elements);
+      space.free(ptr.value, num_elements);
     }
 
     //--------------------------------------------------------------------------

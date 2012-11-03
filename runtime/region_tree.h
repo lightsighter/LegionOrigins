@@ -61,6 +61,8 @@ namespace LegionRuntime {
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
       LogicalPartition get_region_subcolor(LogicalRegion parent, Color c);
       LogicalRegion get_partition_subcolor(LogicalPartition parent, Color c);
+      LogicalPartition get_partition_subtree(IndexPartition handle, FieldSpace space, RegionTreeID tid);
+      LogicalRegion get_region_subtree(IndexSpace handle, FieldSpace space, RegionTreeID tid);
     public:
       // Logical Region contexts 
       void initialize_logical_context(LogicalRegion handle, ContextID ctx);
@@ -213,6 +215,7 @@ namespace LegionRuntime {
       FieldSpaceNode* get_node(FieldSpace space);
       RegionNode*     get_node(LogicalRegion handle);
       PartitionNode * get_node(LogicalPartition handle);
+      RegionNode*     get_top_node(RegionTreeID tid);
     public:
       bool has_node(IndexSpace space) const;
       bool has_node(IndexPartition part) const;

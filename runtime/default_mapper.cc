@@ -21,8 +21,8 @@ namespace LegionRuntime {
     Logger::Category log_mapper("defmapper");
 
     //--------------------------------------------------------------------------------------------
-    DefaultMapper::DefaultMapper(Machine *m, HighLevelRuntime *rt, ProcessorGroup group) 
-      : runtime(rt), local_group(group), machine(m),
+    DefaultMapper::DefaultMapper(Machine *m, HighLevelRuntime *rt, Processor local) 
+      : runtime(rt), local_proc(local), local_kind(machine->get_processor_kind(local)), machine(m),
         max_steals_per_theft(STATIC_MAX_PERMITTED_STEALS),
         max_steal_count(STATIC_MAX_STEAL_COUNT),
         splitting_factor(STATIC_SPLIT_FACTOR),
@@ -31,11 +31,11 @@ namespace LegionRuntime {
         max_schedule_count(STATIC_MAX_SCHEDULE_COUNT)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Initializing the default mapper for processor group %x",local_group.id);
+      log_mapper(LEVEL_SPEW,"Initializing the default mapper for processor %x",local_proc.id);
       // Get the kind of processor that this mapper is managing
-      const std::set<Processor> &group_procs = group.get_all_processors(); 
-      for (std::set<Processor>::const_iterator it = group_procs.begin();
-            it != group_procs.end(); it++)
+      const std::set<Processor> &locals = local_proc.get_local_processors(); 
+      for (std::set<Processor>::const_iterator it = locals.begin();
+            it != locals.end(); it++)
       {
         local_procs[*it] = machine->get_processor_kind(*it);
       }
@@ -72,20 +72,15 @@ namespace LegionRuntime {
       {
         // Optimize CPUs for latency and GPUs for throughput
         compute_memory_stack(it->first, memory_stacks[it->first], machine, (it->second == Processor::TOC_PROC));
+        assert(!memory_stacks[it->first].empty());
       }
       // Now build our set of similar processors and our alternative processor map
       {
-        const std::set<ProcessorGroup> &all_groups = machine->get_all_groups();
-        for (std::set<ProcessorGroup>::const_iterator it = all_groups.begin();
-              it != all_groups.end(); it++)
+        const std::set<Processor> &all_procs = machine->get_all_processors();
+        for (std::set<Processor>::const_iterator it = all_procs.begin();
+              it != all_procs.end(); it++)
         {
-          std::set<Processor::Kind> &kinds = group_kinds[*it]; 
-          const std::set<Processor> &other_procs = it->get_all_processors();
-          for (std::set<Processor>::const_iterator pit = other_procs.begin();
-                pit != other_procs.end(); pit++)
-          {
-            kinds.insert(machine->get_processor_kind(*pit));
-          }
+          other_procs[*it] = machine->get_processor_kind(*it);
         }
       }
     }
@@ -94,7 +89,7 @@ namespace LegionRuntime {
     DefaultMapper::~DefaultMapper(void)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Deleting default mapper for processor group %x",local_group.id);
+      log_mapper(LEVEL_SPEW,"Deleting default mapper for processor %x",local_proc.id);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -102,8 +97,8 @@ namespace LegionRuntime {
                                                  std::vector<bool> &ready_mask)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Select tasks to schedule in default mapper for processor group %x",
-                 local_group.id);
+      log_mapper(LEVEL_SPEW,"Select tasks to schedule in default mapper for processor %x",
+                 local_proc.id);
       // TODO: something with some feedback pressure based on profiling
       unsigned count = 0;
       for (std::vector<bool>::iterator it = ready_mask.begin();
@@ -117,8 +112,8 @@ namespace LegionRuntime {
     bool DefaultMapper::spawn_task(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Spawn task %s (ID %d) in default mapper for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
+      log_mapper(LEVEL_SPEW,"Spawn task %s (ID %d) in default mapper for processor %x",
+                 task->variants->name, task->get_unique_task_id(), local_proc.id);
       return true;
     }
 
@@ -126,103 +121,84 @@ namespace LegionRuntime {
     bool DefaultMapper::map_task_locally(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Map task %s (ID %d) locally in default mapper for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
+      log_mapper(LEVEL_SPEW,"Map task %s (ID %d) locally in default mapper for processor %x",
+                 task->variants->name, task->get_unique_task_id(), local_proc.id);
       return false;
     }
 
     //--------------------------------------------------------------------------------------------
-    ProcessorGroup DefaultMapper::select_target_group(const Task *task)
+    Processor DefaultMapper::select_target_processor(const Task *task)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Select target processor group for task %s (ID %d) in default mapper for processor group %x",
-                  task->variants->name, task->get_unique_task_id(), local_group.id);
-      // Check to make sure we have processor that can run one of the variants
-      // otherwise, move it to a different group.
-      const std::set<Processor::Kind> &kinds = group_kinds[local_group];
-      for (std::set<Processor::Kind>::const_iterator it = kinds.begin();
-            it != kinds.end(); it++)
+      log_mapper(LEVEL_SPEW,"Select target processor for task %s (ID %d) in default mapper for processor %x",
+                  task->variants->name, task->get_unique_task_id(), local_proc.id);
+      // Check to see if we can run a variant of it locally
+      if (task->variants->has_variant(local_kind, task->is_index_space))
+        return local_proc;
+      // Otherwise pick another try a different processor kind, prefer GPUs over CPUs
+      if (task->variants->has_variant(Processor::TOC_PROC, task->is_index_space))
       {
-        if (task->variants->has_variant(*it, task->is_index_space))
-          return local_group;
-      }
-      // We didn't have any suitable variants, so try another group
-      for (std::map<ProcessorGroup,std::set<Processor::Kind> >::const_iterator it = group_kinds.begin();
-            it != group_kinds.end(); it++)
-      {
-        const std::set<Processor::Kind> &other_kinds = it->second;
-        for (std::set<Processor::Kind>::const_iterator kit = other_kinds.begin();
-              kit != other_kinds.end(); kit++)
-        {
-          if (task->variants->has_variant(*kit, task->is_index_space))
-            return it->first;
-        }
-      }
-      // Should never get here, this means we have a task that only has
-      // variants for processors that don't exist anywhere in the system.
-      assert(false);
-      return ProcessorGroup::NO_GROUP;
-    }
-
-    //--------------------------------------------------------------------------------------------
-    Processor DefaultMapper::select_final_processor(const Task *task, const std::set<Processor> &options)
-    //--------------------------------------------------------------------------------------------
-    {
-      log_mapper(LEVEL_SPEW,"Select initial processor for task %s (ID %d) in default mapper for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
-
-      // Check to see if there are any GPUs and if the task has a GPU variant
-      if (!task->variants->has_variant(Processor::TOC_PROC, task->is_index_space))
-      {
-        Processor result = select_random_processor(options, Processor::TOC_PROC, machine);
+        const std::set<Processor> &all_procs = machine->get_all_processors();
+        Processor result = select_random_processor(all_procs, Processor::TOC_PROC, machine);
         if (result.exists())
           return result;
       }
-      // Otherwise do it for CPUs.
-      // TODO: handle additional processor types
-      return select_random_processor(options, Processor::LOC_PROC, machine);
+      // Otherwise try CPUs
+      if (task->variants->has_variant(Processor::LOC_PROC, task->is_index_space))
+      {
+        const std::set<Processor> &all_procs = machine->get_all_processors();
+        Processor result = select_random_processor(all_procs, Processor::LOC_PROC, machine);
+        if (result.exists())
+          return result;
+      }
+      log_mapper(LEVEL_ERROR,"Mapper couldn't find variants for task %s (ID %d)",
+                              task->variants->name, task->get_unique_task_id());
+      // Should never get here, this means we have a task that only has
+      // variants for processors that don't exist anywhere in the system.
+      assert(false);
+      return Processor::NO_PROC;
     }
 
     //--------------------------------------------------------------------------------------------
-    ProcessorGroup DefaultMapper::target_task_steal(const std::set<ProcessorGroup> &blacklist)
+    Processor DefaultMapper::target_task_steal(const std::set<Processor> &blacklist)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Target task steal in default mapper for processor group %x",local_group.id);
+      log_mapper(LEVEL_SPEW,"Target task steal in default mapper for processor %x",local_proc.id);
       if (stealing_enabled)
       {
         // Choose a random processor from our group that is not on the blacklist
-        std::set<ProcessorGroup> diff_groups; 
-        std::set<ProcessorGroup> all_groups = machine->get_all_groups();
+        std::set<Processor> diff_procs; 
+        std::set<Processor> all_procs = machine->get_all_processors();
         // Remove ourselves
-        all_groups.erase(local_group);
-        std::set_difference(all_groups.begin(),all_groups.end(),
-                            blacklist.begin(),blacklist.end(),std::inserter(diff_groups,diff_groups.end()));
-        if (diff_groups.empty())
+        all_procs.erase(local_proc);
+        std::set_difference(all_procs.begin(),all_procs.end(),
+                            blacklist.begin(),blacklist.end(),std::inserter(diff_procs,diff_procs.end()));
+        if (diff_procs.empty())
         {
-          return ProcessorGroup::NO_GROUP;
+          return Processor::NO_PROC;
         }
-        unsigned index = (lrand48()) % (diff_groups.size());
-        for (std::set<ProcessorGroup>::const_iterator it = all_groups.begin();
-              it != all_groups.end(); it++)
+        unsigned index = (lrand48()) % (diff_procs.size());
+        for (std::set<Processor>::const_iterator it = diff_procs.begin();
+              it != diff_procs.end(); it++)
         {
           if (!index--)
           {
-            log_mapper(LEVEL_SPEW,"Attempting a steal from processor group %x on processor group %x",local_group.id,it->id);
+            log_mapper(LEVEL_SPEW,"Attempting a steal from processor %x on processor %x",local_proc.id,it->id);
             return *it;
           }
         }
         // Should never make it here, the runtime shouldn't call us if the blacklist is all procs
         assert(false);
       }
-      return ProcessorGroup::NO_GROUP;
+      return Processor::NO_PROC;
     }
 
     //--------------------------------------------------------------------------------------------
-    void DefaultMapper::permit_task_steal(ProcessorGroup thief, const std::vector<const Task*> &tasks,
+    void DefaultMapper::permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
                                           std::set<const Task*> &to_steal)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Permit task steal in default mapper for processor group %x",local_group.id);
+      log_mapper(LEVEL_SPEW,"Permit task steal in default mapper for processor %x",local_proc.id);
 
       if (stealing_enabled)
       {
@@ -236,8 +212,8 @@ namespace LegionRuntime {
         {
           if ((*it)->steal_count < max_steal_count)
           {
-            log_mapper(LEVEL_DEBUG,"Task %s (ID %d) stolen from processor group %x by processor group %x",
-                       (*it)->variants->name, (*it)->get_unique_task_id(), local_group.id, thief.id);
+            log_mapper(LEVEL_DEBUG,"Task %s (ID %d) stolen from processor %x by processor %x",
+                       (*it)->variants->name, (*it)->get_unique_task_id(), local_proc.id, thief.id);
             to_steal.insert(*it);
             total_stolen++;
             // Check to see if we're done
@@ -283,8 +259,8 @@ namespace LegionRuntime {
                 }
                 if (shared)
                 {
-                  log_mapper(LEVEL_DEBUG,"Task %s (ID %d) stolen from processor group %x by processor group %x",
-                             (*inner_it)->variants->name, (*inner_it)->get_unique_task_id(), local_group.id,
+                  log_mapper(LEVEL_DEBUG,"Task %s (ID %d) stolen from processor %x by processor %x",
+                             (*inner_it)->variants->name, (*inner_it)->get_unique_task_id(), local_proc.id,
                              thief.id);
                   // Add it to the list of steals and either return or break
                   to_steal.insert(*inner_it);
@@ -306,14 +282,14 @@ namespace LegionRuntime {
                                    std::vector<Mapper::IndexSplit> &slice)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Slice index space in default mapper for task %s (ID %d) for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
+      log_mapper(LEVEL_SPEW,"Slice index space in default mapper for task %s (ID %d) for processor %x",
+                 task->variants->name, task->get_unique_task_id(), local_proc.id);
 
       // This assumes the IndexSpace is 1-dimensional and split it according to the splitting factor.
       LowLevel::ElementMask mask = index_space.get_valid_mask();
 
-      const std::set<ProcessorGroup> &all_groups = machine->get_all_groups();
-      std::vector<ProcessorGroup> proc_groups(all_groups.begin(),all_groups.end());
+      const std::set<Processor> &all_procs = machine->get_all_processors();
+      std::vector<Processor> procs(all_procs.begin(),all_procs.end());
 
       // Count valid elements in mask.
       unsigned num_elts = 0;
@@ -326,7 +302,7 @@ namespace LegionRuntime {
       }
 
       // Choose split sizes based on number of elements and processors.
-      unsigned num_chunks = all_groups.size() * splitting_factor;
+      unsigned num_chunks = procs.size() * splitting_factor;
       if (num_chunks > num_elts) {
         num_chunks = num_elts;
       }
@@ -365,8 +341,22 @@ namespace LegionRuntime {
       for (unsigned chunk = 0; chunk < num_chunks; chunk++) {
         // TODO: Come up with a better way of distributing work across the processor groups
         slice.push_back(Mapper::IndexSplit(IndexSpace::create_index_space(index_space, chunks[chunk]),
-                                   proc_groups[(chunk % proc_groups.size())], false, false));
+                                   procs[(chunk % procs.size())], false, false));
       }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    VariantID DefaultMapper::select_task_variant(const Task *task, Processor target)
+    //--------------------------------------------------------------------------------------------
+    {
+      Processor::Kind target_kind = machine->get_processor_kind(target);
+      if (!task->variants->has_variant(target_kind, task->is_index_space))
+      {
+        log_mapper(LEVEL_ERROR,"Mapper unable to find variant for task %s (ID %d)",
+                                task->variants->name, task->get_unique_task_id());
+        assert(false);
+      }
+      return task->variants->get_variant(target_kind, task->is_index_space);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -374,18 +364,8 @@ namespace LegionRuntime {
                                              const RegionRequirement &req, unsigned index)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Map region virtually for task %s (ID %d) in default mapper for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
-      if ((task->tag & MAPTAG_VIRTUAL_MAP_REGION_0) && (index == 0))
-        return true;
-      else if ((task->tag & MAPTAG_VIRTUAL_MAP_REGION_1) && (index == 1))
-        return true;
-      else if ((task->tag & MAPTAG_VIRTUAL_MAP_REGION_2) && (index == 2))
-        return true;
-      else if ((task->tag & MAPTAG_VIRTUAL_MAP_REGION_3) && (index == 3))
-        return true;
-      else if ((task->tag & MAPTAG_VIRTUAL_MAP_REGION_4) && (index == 4))
-        return true;
+      log_mapper(LEVEL_SPEW,"Map region virtually for task %s (ID %d) in default mapper for processor %x",
+                 task->variants->name, task->get_unique_task_id(), local_proc.id);
       return false;
     }
 
@@ -398,7 +378,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------------------------
     {
       log_mapper(LEVEL_SPEW,"Map task region in default mapper for region ? of task %s (ID %d) "
-                 "for processor group %x", task->variants->name, task->get_unique_task_id(), local_group.id);
+                 "for processor %x", task->variants->name, task->get_unique_task_id(), local_proc.id);
       // Just give our processor stack
       target_ranking = memory_stacks[target];
       enable_WAR_optimization = war_enabled;
@@ -410,8 +390,9 @@ namespace LegionRuntime {
                                               unsigned index, bool inline_mapping)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Notify failed mapping for task %s (ID %d) in default mapper for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
+      log_mapper(LEVEL_SPEW,"Notify failed mapping for task %s (ID %d) in default mapper for processor %x",
+                 task->variants->name, task->get_unique_task_id(), local_proc.id);
+      assert(false);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -420,8 +401,8 @@ namespace LegionRuntime {
                                                const Memory & chosen_mem, size_t max_blocking_factor)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Select region layout for task %s (ID %d) in default mapper for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
+      log_mapper(LEVEL_SPEW,"Select region layout for task %s (ID %d) in default mapper for processor %x",
+                 task->variants->name, task->get_unique_task_id(), local_proc.id);
       if (machine->get_processor_kind(target) == Processor::TOC_PROC)
         return max_blocking_factor;
       return 1;
@@ -437,8 +418,8 @@ namespace LegionRuntime {
                                           bool &create_one)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Rank copy targets for task %s (ID %d) in default mapper for processor group %x",
-                 task->variants->name, task->get_unique_task_id(), local_group.id);
+      log_mapper(LEVEL_SPEW,"Rank copy targets for task %s (ID %d) in default mapper for processor %x",
+                 task->variants->name, task->get_unique_task_id(), local_proc.id);
       if (current_instances.empty())
       {
         to_create = memory_stacks[target];
@@ -456,7 +437,7 @@ namespace LegionRuntime {
                                           const Memory &dst, std::vector<Memory> &chosen_order)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Select copy source in default mapper for processor group %x", local_group.id);
+      log_mapper(LEVEL_SPEW,"Select copy source in default mapper for processor %x", local_proc.id);
       // Handle the simple case of having the destination memory in the set of instances 
       if (current_instances.find(dst) != current_instances.end())
       {
@@ -509,8 +490,8 @@ namespace LegionRuntime {
     bool DefaultMapper::speculate_on_predicate(MappingTagID tag, bool &speculative_value)
     //--------------------------------------------------------------------------------------------
     {
-      log_mapper(LEVEL_SPEW,"Speculate on predicate in default mapper for processor group %x",
-                 local_group.id);
+      log_mapper(LEVEL_SPEW,"Speculate on predicate in default mapper for processor %x",
+                 local_proc.id);
       return false;
     }
 

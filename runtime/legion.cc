@@ -10,8 +10,8 @@
 #define MAX_NUM_PROCS           1024
 #define DEFAULT_MAPPER_SLOTS    8
 #define DEFAULT_OPS             4
-#define MAX_TASK_MAPS_PER_STEP  4
 #define MAX_TASK_WINDOW         1024
+#define MIN_TASKS_TO_PERFORM_SCHEDULING 1
 
 namespace LegionRuntime {
   namespace HighLevel {
@@ -309,38 +309,71 @@ namespace LegionRuntime {
     bool TaskVariantCollection::has_variant(Processor::Kind kind, bool index_space)
     //--------------------------------------------------------------------------
     {
-      bool result = false;
-      for (std::vector<Variant>::const_iterator it = variants.begin();
+      for (std::map<VariantID,Variant>::const_iterator it = variants.begin();
             it != variants.end(); it++)
       {
-        if ((it->proc_kind == kind) && (it->index_space == index_space))
+        if ((it->second.proc_kind == kind) && (it->second.index_space == index_space))
         {
-          result = true;
-          break;
+          return true;
         }
       }
-      return result;
+      return false;
     }
 
     //--------------------------------------------------------------------------
-    void TaskVariantCollection::add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index, bool leaf)
+    VariantID TaskVariantCollection::get_variant(Processor::Kind kind, bool index_space)
+    //--------------------------------------------------------------------------
+    {
+      for (std::map<VariantID,Variant>::const_iterator it = variants.begin();
+            it != variants.end(); it++)
+      {
+        if ((it->second.proc_kind == kind) && (it->second.index_space == index_space))
+        {
+          return it->first;
+        }
+      }
+      log_variant(LEVEL_ERROR,"User task %s (ID %d) has no registered variants for "
+          "processors of kind %d and index space %d",name, user_id, kind, index_space);
+      exit(ERROR_UNREGISTERED_VARIANT);
+      return 0;
+    }
+
+    //--------------------------------------------------------------------------
+    bool TaskVariantCollection::has_variant(VariantID vid)
+    //--------------------------------------------------------------------------
+    {
+      return (variants.find(vid) != variants.end());
+    }
+
+    //--------------------------------------------------------------------------
+    const TaskVariantCollection::Variant& TaskVariantCollection::get_variant(VariantID vid)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!has_variant(kind, index));
+      assert(variants.find(vid) != variants.end());
 #endif
-      variants.push_back(Variant(low_id, kind, index, leaf));
+      return variants[vid];
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskVariantCollection::add_variant(Processor::TaskFuncID low_id, Processor::Kind kind, bool index)
+    //--------------------------------------------------------------------------
+    {
+      // for right now we'll make up our own VariantID
+      VariantID vid = variants.size();
+      variants[vid] = Variant(low_id, kind, index);
     }
 
     //--------------------------------------------------------------------------
     const TaskVariantCollection::Variant& TaskVariantCollection::select_variant(bool index, Processor::Kind kind)
     //--------------------------------------------------------------------------
     {
-      for (unsigned idx = 0; idx < variants.size(); idx++)
+      for (std::map<VariantID,Variant>::const_iterator it = variants.begin();
+            it != variants.end(); it++)
       {
-        if ((variants[idx].proc_kind == kind) && (variants[idx].index_space == index))
+        if ((it->second.proc_kind == kind) && (it->second.index_space == index))
         {
-          return variants[idx];
+          return it->second;
         }
       }
       log_variant(LEVEL_ERROR,"User task %s (ID %d) has no registered variants for "
@@ -1168,7 +1201,7 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    bool PhysicalRegion::has_accessor(AccessorType at)
+    bool PhysicalRegion::has_accessor(AccessorType at) const
     //--------------------------------------------------------------------------
     {
       // if we haven't computed the map yet, do it
@@ -1201,7 +1234,7 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
 #define GET_ACCESSOR_IMPL(AT)                                                     \
     template<>                                                                    \
-    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) const \
     {                                                                             \
       bool has_access = has_accessor(AT);                                         \
       if (!has_access)                                                            \
@@ -1219,7 +1252,7 @@ namespace LegionRuntime {
 #else // DEBUG_HIGH_LEVEL
 #define GET_ACCESSOR_IMPL(AT)                                                     \
     template<>                                                                    \
-    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(void) const \
     {                                                                             \
       LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic;                \
       if (is_impl)                                                                \
@@ -1240,7 +1273,7 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
 #define GET_FIELD_ACCESSOR_IMPL(AT)                                                       \
     template<>                                                                            \
-    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(FieldID fid)  \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(FieldID fid) const  \
     {                                                                                     \
       bool has_access = has_accessor(AT);                                                 \
       if (!has_access)                                                                    \
@@ -1258,7 +1291,7 @@ namespace LegionRuntime {
 #else
 #define GET_FIELD_ACCESSOR_IMPL(AT)                                                       \
     template<>                                                                            \
-    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(FieldID fid)  \
+    LowLevel::RegionAccessor<LowLevel::AT> PhysicalRegion::get_accessor<AT>(FieldID fid) const \
     {                                                                                     \
       LowLevel::RegionAccessor<LowLevel::AccessorGeneric> generic;                        \
       if (is_impl)                                                                        \
@@ -1336,6 +1369,33 @@ namespace LegionRuntime {
     }
 
     /////////////////////////////////////////////////////////////
+    // Index Iterator 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    IndexIterator::IndexIterator(IndexSpace space)
+      : enumerator(space.get_valid_mask().enumerate_enabled())
+    //--------------------------------------------------------------------------
+    {
+      finished = !(enumerator->get_next(current_pointer,remaining_elmts));
+    }
+
+    //--------------------------------------------------------------------------
+    IndexIterator::IndexIterator(const LogicalRegion &handle)
+      : enumerator(handle.get_index_space().get_valid_mask().enumerate_enabled())
+    //--------------------------------------------------------------------------
+    {
+      finished = !(enumerator->get_next(current_pointer,remaining_elmts));
+    }
+
+    //--------------------------------------------------------------------------
+    IndexIterator::~IndexIterator(void)
+    //--------------------------------------------------------------------------
+    {
+      delete enumerator;
+    }
+
+    /////////////////////////////////////////////////////////////
     // Lockable 
     /////////////////////////////////////////////////////////////
 
@@ -1399,6 +1459,35 @@ namespace LegionRuntime {
         unlock();
       return result;
     }
+
+    /////////////////////////////////////////////////////////////
+    // Mappable 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    Mappable::Mappable(void)
+      : mapper(NULL)
+    //--------------------------------------------------------------------------
+    {
+    }
+    
+#ifdef LOW_LEVEL_LOCKS
+    //--------------------------------------------------------------------------
+    void Mappable::initialize_mappable(Mapper *map, Lock m_lock)
+    //--------------------------------------------------------------------------
+    {
+      mapper = map;
+      mapper_lock = m_lock;
+    }
+#else
+    //--------------------------------------------------------------------------
+    void Mappable::initialize_mappable(Mapper *map, ImmovableLock m_lock)
+    //--------------------------------------------------------------------------
+    {
+      mapper = map;
+      mapper_lock = m_lock;
+    }
+#endif
 
     /////////////////////////////////////////////////////////////
     // Physical Region Impl
@@ -2072,14 +2161,8 @@ namespace LegionRuntime {
     /////////////////////////////////////////////////////////////
 
     //--------------------------------------------------------------------------
-    PredicateImpl::PredicateImpl(Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                                 Lock m_lock,
-#else
-                                 ImmovableLock m_lock,
-#endif
-                                 MappingTagID t)
-      : mapper_invoked(false), mapper(m), mapper_lock(m_lock), tag(t), evaluated(false)
+    PredicateImpl::PredicateImpl(MappingTagID t)
+      : Mappable(), mapper_invoked(false), tag(t), evaluated(false)
     //--------------------------------------------------------------------------
     {
     }
@@ -2191,12 +2274,7 @@ namespace LegionRuntime {
     class PredicateAnd : public PredicateImpl {
     protected:
       friend class HighLevelRuntime;
-      PredicateAnd(Predicate p1, Predicate p2, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                   Lock m_lock,
-#else
-                   ImmovableLock m_lock,
-#endif
+      PredicateAnd(Predicate p1, Predicate p2,
                    MappingTagID tag);
     public:
       virtual bool notify(bool value);
@@ -2207,14 +2285,9 @@ namespace LegionRuntime {
     };
 
     //--------------------------------------------------------------------------
-    PredicateAnd::PredicateAnd(Predicate p1, Predicate p2, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                               Lock m_lock,
-#else
-                               ImmovableLock m_lock,
-#endif
+    PredicateAnd::PredicateAnd(Predicate p1, Predicate p2, 
                                MappingTagID tag)
-      : PredicateImpl(m, m_lock, tag), first_set(false), 
+      : PredicateImpl(tag), first_set(false), 
         set_event(UserEvent::create_user_event())
     //--------------------------------------------------------------------------
     {
@@ -2329,12 +2402,7 @@ namespace LegionRuntime {
     class PredicateOr : public PredicateImpl {
     protected:
       friend class HighLevelRuntime;
-      PredicateOr(Predicate p1, Predicate p2, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                  Lock m_lock,
-#else
-                  ImmovableLock m_lock,
-#endif
+      PredicateOr(Predicate p1, Predicate p2,
                   MappingTagID tag);
     public:
       virtual bool notify(bool value);
@@ -2345,14 +2413,9 @@ namespace LegionRuntime {
     };
 
     //--------------------------------------------------------------------------
-    PredicateOr::PredicateOr(Predicate p1, Predicate p2, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                             Lock m_lock,
-#else
-                             ImmovableLock m_lock,
-#endif
+    PredicateOr::PredicateOr(Predicate p1, Predicate p2, 
                              MappingTagID tag)
-      : PredicateImpl(m, m_lock, tag), first_set(false), 
+      : PredicateImpl(tag), first_set(false), 
         set_event(UserEvent::create_user_event())
     //--------------------------------------------------------------------------
     {
@@ -2467,12 +2530,7 @@ namespace LegionRuntime {
     class PredicateNot : public PredicateImpl {
     protected:
       friend class HighLevelRuntime;
-      PredicateNot(Predicate p, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                   Lock m_lock,
-#else
-                   ImmovableLock m_lock,
-#endif
+      PredicateNot(Predicate p,
                    MappingTagID tag);
     public:
       virtual bool notify(bool value);
@@ -2482,14 +2540,9 @@ namespace LegionRuntime {
     };
 
     //--------------------------------------------------------------------------
-    PredicateNot::PredicateNot(Predicate p, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                             Lock m_lock,
-#else
-                             ImmovableLock m_lock,
-#endif
+    PredicateNot::PredicateNot(Predicate p, 
                              MappingTagID tag)
-      : PredicateImpl(m, m_lock, tag),  
+      : PredicateImpl(tag),  
         set_event(UserEvent::create_user_event())
     //--------------------------------------------------------------------------
     {
@@ -2542,12 +2595,7 @@ namespace LegionRuntime {
     class PredicateFuture : public PredicateImpl {
     protected:
       friend class HighLevelRuntime;
-      PredicateFuture(Future f, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                      Lock m_lock,
-#else
-                      ImmovableLock m_lock,
-#endif
+      PredicateFuture(Future f, 
                       MappingTagID tag);
     public:
       virtual bool notify(bool value);
@@ -2560,14 +2608,9 @@ namespace LegionRuntime {
     };
 
     //--------------------------------------------------------------------------
-    PredicateFuture::PredicateFuture(Future f, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                                     Lock m_lock,
-#else
-                                     ImmovableLock m_lock,
-#endif
+    PredicateFuture::PredicateFuture(Future f, 
                                      MappingTagID tag)
-      : PredicateImpl(m, m_lock, tag),  
+      : PredicateImpl(tag),  
         set_event(f.impl->set_event), future(f)
     //--------------------------------------------------------------------------
     {
@@ -2616,12 +2659,7 @@ namespace LegionRuntime {
     protected:
       friend class HighLevelRuntime;
       PredicateCustom(PredicateFnptr func, const std::vector<Future> &futures,
-                      const TaskArgument &arg, Processor local_proc, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                      Lock m_lock,
-#else
-                      ImmovableLock m_lock,
-#endif
+                      const TaskArgument &arg, Processor local_proc, 
                       MappingTagID tag);
     public:
       virtual bool notify(bool value);
@@ -2638,14 +2676,9 @@ namespace LegionRuntime {
 
     //--------------------------------------------------------------------------  
     PredicateCustom::PredicateCustom(PredicateFnptr func, const std::vector<Future> &futures,
-                                     const TaskArgument &arg, Processor local_proc, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                                     Lock m_lock,
-#else
-                                     ImmovableLock m_lock,
-#endif
+                                     const TaskArgument &arg, Processor local_proc, 
                                      MappingTagID tag)
-      : PredicateImpl(m, m_lock, tag),
+      : PredicateImpl(tag),
         custom_func(func), custom_futures(futures)
     //--------------------------------------------------------------------------
     {
@@ -2705,6 +2738,177 @@ namespace LegionRuntime {
       unlock();
       notify_all_waiters();
       return result;
+    }
+
+    /////////////////////////////////////////////////////////////
+    // Processor Manager 
+    /////////////////////////////////////////////////////////////
+
+    //--------------------------------------------------------------------------
+    HighLevelRuntime::ProcessorManager::ProcessorManager(Processor proc, Processor::Kind kind, HighLevelRuntime *rt, 
+                                        unsigned min_out, unsigned def_mappers, unsigned max_steals)
+      : runtime(rt), local_proc(proc), proc_kind(kind),
+        min_outstanding(min_out), current_outstanding(0),
+        idle_task_enabled(false), // to be safe always set it to false
+        ready_queues(std::vector<std::list<TaskContext*> >(def_mappers)),
+        mapper_objects(std::vector<Mapper*>(def_mappers)),
+#ifdef LOW_LEVEL_LOCKS
+        mapper_locks(std::vector<Lock>(def_mappers)),
+#else
+        mapper_locks(std::vector<ImmovableLock>(def_mappers)),
+#endif
+        max_outstanding_steals(max_steals)
+    //--------------------------------------------------------------------------
+    {
+      // Set up default mapper and locks
+      for (unsigned int i=0; i<mapper_objects.size(); i++)
+      {
+        mapper_objects[i] = NULL;
+#ifdef LOW_LEVEL_LOCKS
+        mapper_locks[i] = Lock::NO_LOCK;
+#else
+        mapper_locks[i].clear();
+#endif
+        ready_queues[i].clear();
+        outstanding_steals[i] = std::set<Processor>();
+      }
+#ifdef LOW_LEVEL_LOCKS
+      mapper_locks[0] = Lock::create_lock();
+      this->mapping_lock = Lock::create_lock();
+      this->queue_lock = Lock::create_lock();
+      this->stealing_lock = Lock::create_lock();
+      this->thieving_lock = Lock::create_lock();
+#ifdef DEBUG_HIGH_LEVEL
+      assert(mapping_lock.exists() && queue_lock.exists() &&
+              stealing_lock.exists() && thieving_lock.exists()); 
+#endif
+#else
+      mapper_locks[0].init();
+      this->mapping_lock.init();
+      this->queue_lock.init();
+      this->stealing_lock.init();
+      this->thieving_lock.init();
+#endif
+    }
+
+    //--------------------------------------------------------------------------
+    HighLevelRuntime::ProcessorManager::~ProcessorManager(void)
+    //--------------------------------------------------------------------------
+    {
+      // Clean up mapper objects and all the low-level locks that we own
+#ifdef DEBUG_HIGH_LEVEL
+      assert(mapper_objects.size() == mapper_locks.size());
+#endif
+      for (unsigned i=0; i < mapper_objects.size(); i++)
+      {
+        if (mapper_objects[i] != NULL)
+        {
+          delete mapper_objects[i];
+          mapper_objects[i] = NULL;
+#ifdef DEBUG_HIGH_LEVEL
+#ifdef LOW_LEVEL_LOCKS
+          assert(mapper_locks[i].exists());
+#endif
+#endif
+#ifdef LOW_LEVEL_LOCKS
+          mapper_locks[i].destroy_lock();
+#else
+          mapper_locks[i].destroy();
+#endif
+        }
+      }
+      mapper_objects.clear();
+      mapper_locks.clear();
+      ready_queues.clear();
+#ifdef LOW_LEVEL_LOCKS
+      mapping_lock.destroy_lock();
+      queue_lock.destroy_lock();
+      stealing_lock.destroy_lock();
+      thieving_lock.destroy_lock();
+#else
+      mapping_lock.destroy();
+      queue_lock.destroy();
+      stealing_lock.destroy();
+      thieving_lock.destroy();
+#endif
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::add_mapper(MapperID id, Mapper *m, bool check)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_run(LEVEL_SPEW,"Adding mapper %d on processor %x",id,local_proc.id);
+#ifdef DEBUG_HIGH_LEVEL
+      if (check && (id == 0))
+      {
+        log_run(LEVEL_ERROR,"Invalid mapping ID.  ID 0 is reserved.");
+        exit(ERROR_RESERVED_MAPPING_ID);
+      }
+#endif
+      AutoLock map_lock(mapping_lock);
+      // Increase the size of the mapper vector if necessary
+      if (id >= mapper_objects.size())
+      {
+        int old_size = mapper_objects.size();
+        mapper_objects.resize(id+1);
+        mapper_locks.resize(id+1);
+        ready_queues.resize(id+1);
+        for (unsigned int i=old_size; i<(id+1); i++)
+        {
+          mapper_objects[i] = NULL;
+#ifdef LOW_LEVEL_LOCKS
+          mapper_locks[i] = Lock::NO_LOCK;
+#else
+          mapper_locks[i].clear();
+#endif
+          ready_queues[i].clear();
+          outstanding_steals[i] = std::set<Processor>();
+        }
+      } 
+#ifdef DEBUG_HIGH_LEVEL
+      assert(id < mapper_objects.size());
+      assert(mapper_objects[id] == NULL);
+#ifdef LOW_LEVEL_LOCKS
+      assert(!mapper_locks[id].exists());
+#endif
+#endif
+#ifdef LOW_LEVEL_LOCKS
+      mapper_locks[id] = Lock::create_lock();
+#else
+      mapper_locks[id].init();
+#endif
+      AutoLock mapper_lock(mapper_locks[id]);
+      mapper_objects[id] = m;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::replace_default_mapper(Mapper *m)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Take an exclusive lock on the mapper data structure
+      AutoLock map_lock(mapping_lock);
+      AutoLock mapper_lock(mapper_locks[0]);
+      delete mapper_objects[0];
+      mapper_objects[0] = m;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::initialize_mappable(Mappable *mappable, MapperID map_id)
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef LOW_LEVEL_LOCKS
+      AutoLock map_lock(mapping_lock,false/*exclusive*/);
+#else
+      AutoLock map_lock(mapping_lock);
+#endif
+#ifdef DEBUG_HIGH_LEVEL
+      assert(map_id < mapper_objects.size());
+      assert(mapper_objects[map_id] != NULL);
+#ifdef LOW_LEVEL_LOCKS
+      assert(mapper_locks[map_id].exists());
+#endif
+#endif
+      mappable->initialize_mappable(mapper_objects[map_id], mapper_locks[map_id]);
     }
 
 #ifdef INORDER_EXECUTION
@@ -2817,22 +3021,20 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     HighLevelRuntime::HighLevelRuntime(LowLevel::Machine *m, Processor local)
       : utility_proc(local.get_utility_processor()), 
-        proc_kind(m->get_processor_kind(local)), 
-        local_group(local.get_processor_group()),
-        local_procs(local_group.get_all_processors()),
+        local_procs(local.get_local_processors()),
         machine(m),
-        mapper_objects(std::vector<Mapper*>(DEFAULT_MAPPER_SLOTS)),
-#ifdef LOW_LEVEL_LOCKS
-        mapper_locks(std::vector<Lock>(DEFAULT_MAPPER_SLOTS)),
-#else
-        mapper_locks(std::vector<ImmovableLock>(DEFAULT_MAPPER_SLOTS)),
-#endif
-        ready_queues(std::vector<std::list<TaskContext*> >(DEFAULT_MAPPER_SLOTS)),
-        unique_stride(m->get_all_processors().size()),
-        max_outstanding_steals(m->get_all_processors().size()-1)
+        unique_stride(m->get_all_processors().size())
     //--------------------------------------------------------------------------
     {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(utility_proc == local); // should only be making high level runtimes for utility processors
+#endif
       log_run(LEVEL_DEBUG,"Initializing high-level runtime on processor %x",utility_proc.id);
+      // Disable for the idle task for the utility processor.  Note that if this is a real
+      // processor that is its own utility processor, it will have the idle task enabled
+      // when the processor manager for it is created.
+      local.disable_idle_task();
+
       // Mark that we are the valid high-level runtime instance for all of our local processors
       for (std::set<Processor>::const_iterator it = local_procs.begin();
             it != local_procs.end(); it++)
@@ -2868,46 +3070,32 @@ namespace LegionRuntime {
         start_color             = idx;
       }
 
-      // Set up default mapper and locks
-      for (unsigned int i=0; i<mapper_objects.size(); i++)
+      // Set up processor managers for all of our processors
+      for (std::set<Processor>::const_iterator it = local_procs.begin();
+            it != local_procs.end(); it++)
       {
-        mapper_objects[i] = NULL;
-#ifdef LOW_LEVEL_LOCKS
-        mapper_locks[i] = Lock::NO_LOCK;
-#else
-        mapper_locks[i].clear();
-#endif
-        ready_queues[i].clear();
-        outstanding_steals[i] = std::set<ProcessorGroup>();
+        ProcessorManager *manager = new ProcessorManager(*it, machine->get_processor_kind(*it), this, min_tasks_to_schedule, 
+                                                    DEFAULT_MAPPER_SLOTS, machine->get_all_processors().size()-1);
+        proc_managers[*it] = manager;
+        // Add the default mapper
+        manager->add_mapper(0, new DefaultMapper(machine, this, *it), false/*check*/);
       }
-      mapper_objects[0] = new DefaultMapper(machine,this,local_group);
+      
 #ifdef LOW_LEVEL_LOCKS
-      mapper_locks[0] = Lock::create_lock();
-
       // Initialize our locks
       this->unique_lock = Lock::create_lock();
-      this->mapping_lock = Lock::create_lock();
-      this->queue_lock = Lock::create_lock();
       this->available_lock= Lock::create_lock();
-      this->stealing_lock = Lock::create_lock();
-      this->thieving_lock = Lock::create_lock();
       this->forest_lock = Lock::create_lock();
 #else
-      mapper_locks[0].init();
-      
       this->unique_lock.init();
-      this->mapping_lock.init();
-      this->queue_lock.init();
       this->available_lock.init();
-      this->stealing_lock.init();
-      this->thieving_lock.init();
       this->forest_lock.init();
 #endif
 #ifdef DEBUG_HIGH_LEVEL
 #ifdef LOW_LEVEL_LOCKS
-      assert(unique_lock.exists() && mapping_lock.exists() && queue_lock.exists() &&
-              available_lock.exists() && stealing_lock.exists() && 
-              thieving_lock.exists() && forest_lock.exists());
+      assert(unique_lock.exists() && 
+              available_lock.exists() &&  
+               forest_lock.exists());
 #endif
 #endif
       // Make some default contexts
@@ -2925,7 +3113,7 @@ namespace LegionRuntime {
 
       // Now initialize any mappers that we have
       if (registration_callback != NULL)
-        (*registration_callback)(m, this, local_group);
+        (*registration_callback)(m, this, local_procs);
 
       // If this is the first processor, launch the legion main task on this processor
       const std::set<Processor> &all_procs = machine->get_all_processors();
@@ -2942,11 +3130,13 @@ namespace LegionRuntime {
         // Initialize the task, copying arguments
         top->initialize_task(NULL/*no parent*/, HighLevelRuntime::legion_main_id,
                               &HighLevelRuntime::get_input_args(), sizeof(InputArgs),
-                              Predicate::TRUE_PRED, 0/*map id*/, 0/*mapping tag*/, get_mapper(0), get_mapper_lock(0));
+                              Predicate::TRUE_PRED, 0/*map id*/, 0/*mapping tag*/); 
         // Mark the top level task so it knows to reclaim itself
         top->top_level_task = true;
-        top->target_group = local_group;
         top->orig_proc = *first_cpu;
+        top->current_proc = *first_cpu;
+        top->executing_processor = *first_cpu;
+        find_manager(*first_cpu)->initialize_mappable(top, 0);
 #ifdef LEGION_SPY
         LegionSpy::log_top_level_task(top->get_unique_id(), top->ctx_id, HighLevelRuntime::legion_main_id);
 #endif
@@ -2961,10 +3151,6 @@ namespace LegionRuntime {
         top->perform_mapping();
         top->launch_task();
       }
-      // enable the idel task
-      UtilityProcessor copy = utility_proc;
-      copy.enable_idle_task();
-      this->idle_task_enabled = true;
 #ifdef DEBUG_HIGH_LEVEL
       tree_state_logger = NULL;
       if (logging_region_tree_state)
@@ -2998,46 +3184,20 @@ namespace LegionRuntime {
 #undef DELETE_ALL_OPS
       }
 
-      // Clean up mapper objects and all the low-level locks that we own
-#ifdef DEBUG_HIGH_LEVEL
-      assert(mapper_objects.size() == mapper_locks.size());
-#endif
-      for (unsigned i=0; i < mapper_objects.size(); i++)
+      for (std::map<Processor,ProcessorManager*>::iterator it = proc_managers.begin();
+            it != proc_managers.end(); it++)
       {
-        if (mapper_objects[i] != NULL)
-        {
-          delete mapper_objects[i];
-          mapper_objects[i] = NULL;
-#ifdef DEBUG_HIGH_LEVEL
-#ifdef LOW_LEVEL_LOCKS
-          assert(mapper_locks[i].exists());
-#endif
-#endif
-#ifdef LOW_LEVEL_LOCKS
-          mapper_locks[i].destroy_lock();
-#else
-          mapper_locks[i].destroy();
-#endif
-        }
+        delete it->second;
       }
-      mapper_objects.clear();
-      mapper_locks.clear();
-      ready_queues.clear();
+      proc_managers.clear();
+
 #ifdef LOW_LEVEL_LOCKS
-      mapping_lock.destroy_lock();
-      queue_lock.destroy_lock();
       available_lock.destroy_lock();
       unique_lock.destroy_lock();
-      stealing_lock.destroy_lock();
-      thieving_lock.destroy_lock();
       forest_lock.destroy_lock();
 #else
-      mapping_lock.destroy();
-      queue_lock.destroy();
       available_lock.destroy();
       unique_lock.destroy();
-      stealing_lock.destroy();
-      thieving_lock.destroy();
       forest_lock.destroy();
 #endif
 #ifdef DEBUG_HIGH_LEVEL
@@ -3145,17 +3305,23 @@ namespace LegionRuntime {
       // Now see if an entry already exists in the attribute table for this uid
       if (table.find(uid) == table.end())
       {
-        TaskVariantCollection *collec = new TaskVariantCollection(uid, name);
+        TaskVariantCollection *collec = new TaskVariantCollection(uid, name, leaf);
 #ifdef DEBUG_HIGH_LEVEL
         assert(collec != NULL);
 #endif
         table[uid] = collec;
-        collec->add_variant(low_id, proc_kind, index_space, leaf);
+        collec->add_variant(low_id, proc_kind, index_space);
       }
       else
       {
+        if (table[uid]->leaf != leaf)
+        {
+          log_run(LEVEL_ERROR,"Tasks of variant %s different leaf statements.  All tasks of the "
+                              "same variant must all be leaves, or all be not leaves.", table[uid]->name);
+          exit(ERROR_LEAF_MISMATCH);
+        }
         // Update the variants for the attribute
-        table[uid]->add_variant(low_id, proc_kind, index_space, leaf);
+        table[uid]->add_variant(low_id, proc_kind, index_space);
       }
       return uid;
     }
@@ -3217,8 +3383,8 @@ namespace LegionRuntime {
 
     /*static*/ volatile RegistrationCallbackFnptr HighLevelRuntime::registration_callback = NULL;
     /*static*/ Processor::TaskFuncID HighLevelRuntime::legion_main_id = 0;
-    /*static*/ unsigned HighLevelRuntime::max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
     /*static*/ unsigned HighLevelRuntime::max_task_window_per_context = MAX_TASK_WINDOW;
+    /*static*/ unsigned HighLevelRuntime::min_tasks_to_schedule = MIN_TASKS_TO_PERFORM_SCHEDULING;
 #ifdef INORDER_EXECUTION
     /*static*/ bool HighLevelRuntime::program_order_execution = false;
 #endif
@@ -3311,7 +3477,8 @@ namespace LegionRuntime {
           continue;					\
         } } while(0)
 
-        max_tasks_per_schedule_request = MAX_TASK_MAPS_PER_STEP;
+        max_task_window_per_context = MAX_TASK_WINDOW;
+        min_tasks_to_schedule = MIN_TASKS_TO_PERFORM_SCHEDULING;
         for (int i = 1; i < argc; i++)
         {
 #ifdef INORDER_EXECUTION
@@ -3323,8 +3490,8 @@ namespace LegionRuntime {
                             "the -DINORDER_EXECUTION flag.");
           }
 #endif
-          INT_ARG("-hl:sched", max_tasks_per_schedule_request);
           INT_ARG("-hl:window", max_task_window_per_context);
+          INT_ARG("-hl:sched", min_tasks_to_schedule);
 #ifdef DYNAMIC_TESTS
           BOOL_ARG("-hl:dynamic",dynamic_independence_tests); 
 #else
@@ -3347,7 +3514,6 @@ namespace LegionRuntime {
 #undef INT_ARG
 #undef BOOL_ARG
 #ifdef DEBUG_HIGH_LEVEL
-        assert(max_tasks_per_schedule_request > 0);
         assert(max_task_window_per_context > 0);
 #endif
       }
@@ -3396,7 +3562,7 @@ namespace LegionRuntime {
     void HighLevelRuntime::schedule(const void * args, size_t arglen, Processor p)
     //--------------------------------------------------------------------------------------------
     {
-      HighLevelRuntime::get_runtime(p)->process_schedule_request();
+      HighLevelRuntime::get_runtime(p)->process_schedule_request(p);
     }
 
 #define UNPACK_ORIGINAL_PROCESSOR(input,output,set_proc)    \
@@ -3409,7 +3575,7 @@ namespace LegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_ENQUEUE_TASKS);
       UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
-      HighLevelRuntime::get_runtime(proc)->process_tasks(buffer,arglen-sizeof(Processor));
+      HighLevelRuntime::get_runtime(proc)->process_tasks(buffer,arglen-sizeof(Processor),proc);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3418,7 +3584,7 @@ namespace LegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_STEAL_REQUEST);
       UNPACK_ORIGINAL_PROCESSOR(args,buffer,proc);
-      HighLevelRuntime::get_runtime(proc)->process_steal(buffer,arglen-sizeof(Processor));
+      HighLevelRuntime::get_runtime(proc)->process_steal(buffer,arglen-sizeof(Processor),proc);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -3507,7 +3673,7 @@ namespace LegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       IndividualTask *task = get_available_individual_task(ctx);
       task->initialize_task(ctx, task_id, arg.get_ptr(), arg.get_size(),
-                            predicate, id, tag, get_mapper(id), get_mapper_lock(id));
+                            predicate, id, tag); 
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Registering new single task with unique id %d and task %s (ID %d) with high level runtime on processor %x",
                 task->get_unique_id(), task->variants->name, task_id, utility_proc.id);
@@ -3519,7 +3685,7 @@ namespace LegionRuntime {
 
       // If its not ready it's registered in the logical tree and someone will
       // notify it and it will add itself to the ready queue
-      add_to_dependence_queue(task);
+      add_to_dependence_queue(ctx->get_executing_processor(), task);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3542,7 +3708,7 @@ namespace LegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       IndexTask *task = get_available_index_task(ctx);
       task->initialize_task(ctx, task_id, global_arg.get_ptr(), global_arg.get_size(),
-                            predicate, id, tag, get_mapper(id), get_mapper_lock(id));
+                            predicate, id, tag);
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task %s (ID %d) with "
                             "high level runtime on processor %x", task->get_unique_id(), task->variants->name, task_id, utility_proc.id);
@@ -3554,7 +3720,7 @@ namespace LegionRuntime {
       FutureMap result = task->get_future_map();
 
       // Perform the dependence analysis
-      add_to_dependence_queue(task);
+      add_to_dependence_queue(ctx->get_executing_processor(), task);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3578,7 +3744,7 @@ namespace LegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_EXECUTE_TASK);
       IndexTask *task = get_available_index_task(ctx);
       task->initialize_task(ctx, task_id, global_arg.get_ptr(), global_arg.get_size(),
-                            predicate, id, tag, get_mapper(id), get_mapper_lock(id));
+                            predicate, id, tag); 
 #ifdef DEBUG_HIGH_LEVEL
       log_task(LEVEL_DEBUG,"Registering new index space task with unique id %d and task %s (ID %d) with "
                             "high level runtime on processor %x", task->get_unique_id(), task->variants->name, task_id, utility_proc.id);
@@ -3591,7 +3757,7 @@ namespace LegionRuntime {
       Future result = task->get_future();
 
       // Perform the dependence analysis
-      add_to_dependence_queue(task);
+      add_to_dependence_queue(ctx->get_executing_processor(), task);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3632,7 +3798,7 @@ namespace LegionRuntime {
       deletion->initialize_index_space_deletion(ctx, space);
 
       // Perform the dependence analysis
-      add_to_dependence_queue(deletion);
+      add_to_dependence_queue(ctx->get_executing_processor(), deletion);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3643,7 +3809,7 @@ namespace LegionRuntime {
 
     //--------------------------------------------------------------------------------------------
     IndexPartition HighLevelRuntime::create_index_partition(Context ctx, IndexSpace parent,
-                                                IndexSpace colors, ColoringFunctor &coloring_functor)
+                                  const Coloring &coloring, bool disjoint, int part_color /*= -1*/)
     //--------------------------------------------------------------------------------------------
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_CREATE_INDEX_PARTITION);
@@ -3654,34 +3820,31 @@ namespace LegionRuntime {
                               pid, parent.id, ctx->variants->name, ctx->get_unique_id());
 #endif
       // Perform the coloring
-      std::map<Color,ColoringFunctor::ColoredPoints<unsigned> > coloring; 
-      coloring_functor.perform_coloring(colors,parent,coloring);
       std::map<Color,IndexSpace> new_index_spaces; 
-      for (std::map<Color,ColoringFunctor::ColoredPoints<unsigned> >::const_iterator cit = 
+      for (std::map<Color,ColoredPoints<ptr_t> >::const_iterator cit = 
             coloring.begin(); cit != coloring.end(); cit++)
       {
         LowLevel::ElementMask child_mask(parent.get_valid_mask().get_num_elmts());
-        const ColoringFunctor::ColoredPoints<unsigned> &coloring = cit->second;
-        for (std::set<unsigned>::const_iterator it = coloring.points.begin();
+        const ColoredPoints<ptr_t> &coloring = cit->second;
+        for (std::set<ptr_t>::const_iterator it = coloring.points.begin();
               it != coloring.points.end(); it++)
         {
           child_mask.enable(*it,1);
         }
-        for (std::set<std::pair<unsigned,unsigned> >::const_iterator it = 
+        for (std::set<std::pair<ptr_t,ptr_t> >::const_iterator it = 
               coloring.ranges.begin(); it != coloring.ranges.end(); it++)
         {
-          child_mask.enable(it->first, it->second-it->first+1);
+          child_mask.enable(it->first.value, it->second-it->first+1);
         }
         IndexSpace child_space = IndexSpace::create_index_space(parent, child_mask);
         new_index_spaces[cit->first] = child_space;
       }
-      bool disjoint = coloring_functor.is_disjoint();
      
       // Create the new partition
 #ifdef LEGION_SPY
-      Color part_color = 
+      part_color = 
 #endif
-      ctx->create_index_partition(pid, parent, disjoint, coloring_functor.get_partition_color(), new_index_spaces);
+      ctx->create_index_partition(pid, parent, disjoint, part_color, new_index_spaces);
 #ifdef LEGION_SPY
       LegionSpy::log_index_partition(parent.id, pid, disjoint, part_color);
       for (std::map<Color,IndexSpace>::const_iterator it = new_index_spaces.begin();
@@ -3706,7 +3869,7 @@ namespace LegionRuntime {
       deletion->initialize_index_partition_deletion(ctx, handle);
 
       // Perform the dependence analysis
-      add_to_dependence_queue(deletion);
+      add_to_dependence_queue(ctx->get_executing_processor(), deletion);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3761,7 +3924,7 @@ namespace LegionRuntime {
       deletion->initialize_field_space_deletion(ctx, space);
 
       // Perform the dependence analysis
-      add_to_dependence_queue(deletion);
+      add_to_dependence_queue(ctx->get_executing_processor(), deletion);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3807,7 +3970,7 @@ namespace LegionRuntime {
         deletion->initialize_field_deletion(ctx, space, to_free);
       }
       // Perform the dependence analysis
-      add_to_dependence_queue(deletion);
+      add_to_dependence_queue(ctx->get_executing_processor(), deletion);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3857,7 +4020,7 @@ namespace LegionRuntime {
       DeletionOperation *deletion = get_available_deletion(ctx);
       deletion->initialize_field_deletion(ctx, space, to_free);
       // Perform the dependence analysis
-      add_to_dependence_queue(deletion);
+      add_to_dependence_queue(ctx->get_executing_processor(), deletion);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3898,7 +4061,7 @@ namespace LegionRuntime {
       deletion->initialize_region_deletion(ctx, handle);
 
       // Perform the dependence analysis
-      add_to_dependence_queue(deletion);
+      add_to_dependence_queue(ctx->get_executing_processor(), deletion);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3920,7 +4083,7 @@ namespace LegionRuntime {
       deletion->initialize_partition_deletion(ctx, handle);
 
       // Perform the dependence analysis
-      add_to_dependence_queue(deletion);
+      add_to_dependence_queue(ctx->get_executing_processor(), deletion);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -3946,6 +4109,14 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
+    LogicalPartition HighLevelRuntime::get_logical_partition_by_tree(Context ctx, IndexPartition handle, FieldSpace space, RegionTreeID tid)
+    //--------------------------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_PARTITION);
+      return ctx->get_partition_subtree(handle, space, tid);
+    }
+
+    //--------------------------------------------------------------------------------------------
     LogicalRegion HighLevelRuntime::get_logical_subregion(Context ctx, LogicalPartition parent, IndexSpace handle)
     //--------------------------------------------------------------------------------------------
     {
@@ -3959,6 +4130,14 @@ namespace LegionRuntime {
     {
       DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_SUBREGION);
       return ctx->get_partition_subcolor(parent, c);
+    }
+
+    //--------------------------------------------------------------------------------------------
+    LogicalRegion HighLevelRuntime::get_logical_subregion_by_tree(Context ctx, IndexSpace handle, FieldSpace space, RegionTreeID tid)
+    //--------------------------------------------------------------------------------------------
+    {
+      DetailedTimer::ScopedPush sp(TIME_HIGH_LEVEL_GET_LOGICAL_SUBREGION);
+      return ctx->get_region_subtree(handle, space, tid);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4001,7 +4180,7 @@ namespace LegionRuntime {
       log_run(LEVEL_DEBUG, "Registering a map operation for region (%x,%x,%x) in task %s (ID %d)",
                            req.region.index_space.id, req.region.field_space.id, req.region.tree_id,
                            ctx->variants->name, ctx->get_unique_id());
-      add_to_dependence_queue(map_op);
+      add_to_dependence_queue(ctx->get_executing_processor(), map_op);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -4020,7 +4199,7 @@ namespace LegionRuntime {
       map_op->initialize(ctx, idx, id, tag);
       log_run(LEVEL_DEBUG, "Registering a map operation for region index %d in task %s (ID %d)",
                            idx, ctx->variants->name, ctx->get_unique_id());
-      add_to_dependence_queue(map_op);
+      add_to_dependence_queue(ctx->get_executing_processor(), map_op);
 #ifdef INORDER_EXECUTION
       if (program_order_execution)
       {
@@ -4039,174 +4218,65 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    Predicate HighLevelRuntime::create_predicate(Future f, MapperID id /*=0*/, MappingTagID tag /*=0*/)
+    Predicate HighLevelRuntime::create_predicate(Future f, Processor proc, MapperID id /*=0*/, MappingTagID tag /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock map_lock(mapping_lock);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-      assert(mapper_objects[id] != NULL);
-#endif
-      return Predicate(new PredicateFuture(f, mapper_objects[id], mapper_locks[id], tag));
+      PredicateFuture *pred = new PredicateFuture(f, tag);
+      initialize_mappable(pred, proc, id);
+      return Predicate(pred);
     }
 
     //--------------------------------------------------------------------------------------------
     Predicate HighLevelRuntime::create_predicate(PredicateFnptr function, const std::vector<Future> &futures,
-                                                 const TaskArgument &arg, MapperID id /*=0*/, MappingTagID tag /*=0*/)
+                                                 const TaskArgument &arg, Processor proc, MapperID id /*=0*/, MappingTagID tag /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock map_lock(mapping_lock);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-      assert(mapper_objects[id] != NULL);
-#endif
-      return Predicate(new PredicateCustom(function, futures, arg, utility_proc, mapper_objects[id], mapper_locks[id], tag));
+      PredicateCustom *pred = new PredicateCustom(function, futures, arg, utility_proc, tag);
+      initialize_mappable(pred, proc, id);
+      return Predicate(pred);
     }
 
     //--------------------------------------------------------------------------------------------
-    Predicate HighLevelRuntime::predicate_not(Predicate p, MapperID id /*=0*/, MappingTagID tag /*=0*/)
+    Predicate HighLevelRuntime::predicate_not(Predicate p, Processor proc, MapperID id /*=0*/, MappingTagID tag /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock map_lock(mapping_lock);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-      assert(mapper_objects[id] != NULL);
-#endif
-      return Predicate(new PredicateNot(p, mapper_objects[id], mapper_locks[id], tag));
+      PredicateNot *pred = new PredicateNot(p, tag);
+      initialize_mappable(pred, proc, id);
+      return Predicate(pred);
     }
 
     //--------------------------------------------------------------------------------------------
-    Predicate HighLevelRuntime::predicate_and(Predicate p1, Predicate p2, MapperID id /*=0*/, MappingTagID tag /*=0*/)
+    Predicate HighLevelRuntime::predicate_and(Predicate p1, Predicate p2, Processor proc, MapperID id /*=0*/, MappingTagID tag /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock map_lock(mapping_lock);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-      assert(mapper_objects[id] != NULL);
-#endif
-      return Predicate(new PredicateAnd(p1, p2, mapper_objects[id], mapper_locks[id], tag));
+      PredicateAnd *pred = new PredicateAnd(p1, p2, tag);
+      initialize_mappable(pred, proc, id);
+      return Predicate(pred);
     }
 
     //--------------------------------------------------------------------------------------------
-    Predicate HighLevelRuntime::predicate_or(Predicate p1, Predicate p2, MapperID id /*=0*/, MappingTagID tag /*=0*/)
+    Predicate HighLevelRuntime::predicate_or(Predicate p1, Predicate p2, Processor proc, MapperID id /*=0*/, MappingTagID tag /*=0*/)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock map_lock(mapping_lock);
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-      assert(mapper_objects[id] != NULL);
-#endif
-      return Predicate(new PredicateOr(p1, p2, mapper_objects[id], mapper_locks[id], tag));
+      PredicateOr *pred = new PredicateOr(p1, p2, tag);
+      initialize_mappable(pred, proc, id);
+      return Predicate(pred);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_mapper(MapperID id, Mapper *m)
+    void HighLevelRuntime::add_mapper(MapperID map_id, Mapper *mapper, Processor proc)
     //--------------------------------------------------------------------------------------------
     {
-      log_run(LEVEL_SPEW,"Adding mapper %d on processor %x",id,utility_proc.id);
-#ifdef DEBUG_HIGH_LEVEL
-      if (id == 0)
-      {
-        log_run(LEVEL_ERROR,"Invalid mapping ID.  ID 0 is reserved.");
-        exit(ERROR_RESERVED_MAPPING_ID);
-      }
-#endif
-      AutoLock map_lock(mapping_lock);
-      // Increase the size of the mapper vector if necessary
-      if (id >= mapper_objects.size())
-      {
-        int old_size = mapper_objects.size();
-        mapper_objects.resize(id+1);
-        mapper_locks.resize(id+1);
-        ready_queues.resize(id+1);
-        for (unsigned int i=old_size; i<(id+1); i++)
-        {
-          mapper_objects[i] = NULL;
-#ifdef LOW_LEVEL_LOCKS
-          mapper_locks[i] = Lock::NO_LOCK;
-#else
-          mapper_locks[i].clear();
-#endif
-          ready_queues[i].clear();
-          outstanding_steals[i] = std::set<ProcessorGroup>();
-        }
-      } 
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-      assert(mapper_objects[id] == NULL);
-#ifdef LOW_LEVEL_LOCKS
-      assert(!mapper_locks[id].exists());
-#endif
-#endif
-#ifdef LOW_LEVEL_LOCKS
-      mapper_locks[id] = Lock::create_lock();
-#else
-      mapper_locks[id].init();
-#endif
-      AutoLock mapper_lock(mapper_locks[id]);
-      mapper_objects[id] = m;
+      find_manager(proc)->add_mapper(map_id, mapper, true/*check*/);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::replace_default_mapper(Mapper *m)
+    void HighLevelRuntime::replace_default_mapper(Mapper *mapper, Processor proc)
     //--------------------------------------------------------------------------------------------
     {
-      // Take an exclusive lock on the mapper data structure
-      AutoLock map_lock(mapping_lock);
-      AutoLock mapper_lock(mapper_locks[0]);
-      delete mapper_objects[0];
-      mapper_objects[0] = m;
+      find_manager(proc)->replace_default_mapper(mapper);
     }
-
-    //--------------------------------------------------------------------------------------------
-    Mapper* HighLevelRuntime::get_mapper(MapperID id) const
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef LOW_LEVEL_LOCKS
-      AutoLock map_lock(mapping_lock,false/*exclusive*/);
-#else
-      AutoLock map_lock(mapping_lock);
-#endif
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_objects.size());
-      assert(mapper_objects[id] != NULL);
-#endif
-      return mapper_objects[id];
-    }
-
-#ifdef LOW_LEVEL_LOCKS
-    //--------------------------------------------------------------------------------------------
-    Lock HighLevelRuntime::get_mapper_lock(MapperID id) const
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef LOW_LEVEL_LOCKS
-      AutoLock map_lock(mapping_lock,false/*exclusive*/);
-#else
-      AutoLock map_lock(mapping_lock);
-#endif
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_locks.size());
-      assert(mapper_locks[id].exists());
-#endif
-      return mapper_locks[id];
-    }
-#else
-    //--------------------------------------------------------------------------------------------
-    ImmovableLock HighLevelRuntime::get_mapper_lock(MapperID id) const
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef LOW_LEVEL_LOCKS
-      AutoLock map_lock(mapping_lock,false/*exclusive*/);
-#else
-      AutoLock map_lock(mapping_lock);
-#endif
-#ifdef DEBUG_HIGH_LEVEL
-      assert(id < mapper_locks.size());
-#endif
-      return mapper_locks[id];
-    }
-#endif
-
+    
     //--------------------------------------------------------------------------------------------
     const std::vector<RegionRequirement>& HighLevelRuntime::begin_task(Context ctx, 
                                              std::vector<PhysicalRegion> &physical_regions, 
@@ -4557,10 +4627,21 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    bool HighLevelRuntime::is_local_group(ProcessorGroup target) const
+    HighLevelRuntime::ProcessorManager* HighLevelRuntime::find_manager(Processor proc) const
     //--------------------------------------------------------------------------------------------
     {
-      return (target == local_group);
+      std::map<Processor,ProcessorManager*>::const_iterator finder = proc_managers.find(proc);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(finder != proc_managers.end());
+#endif
+      return finder->second;
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::initialize_mappable(Mappable *mappable, Processor target, MapperID map_id)
+    //--------------------------------------------------------------------------------------------
+    {
+      find_manager(target)->initialize_mappable(mappable, map_id);
     }
 
     //--------------------------------------------------------------------------------------------
@@ -4699,29 +4780,21 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_dependence_queue(GeneralizedOperation *op)
+    void HighLevelRuntime::add_to_dependence_queue(Processor proc, GeneralizedOperation *op)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);
-      dependence_queue.push_back(op);
-      if (!idle_task_enabled)
-      {
-        idle_task_enabled = true;
-        UtilityProcessor copy = utility_proc;
-        copy.enable_idle_task();
-      }
+      find_manager(proc)->add_to_dependence_queue(op);
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(IndividualTask *task, bool remote)
+    void HighLevelRuntime::add_to_ready_queue(Processor proc, IndividualTask *task, bool remote)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);
 #ifndef INORDER_EXECUTION
       // If we're doing inorder execution we don't need to do this since
       // we already have the task in the right queue, but we should still
       // enable the idle task to see if anything is ready to execute.
-      ready_queues[task->map_id].push_back(task);
+      find_manager(proc)->add_to_ready_queue(task);
 #else
       if (!program_order_execution)
       {
@@ -4737,48 +4810,34 @@ namespace LegionRuntime {
         }
       }
 #endif
-      if (!idle_task_enabled)
-      {
-        idle_task_enabled = true;
-        UtilityProcessor copy = utility_proc;
-        copy.enable_idle_task();
-      }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(IndexTask *task)
+    void HighLevelRuntime::add_to_ready_queue(Processor proc, IndexTask *task)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);
 #ifndef INORDER_EXECUTION
       // If we're doing inorder execution we don't need to do this since
       // we already have the task in the right queue, but we should still
       // enable the idle task to see if anything is ready to execute.
-      ready_queues[task->map_id].push_back(task);
+      find_manager(proc)->add_to_ready_queue(task);
 #else
       if (!program_order_execution)
       {
         ready_queues[task->map_id].push_back(task);
       }
 #endif
-      if (!idle_task_enabled)
-      {
-        idle_task_enabled = true;
-        UtilityProcessor copy = utility_proc;
-        copy.enable_idle_task();
-      }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(SliceTask *task)
+    void HighLevelRuntime::add_to_ready_queue(Processor proc, SliceTask *task)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);
 #ifndef INORDER_EXECUTION
       // If we're doing inorder execution we don't need to do this since
       // we already have the task in the right queue, but we should still
       // enable the idle task to see if anything is ready to execute.
-      ready_queues[task->map_id].push_back(task);
+      find_manager(proc)->add_to_ready_queue(task);
 #else
       if (!program_order_execution)
       {
@@ -4791,24 +4850,17 @@ namespace LegionRuntime {
         drain_queue.push_back(task);
       }
 #endif
-      if (!idle_task_enabled)
-      {
-        idle_task_enabled = true;
-        UtilityProcessor copy = utility_proc;
-        copy.enable_idle_task();
-      }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(PointTask *task)
+    void HighLevelRuntime::add_to_ready_queue(Processor proc, PointTask *task)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);
 #ifndef INORDER_EXECUTION
       // If we're doing inorder execution we don't need to do this since
       // we already have the task in the right queue, but we should still
       // enable the idle task to see if anything is ready to execute.
-      ready_queues[task->map_id].push_back(task);
+      find_manager(proc)->add_to_ready_queue(task);
 #else
       if (!program_order_execution)
       {
@@ -4821,60 +4873,40 @@ namespace LegionRuntime {
         drain_queue.push_back(task);
       }
 #endif
-      if (!idle_task_enabled)
-      {
-        idle_task_enabled = true;
-        UtilityProcessor copy = utility_proc;
-        copy.enable_idle_task();
-      }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(MappingOperation *op)
+    void HighLevelRuntime::add_to_ready_queue(Processor proc, MappingOperation *op)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);  
 #ifndef INORDER_EXECUTION
       // If we're doing inorder execution we don't need to do this since
       // we already have the task in the right queue, but we should still
       // enable the idle task to see if anything is ready to execute.
-      other_ready_queue.push_back(op);
+      find_manager(proc)->add_to_other_queue(op);
 #else
       if (!program_order_execution)
       {
         other_ready_queue.push_back(op);
       }
 #endif
-      if (!idle_task_enabled)
-      {
-        idle_task_enabled = true;
-        UtilityProcessor copy = utility_proc;
-        copy.enable_idle_task();
-      }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::add_to_ready_queue(DeletionOperation *op)
+    void HighLevelRuntime::add_to_ready_queue(Processor proc, DeletionOperation *op)
     //--------------------------------------------------------------------------------------------
     {
-      AutoLock q_lock(queue_lock);  
 #ifndef INORDER_EXECUTION
       // If we're doing inorder execution we don't need to do this since
       // we already have the task in the right queue, but we should still
       // enable the idle task to see if anything is ready to execute.
-      other_ready_queue.push_back(op);
+      find_manager(proc)->add_to_other_queue(op);
 #else
       if (!program_order_execution)
       {
         other_ready_queue.push_back(op);
       }
 #endif
-      if (!idle_task_enabled)
-      {
-        idle_task_enabled = true;
-        UtilityProcessor copy = utility_proc;
-        copy.enable_idle_task();
-      }
     } 
 
 #ifdef INORDER_EXECUTION
@@ -4943,63 +4975,163 @@ namespace LegionRuntime {
 #endif // INORDER_EXECUTION
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::send_task(ProcessorGroup target_group, TaskContext *task) const
+    bool HighLevelRuntime::send_task(Processor target, TaskContext *task) const
     //--------------------------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(target_group != local_group);
+      assert(target.exists());
 #endif
-      Processor target_utility = target_group.get_utility_processor();
-      size_t buffer_size = 2*sizeof(Processor) + sizeof(size_t) + sizeof(bool);
-      task->lock_context();
-      buffer_size += task->compute_task_size();
-      Serializer rez(buffer_size); 
-      rez.serialize<Processor>(target_utility);
-      rez.serialize<Processor>(utility_proc);
-      rez.serialize<size_t>(1); // only one task
-      rez.serialize<bool>(task->is_single());
-      task->pack_task(rez);
-      task->unlock_context();
-      // Send the result back to the target's utility processor
-      target_utility.spawn(ENQUEUE_TASK_ID, rez.get_buffer(), buffer_size);
-    }
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::send_tasks(ProcessorGroup target_group, const std::set<TaskContext*> &tasks) const
-    //--------------------------------------------------------------------------------------------
-    {
-#ifdef DEBUG_HIGH_LEVEL
-      assert(target_group != local_group);
-#endif
-      Processor target_utility = target_group.get_utility_processor();
-      size_t total_buffer_size = 2*sizeof(Processor) + sizeof(size_t) + (tasks.size() * sizeof(bool));
-      Serializer rez(total_buffer_size); 
-      rez.serialize<Processor>(target_utility);
-      rez.serialize<Processor>(utility_proc);
-      rez.serialize<size_t>(tasks.size());
-      for (std::set<TaskContext*>::const_iterator it = tasks.begin();
-            it != tasks.end(); it++)
+      if (local_procs.find(target) == local_procs.end())
       {
-        rez.serialize<bool>((*it)->is_single());
-        (*it)->lock_context();
-        size_t task_size = (*it)->compute_task_size();
-        total_buffer_size += task_size;
-        rez.grow(task_size);
-        (*it)->pack_task(rez);
-        (*it)->unlock_context();
+        Processor target_utility = target.get_utility_processor();
+        size_t buffer_size = sizeof(Processor) + sizeof(size_t) + sizeof(bool);
+        task->lock_context();
+        buffer_size += task->compute_task_size();
+        Serializer rez(buffer_size); 
+        rez.serialize<Processor>(target);
+        rez.serialize<size_t>(1); // only one task
+        rez.serialize<bool>(task->is_single());
+        task->pack_task(rez);
+        task->unlock_context();
+        // Send the result back to the target's utility processor
+        target_utility.spawn(ENQUEUE_TASK_ID, rez.get_buffer(), buffer_size);
+        return false;
       }
-      // Send the result back to the target's utility processor
-      target_utility.spawn(ENQUEUE_TASK_ID, rez.get_buffer(), total_buffer_size);
+      else
+      {
+        // Send it to the local manager
+        find_manager(target)->add_to_ready_queue(task);
+        return true;
+      }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::process_tasks(const void * args, size_t arglen)
+    bool HighLevelRuntime::send_tasks(Processor target, const std::set<TaskContext*> &tasks) const
+    //--------------------------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(target.exists());
+#endif
+      if (local_procs.find(target) == local_procs.end())
+      {
+        Processor target_utility = target.get_utility_processor();
+        size_t total_buffer_size = sizeof(Processor) + sizeof(size_t) + (tasks.size() * sizeof(bool));
+        Serializer rez(total_buffer_size); 
+        rez.serialize<Processor>(target);
+        rez.serialize<size_t>(tasks.size());
+        for (std::set<TaskContext*>::const_iterator it = tasks.begin();
+              it != tasks.end(); it++)
+        {
+          rez.serialize<bool>((*it)->is_single());
+          (*it)->lock_context();
+          size_t task_size = (*it)->compute_task_size();
+          total_buffer_size += task_size;
+          rez.grow(task_size);
+          (*it)->pack_task(rez);
+          (*it)->unlock_context();
+        }
+        // Send the result back to the target's utility processor
+        target_utility.spawn(ENQUEUE_TASK_ID, rez.get_buffer(), total_buffer_size);
+        return false;
+      }
+      else
+      {
+        ProcessorManager *manager = find_manager(target);
+        for (std::set<TaskContext*>::const_iterator it = tasks.begin();
+              it != tasks.end(); it++)
+        {
+          manager->add_to_ready_queue(*it);
+        }
+        return true;
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::send_steal_request(const std::multimap<Processor,MapperID> &targets, Processor thief) const
+    //--------------------------------------------------------------------------------------------
+    {
+      for (std::multimap<Processor,MapperID>::const_iterator it = targets.begin();
+            it != targets.end(); )
+      {
+        Processor target = it->first;
+        // Check to see if it is a local task or not
+        if (local_procs.find(target) == local_procs.end())
+        {
+          Processor utility_target = target.get_utility_processor();
+          int num_mappers = targets.count(target);
+          log_task(LEVEL_SPEW,"Processor %x attempting steal on processor %d",
+                                thief.id,target.id);
+          size_t buffer_size = sizeof(Processor)+sizeof(Processor)+sizeof(int)+num_mappers*sizeof(MapperID);
+          // Allocate a buffer for launching the steal task
+          Serializer rez(buffer_size);
+          // Give the actual target processor
+          rez.serialize<Processor>(utility_target);
+          // Give the stealing (this) processor
+          rez.serialize<Processor>(thief);
+          rez.serialize<int>(num_mappers);
+          for ( ; it != targets.upper_bound(target); it++)
+          {
+            rez.serialize<MapperID>(it->second);
+          }
+
+          // Now launch the task to perform the steal operation
+          utility_target.spawn(STEAL_TASK_ID,rez.get_buffer(),buffer_size);
+        }
+        else
+        {
+          // Local processor so do the steal here
+          ProcessorManager *manager  = find_manager(target);
+          std::vector<MapperID> thieves;
+          for ( ; it != targets.upper_bound(target); it++)
+            thieves.push_back(it->second);
+          manager->process_steal_request(thief, thieves);
+        }
+#ifdef DEBUG_HIGH_LEVEL
+        if (it != targets.end())
+          assert(!((target.id) == (it->first.id)));
+#endif
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::send_advertisements(const std::set<Processor> &targets, 
+                                                MapperID map_id, Processor source) const
+    //--------------------------------------------------------------------------------------------
+    {
+      // make sure we don't send an advertisement twice since the highlevel
+      // runtime will already broadcast it out to all its local processors
+      std::set<Processor> already_sent;
+      size_t buffer_size = sizeof(Processor)+sizeof(Processor)+sizeof(MapperID);
+      for (std::set<Processor>::const_iterator it = targets.begin();
+            it != targets.end(); it++)
+      {
+        if (local_procs.find(*it) != local_procs.end())
+        {
+          // Local processor, do the notify here
+          find_manager(*it)->process_advertisement(source, map_id);
+        }
+        else
+        {
+          Processor utility_target = it->get_utility_processor();
+          if (already_sent.find(utility_target) != already_sent.end())
+            continue;
+          Serializer rez(buffer_size);
+          // Send a message to the processor saying that a specific mapper has work now
+          rez.serialize<Processor>(*it); // The actual target processor
+          rez.serialize<Processor>(source); // The advertising processor
+          rez.serialize<MapperID>(map_id);
+          // Send the advertisement
+          utility_target.spawn(ADVERTISEMENT_ID,rez.get_buffer(),buffer_size);
+          already_sent.insert(utility_target);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::process_tasks(const void * args, size_t arglen, Processor target)
     //--------------------------------------------------------------------------------------------
     {
       Deserializer derez(args, arglen);
-      // First get the processor that this comes from
-      Processor source;
-      derez.deserialize<Processor>(source);
       // Then get the number of tasks to process
       size_t num_tasks; 
       derez.deserialize<size_t>(num_tasks);
@@ -5016,7 +5148,7 @@ namespace LegionRuntime {
           task->lock_context();
           task->unpack_task(derez);
           task->unlock_context();
-          add_to_ready_queue(task, true/*remote*/);
+          add_to_ready_queue(target, task, true/*remote*/);
         }
         else
         {
@@ -5024,13 +5156,13 @@ namespace LegionRuntime {
           task->lock_context();
           task->unpack_task(derez);
           task->unlock_context();
-          add_to_ready_queue(task);
+          add_to_ready_queue(target, task);
         }
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::process_steal(const void * args, size_t arglen)
+    void HighLevelRuntime::process_steal(const void * args, size_t arglen, Processor target)
     //--------------------------------------------------------------------------------------------
     {
 #ifdef INORDER_EXECUTION
@@ -5039,120 +5171,16 @@ namespace LegionRuntime {
 #endif
       Deserializer derez(args,arglen);
       // Unpack the stealing processor
-      ProcessorGroup thief;
-      derez.deserialize<ProcessorGroup>(thief);	
+      Processor thief;
+      derez.deserialize<Processor>(thief);	
       // Get the number of mappers that requested this processor for stealing 
       int num_stealers;
       derez.deserialize<int>(num_stealers);
-      log_run(LEVEL_SPEW,"handling a steal request on processor %x from processor %x",
-              utility_proc.id,thief.id);
+      std::vector<MapperID> thieves(num_stealers);
+      for (int idx = 0; idx < num_stealers; idx++)
+        derez.deserialize(thieves[idx]);
 
-      // Iterate over the task descriptions, asking the appropriate mapper
-      // whether we can steal them
-      std::set<TaskContext*> stolen;
-      // Need read-write access to the ready queue to try stealing
-      {
-        AutoLock q_lock(queue_lock);
-        for (int i=0; i<num_stealers; i++)
-        {
-          // Get the mapper id out of the buffer
-          MapperID stealer;
-          derez.deserialize<MapperID>(stealer);
-          
-          // Handle a race condition here where some processors can issue steal
-          // requests to another processor before the mappers have been initialized
-          // on that processor.  There's no correctness problem for ignoring a steal
-          // request so just do that.
-          if (mapper_objects.size() <= stealer)
-            continue;
-
-          // Go through the ready queue and construct the list of tasks
-          // that this mapper has access to
-          // Iterate in reverse order so the latest tasks put in the
-          // ready queue appear first
-          std::vector<const Task*> mapper_tasks;
-          for (std::list<TaskContext*>::iterator it = ready_queues[stealer].begin();
-                it != ready_queues[stealer].end(); it++)
-          {
-            // The tasks also must be stealable
-            if ((*it)->is_stealable() && ((*it)->map_id == stealer) && !(*it)->is_locally_mapped())
-              mapper_tasks.push_back(*it);
-          }
-          // Now call the mapper and get back the results
-          std::set<const Task*> to_steal;
-          if (!mapper_tasks.empty())
-          {
-            // Need read-only access to the mapper vector to access the mapper objects
-#ifdef LOW_LEVEL_LOCKS
-            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
-#else
-            AutoLock map_lock(mapping_lock);
-#endif
-            // Also need exclusive access to the mapper itself
-            AutoLock mapper_lock(mapper_locks[stealer]);
-            DetailedTimer::ScopedPush sp(TIME_MAPPER);
-            mapper_objects[stealer]->permit_task_steal(thief, mapper_tasks, to_steal);
-          }
-          // Add the results to the set of stolen tasks
-          // Do this explicitly since we need to upcast the pointers
-          if (!to_steal.empty())
-          {
-            for (std::set<const Task*>::iterator it = to_steal.begin();
-                  it != to_steal.end(); it++)
-            {
-              // Mark the task as stolen
-              Task *t = const_cast<Task*>(*it);
-              TaskContext *tt = static_cast<TaskContext*>(t);
-#ifdef DEBUG_HIGH_LEVEL
-              assert(stolen.find(tt) == stolen.end());
-#endif
-              // Make sure we're going to be able to steal this task
-              if (tt->prepare_steal())
-              {
-                stolen.insert(tt);
-              }
-            }
-            // Also remove any stolen tasks from the queue
-            std::list<TaskContext*>::iterator it = ready_queues[stealer].begin();
-            while (it != ready_queues[stealer].end())
-            {
-              if (stolen.find(*it) != stolen.end())
-                it = ready_queues[stealer].erase(it);
-              else
-                it++;
-            }
-          }
-          else
-          {
-            AutoLock thief_lock(thieving_lock);
-            // Mark a failed steal attempt
-            failed_thiefs.insert(std::pair<MapperID,ProcessorGroup>(stealer,thief));
-          }
-        }
-      } // Release the queue lock
-      
-      // Send the tasks back
-      if (!stolen.empty())
-      {
-        
-        // Send the tasks back  
-        send_tasks(thief, stolen);
-
-        // Delete any remote tasks that we will no longer have a reference to
-        for (std::set<TaskContext*>::iterator it = stolen.begin();
-              it != stolen.end(); it++)
-        {
-#ifdef DEBUG_HIGH_LEVEL
-          log_task(LEVEL_DEBUG,"task %s (ID %d) with unique id %d stolen from processor %x",
-                                (*it)->variants->name,
-                                (*it)->task_id,(*it)->get_unique_id(),utility_proc.id);
-#endif
-          // If they are remote, deactivate the instance
-          // If it's not remote, its parent will deactivate it
-          if ((*it)->is_remote())
-            (*it)->deactivate();
-        }
-      }
+      find_manager(target)->process_steal_request(thief, thieves); 
     }
     
     //--------------------------------------------------------------------------------------------
@@ -5237,40 +5265,29 @@ namespace LegionRuntime {
     {
       Deserializer derez(args,arglen);
       // Get the processor that is advertising work
-      ProcessorGroup advertiser;
-      derez.deserialize<ProcessorGroup>(advertiser);
+      Processor advertiser;
+      derez.deserialize<Processor>(advertiser);
       MapperID map_id;
       derez.deserialize<MapperID>(map_id);
+      // Notify all of our processor managers about the advertisement
+      for (std::map<Processor,ProcessorManager*>::const_iterator it = proc_managers.begin();
+            it != proc_managers.end(); it++)
       {
-        // Need exclusive access to the list steal data structures
-        AutoLock steal_lock(stealing_lock);
-#ifdef DEBUG_HIGH_LEVEL
-        assert(outstanding_steals.find(map_id) != outstanding_steals.end());
-#endif
-        std::set<ProcessorGroup> &procs = outstanding_steals[map_id];
-        // Erase the utility users from the set
-        procs.erase(advertiser);
-      }
-      {
-        // Enable the idle task since some mappers might make new decisions
-        AutoLock ready_queue_lock(queue_lock);
-        if (!this->idle_task_enabled)
-        {
-          idle_task_enabled = true;
-          UtilityProcessor copy = utility_proc;
-          copy.enable_idle_task();
-        }
+        it->second->process_advertisement(advertiser, map_id);
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::process_schedule_request(void)
+    void HighLevelRuntime::process_schedule_request(Processor proc)
     //--------------------------------------------------------------------------------------------
     {
-      log_run(LEVEL_DEBUG,"Running scheduler on processor %x and idle task enabled %d",
-                          utility_proc.id, idle_task_enabled);
+#ifdef DEBUG_HIGH_LEVEL
+      assert(local_procs.find(proc) != local_procs.end());
+#endif
+      log_run(LEVEL_DEBUG,"Running scheduler on processor %x", proc.id);
+      ProcessorManager *manager = proc_managers[proc];
       // first perform the dependence analysis 
-      perform_dependence_analysis();
+      manager->perform_dependence_analysis();
 
       // Perform these before doing any mappings
 #ifdef DYNAMIC_TESTS
@@ -5286,15 +5303,69 @@ namespace LegionRuntime {
         return;
       }
 #endif
-      
       // Now perform any other operations that are not tasks to enusre
       // that as many tasks are eligible for mapping as possible
-      perform_other_operations();
-      
+      manager->perform_other_operations();
+      // Finally do any scheduling 
+      manager->perform_scheduling();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::perform_dependence_analysis(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      std::vector<GeneralizedOperation*> ops;
+      // Empty out the queue
+      {
+        AutoLock q_lock(queue_lock);
+        ops = dependence_queue;
+        dependence_queue.clear();
+      }
+      for (unsigned idx = 0; idx < ops.size(); idx++)
+      {
+        // Have each operation perform dependence analysis, they will
+        // enqueue themselves when ready
+        ops[idx]->perform_dependence_analysis();
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::perform_other_operations(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      std::vector<GeneralizedOperation*> ops;
+      // Empty out the queue
+      {
+        AutoLock q_lock(queue_lock);
+        ops = other_ready_queue;
+        other_ready_queue.clear();
+      }
+      std::vector<GeneralizedOperation*> failed_ops;
+      for (unsigned idx = 0; idx < ops.size(); idx++)
+      {
+        // Perform each operation
+        bool success = ops[idx]->perform_operation();
+        if (!success)
+          failed_ops.push_back(ops[idx]);
+      }
+      if (!failed_ops.empty())
+      {
+        AutoLock q_lock(queue_lock);
+        // Put them on the back since this is a vector 
+        // and it won't make much difference what order
+        // they get performed in
+        other_ready_queue.insert(other_ready_queue.end(),failed_ops.begin(),failed_ops.end());
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::perform_scheduling(void)
+    //--------------------------------------------------------------------------------------------
+    {
       // Get the lists of tasks to map
       std::vector<TaskContext*> tasks_to_map;
       // Also get the list of any steals the mappers want to perform
-      std::multimap<ProcessorGroup,MapperID> targets;
+      std::multimap<Processor,MapperID> targets;
       {
         AutoLock q_lock(queue_lock);
         AutoLock m_lock(mapping_lock);
@@ -5320,16 +5391,16 @@ namespace LegionRuntime {
               mapper_objects[map_id]->select_tasks_to_schedule(ready_tasks, mask);
             }
             // Now ask about stealing
-            std::set<ProcessorGroup> &blacklist = outstanding_steals[map_id];
+            std::set<Processor> &blacklist = outstanding_steals[map_id];
             if (blacklist.size() <= max_outstanding_steals)
             {
-              ProcessorGroup g = mapper_objects[map_id]->target_task_steal(blacklist);
-              if (g.exists() && (g != local_group) && (blacklist.find(g) == blacklist.end()))
+              Processor p = mapper_objects[map_id]->target_task_steal(blacklist);
+              if (p.exists() && (p != local_proc) && (blacklist.find(p) == blacklist.end()))
               {
-                targets.insert(std::pair<ProcessorGroup,MapperID>(g,map_id));
+                targets.insert(std::pair<Processor,MapperID>(p,map_id));
                 // Update the list of outstanding steal requests, add in all the processors for
                 // the utility processor of the target processor
-                blacklist.insert(g);
+                blacklist.insert(p);
               }
             }
           }
@@ -5361,34 +5432,7 @@ namespace LegionRuntime {
       }
 
       // Also send out any steal requests that might have been made
-      // There are no steal requests for inorder-execution
-      for (std::multimap<ProcessorGroup,MapperID>::const_iterator it = targets.begin();
-            it != targets.end(); )
-      {
-        ProcessorGroup target = it->first;
-        Processor utility_target = target.get_utility_processor();
-        int num_mappers = targets.count(target);
-        log_task(LEVEL_SPEW,"Processor %x attempting steal on processor %d",
-                              utility_proc.id,target.id);
-        size_t buffer_size = sizeof(Processor)+sizeof(ProcessorGroup)+sizeof(int)+num_mappers*sizeof(MapperID);
-        // Allocate a buffer for launching the steal task
-        Serializer rez(buffer_size);
-        // Give the actual target processor
-        rez.serialize<Processor>(utility_target);
-        // Give the stealing (this) processor
-        rez.serialize<ProcessorGroup>(local_group);
-        rez.serialize<int>(num_mappers);
-        for ( ; it != targets.upper_bound(target); it++)
-        {
-          rez.serialize<MapperID>(it->second);
-        }
-#ifdef DEBUG_HIGH_LEVEL
-        if (it != targets.end())
-          assert(!((target.id) == (it->first.id)));
-#endif
-        // Now launch the task to perform the steal operation
-        utility_target.spawn(STEAL_TASK_ID,rez.get_buffer(),buffer_size);
-      }
+      runtime->send_steal_request(targets, local_proc);
       
       // If we had any failed mappings, put them back on the (front of the) ready queue
       if (!failed_mappings.empty())
@@ -5402,73 +5446,243 @@ namespace LegionRuntime {
         failed_mappings.clear();
       }
 
+      std::vector<MapperID> mappers_with_work;
       // Now we need to determine if should disable the idle task
       {
         // Need to hold the lock while doing this
         AutoLock q_lock(queue_lock);
-        AutoLock m_lock(mapping_lock);
         bool disable = dependence_queue.empty() && other_ready_queue.empty();
-        for (unsigned map_id = 0; disable && (map_id < ready_queues.size()); map_id++)
+        if (current_outstanding < min_outstanding)
         {
-          if (mapper_objects[map_id] == NULL)
-            continue;
-          disable = disable && ready_queues[map_id].empty();
+          for (unsigned map_id = 0; disable && (map_id < ready_queues.size()); map_id++)
+          {
+            if (mapper_objects[map_id] == NULL)
+              continue;
+            // Only need to check to see if we have tasks to map if we're below the threshold
+            if (current_outstanding < min_outstanding)
+              disable = disable && ready_queues[map_id].empty();
+            if (!ready_queues[map_id].empty())
+              mappers_with_work.push_back(map_id);
+          }
         }
         if (disable)
         {
           idle_task_enabled = false;
-          UtilityProcessor copy = utility_proc;
+          Processor copy = local_proc;
           copy.disable_idle_task();
+        }
+      }
+      // If we had any mappers with work, advertise to anyone who had tried to steal before
+      for (std::vector<MapperID>::const_iterator it = mappers_with_work.begin();
+            it != mappers_with_work.end(); it++)
+      {
+        advertise(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::process_steal_request(Processor thief, const std::vector<MapperID> &thieves)
+    //--------------------------------------------------------------------------------------------
+    {
+      log_run(LEVEL_SPEW,"handling a steal request on processor %x from processor %x",
+              local_proc.id,thief.id);
+
+      // Iterate over the task descriptions, asking the appropriate mapper
+      // whether we can steal them
+      std::set<TaskContext*> stolen;
+      // Need read-write access to the ready queue to try stealing
+      {
+        AutoLock q_lock(queue_lock);
+        for (std::vector<MapperID>::const_iterator it = thieves.begin();
+              it != thieves.end(); it++)
+        {
+          // Get the mapper id out of the buffer
+          MapperID stealer = *it;
+          
+          // Handle a race condition here where some processors can issue steal
+          // requests to another processor before the mappers have been initialized
+          // on that processor.  There's no correctness problem for ignoring a steal
+          // request so just do that.
+          if (mapper_objects.size() <= stealer)
+            continue;
+
+          // Go through the ready queue and construct the list of tasks
+          // that this mapper has access to
+          // Iterate in reverse order so the latest tasks put in the
+          // ready queue appear first
+          std::vector<const Task*> mapper_tasks;
+          for (std::list<TaskContext*>::iterator it = ready_queues[stealer].begin();
+                it != ready_queues[stealer].end(); it++)
+          {
+            // The tasks also must be stealable
+            if ((*it)->is_stealable() && ((*it)->map_id == stealer) && !(*it)->is_locally_mapped())
+              mapper_tasks.push_back(*it);
+          }
+          // Now call the mapper and get back the results
+          std::set<const Task*> to_steal;
+          if (!mapper_tasks.empty())
+          {
+            // Need read-only access to the mapper vector to access the mapper objects
+#ifdef LOW_LEVEL_LOCKS
+            AutoLock map_lock(mapping_lock,1,false/*exclusive*/);
+#else
+            AutoLock map_lock(mapping_lock);
+#endif
+            // Also need exclusive access to the mapper itself
+            AutoLock mapper_lock(mapper_locks[stealer]);
+            DetailedTimer::ScopedPush sp(TIME_MAPPER);
+            mapper_objects[stealer]->permit_task_steal(thief, mapper_tasks, to_steal);
+          }
+          // Add the results to the set of stolen tasks
+          // Do this explicitly since we need to upcast the pointers
+          if (!to_steal.empty())
+          {
+            for (std::set<const Task*>::iterator it = to_steal.begin();
+                  it != to_steal.end(); it++)
+            {
+              // Mark the task as stolen
+              Task *t = const_cast<Task*>(*it);
+              TaskContext *tt = static_cast<TaskContext*>(t);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(stolen.find(tt) == stolen.end());
+#endif
+              // Make sure we're going to be able to steal this task
+              if (tt->prepare_steal())
+              {
+                stolen.insert(tt);
+              }
+            }
+            // Also remove any stolen tasks from the queue
+            std::list<TaskContext*>::iterator it = ready_queues[stealer].begin();
+            while (it != ready_queues[stealer].end())
+            {
+              if (stolen.find(*it) != stolen.end())
+                it = ready_queues[stealer].erase(it);
+              else
+                it++;
+            }
+          }
+          else
+          {
+            AutoLock thief_lock(thieving_lock);
+            // Mark a failed steal attempt
+            failed_thiefs.insert(std::pair<MapperID,Processor>(stealer,thief));
+          }
+        }
+      } // Release the queue lock
+      
+      // Send the tasks back
+      if (!stolen.empty())
+      {
+        
+        // Send the tasks back  
+        bool still_local = runtime->send_tasks(thief, stolen);
+
+        // Delete any remote tasks that we will no longer have a reference to
+        for (std::set<TaskContext*>::iterator it = stolen.begin();
+              it != stolen.end(); it++)
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          log_task(LEVEL_DEBUG,"task %s (ID %d) with unique id %d stolen from processor %x",
+                                (*it)->variants->name,
+                                (*it)->task_id,(*it)->get_unique_id(),local_proc.id);
+#endif
+          // If they are remote, deactivate the instance
+          // If it's not remote, its parent will deactivate it
+          if (!still_local && (*it)->is_remote())
+            (*it)->deactivate();
         }
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::perform_dependence_analysis(void)
+    void HighLevelRuntime::ProcessorManager::process_advertisement(Processor advertiser, MapperID map_id)
     //--------------------------------------------------------------------------------------------
     {
-      std::vector<GeneralizedOperation*> ops;
-      // Empty out the queue
       {
-        AutoLock q_lock(queue_lock);
-        ops = dependence_queue;
-        dependence_queue.clear();
+        // Need exclusive access to the list steal data structures
+        AutoLock steal_lock(stealing_lock);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(outstanding_steals.find(map_id) != outstanding_steals.end());
+#endif
+        std::set<Processor> &procs = outstanding_steals[map_id];
+        // Erase the utility users from the set
+        procs.erase(advertiser);
       }
-      for (unsigned idx = 0; idx < ops.size(); idx++)
+      // Enable the idle task since some mappers might make new decisions
+      enable_scheduler();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::add_to_dependence_queue(GeneralizedOperation *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      AutoLock q_lock(queue_lock);
+      dependence_queue.push_back(op);
+      enable_scheduler();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::add_to_ready_queue(TaskContext *task)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Anytime we add something to ready queue, update its mappers so
+      // that they point to this processor's mappers
+      initialize_mappable(task, task->get_mapper_id());
+      AutoLock q_lock(queue_lock);
+      ready_queues[task->map_id].push_back(task);
+      // Only enable the ready queue, if we need to schedule tasks
+      if (current_outstanding < min_outstanding)
+        enable_scheduler();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::add_to_other_queue(GeneralizedOperation *op)
+    //--------------------------------------------------------------------------------------------
+    {
+      // Anytime we add something to our queue to be mapped, update
+      // its mappers so they point to this processor's mappers
+      initialize_mappable(op, op->get_mapper_id());
+      AutoLock q_lock(queue_lock);
+      other_ready_queue.push_back(op);
+      enable_scheduler();
+    }
+
+    //--------------------------------------------------------------------------------------------
+    void HighLevelRuntime::ProcessorManager::enable_scheduler(void)
+    //--------------------------------------------------------------------------------------------
+    {
+      if (!idle_task_enabled)
       {
-        // Have each operation perform dependence analysis, they will
-        // enqueue themselves when ready
-        ops[idx]->perform_dependence_analysis();
+        idle_task_enabled = true;
+        Processor copy = local_proc;
+        copy.enable_idle_task(); 
       }
     }
 
     //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::perform_other_operations(void)
+    void HighLevelRuntime::ProcessorManager::advertise(MapperID map_id)
     //--------------------------------------------------------------------------------------------
     {
-      std::vector<GeneralizedOperation*> ops;
-      // Empty out the queue
+      // Create a clone of the processors we want to advertise so that
+      // we don't call into the high level runtime holding a lock
+      std::set<Processor> failed_waiters;
+      // Check to see if we have any failed thieves with the mapper id
       {
-        AutoLock q_lock(queue_lock);
-        ops = other_ready_queue;
-        other_ready_queue.clear();
+        AutoLock theif_lock(thieving_lock);
+        if (failed_thiefs.lower_bound(map_id) != failed_thiefs.upper_bound(map_id))
+        {
+          for (std::multimap<MapperID,Processor>::iterator it = failed_thiefs.lower_bound(map_id);
+                it != failed_thiefs.upper_bound(map_id); it++)
+          {
+            failed_waiters.insert(it->second);
+          } 
+          // Erase all the failed theives
+          failed_thiefs.erase(failed_thiefs.lower_bound(map_id),failed_thiefs.upper_bound(map_id));
+        }
       }
-      std::vector<GeneralizedOperation*> failed_ops;
-      for (unsigned idx = 0; idx < ops.size(); idx++)
-      {
-        // Perform each operation
-        bool success = ops[idx]->perform_operation();
-        if (!success)
-          failed_ops.push_back(ops[idx]);
-      }
-      if (!failed_ops.empty())
-      {
-        AutoLock q_lock(queue_lock);
-        // Put them on the back since this is a vector 
-        // and it won't make much difference what order
-        // they get performed in
-        other_ready_queue.insert(other_ready_queue.end(),failed_ops.begin(),failed_ops.end());
-      }
+      if (!failed_waiters.empty())
+        runtime->send_advertisements(failed_waiters, map_id, local_proc);
     }
 
 #ifdef INORDER_EXECUTION
@@ -5589,33 +5803,6 @@ namespace LegionRuntime {
       dynamic_forests.push_back(forest);
     }
 #endif
-
-    //--------------------------------------------------------------------------------------------
-    void HighLevelRuntime::advertise(MapperID map_id)
-    //--------------------------------------------------------------------------------------------
-    {
-      // Check to see if we have any failed thieves with the mapper id
-      AutoLock theif_lock(thieving_lock);
-      if (failed_thiefs.lower_bound(map_id) != failed_thiefs.upper_bound(map_id))
-      {
-        size_t buffer_size = sizeof(Processor)+sizeof(ProcessorGroup)+sizeof(MapperID);
-
-        for (std::multimap<MapperID,ProcessorGroup>::iterator it = failed_thiefs.lower_bound(map_id);
-              it != failed_thiefs.upper_bound(map_id); it++)
-        {
-          Processor utility_target = it->second.get_utility_processor();
-          Serializer rez(buffer_size);
-          // Send a message to the processor saying that a specific mapper has work now
-          rez.serialize<Processor>(utility_target); // The actual target processor
-          rez.serialize<ProcessorGroup>(local_group); // This processor
-          rez.serialize<MapperID>(map_id);
-          // Send the advertisement
-          utility_target.spawn(ADVERTISEMENT_ID,rez.get_buffer(),buffer_size);
-        }
-        // Erase all the failed theives
-        failed_thiefs.erase(failed_thiefs.lower_bound(map_id),failed_thiefs.upper_bound(map_id));
-      }
-    }
 
   };
 };

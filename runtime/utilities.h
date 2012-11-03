@@ -33,6 +33,7 @@ enum {
     LEVEL_SPEW,
     LEVEL_DEBUG,
     LEVEL_INFO,
+    LEVEL_PRINT,
     LEVEL_WARNING,
     LEVEL_ERROR,
     LEVEL_NONE,
@@ -273,6 +274,8 @@ namespace LegionRuntime {
           return "DEBUG";
         case LEVEL_INFO:
           return "INFO";
+        case LEVEL_PRINT:
+          return "PRINT";
         case LEVEL_WARNING:
           return "WARNING";
         case LEVEL_ERROR:

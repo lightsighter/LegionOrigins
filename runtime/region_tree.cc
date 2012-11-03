@@ -796,6 +796,36 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
+    LogicalPartition RegionTreeForest::get_partition_subtree(IndexPartition handle, FieldSpace space, RegionTreeID tid)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      LogicalPartition result(tid, handle, space);
+      if (!has_node(result))
+      {
+        get_node(result);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalRegion RegionTreeForest::get_region_subtree(IndexSpace handle, FieldSpace space, RegionTreeID tid)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      assert(lock_held);
+#endif
+      LogicalRegion result(tid, handle, space);
+      if (!has_node(result))
+      {
+        get_node(result);
+      }
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
     void RegionTreeForest::initialize_logical_context(LogicalRegion handle, ContextID ctx)
     //--------------------------------------------------------------------------
     {
@@ -5474,6 +5504,14 @@ namespace LegionRuntime {
         rm.mapper->map_task_region(rm.task, rm.target, rm.tag, rm.inline_mapping,
                                    rm.req, rm.idx, valid_memories, chosen_order, enable_WAR);
       }
+#ifdef DEBUG_HIGH_LEVEL
+      if (valid_memories.empty() && chosen_order.empty())
+      {
+        log_region(LEVEL_ERROR,"Illegal mapper output, no memories specified for first instance of region %d of task %s (ID %d)",
+                                rm.idx, rm.task->variants->name, rm.task->get_unique_task_id());
+        exit(ERROR_INVALID_MAPPER_OUTPUT);
+      }
+#endif
       InstanceView *result = NULL;
       FieldMask needed_fields; 
       // Go through each of the memories provided by the mapper

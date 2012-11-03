@@ -17,7 +17,7 @@ namespace LegionRuntime {
      * interface for doing mapping dependence analysis as well
      * as operation activation and deactivation.
      */
-    class GeneralizedOperation : public Lockable { // include Lockable for fine-grained locking inside object
+    class GeneralizedOperation : public Lockable, public Mappable { // include Lockable for fine-grained locking inside object
     public:
       GeneralizedOperation(HighLevelRuntime *rt);
       virtual ~GeneralizedOperation(void);
@@ -45,6 +45,7 @@ namespace LegionRuntime {
       virtual void deactivate(void) = 0; 
       virtual void perform_dependence_analysis(void) = 0;
       virtual bool perform_operation(void) = 0;
+      virtual MapperID get_mapper_id(void) const = 0;
     protected:
       // Called once the task is ready to map
       virtual void trigger(void) = 0;
@@ -99,6 +100,7 @@ namespace LegionRuntime {
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void);
       virtual void trigger(void);
+      virtual MapperID get_mapper_id(void) const;
     private:
       void check_privilege(void);
     private:
@@ -111,13 +113,6 @@ namespace LegionRuntime {
     private:
       std::set<GeneralizedOperation*> map_dependent_waiters;
       std::vector<InstanceRef> source_copy_instances;
-    private:
-      Mapper *mapper;
-#ifdef LOW_LEVEL_LOCKS
-      Lock mapper_lock;
-#else
-      ImmovableLock mapper_lock;
-#endif
       MappingTagID tag;
     };
 
@@ -155,6 +150,7 @@ namespace LegionRuntime {
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void);
       virtual void trigger(void);
+      virtual MapperID get_mapper_id(void) const;
     public:
       Event flush(void);
     private:
@@ -200,13 +196,7 @@ namespace LegionRuntime {
       void initialize_task(Context parent, Processor::TaskFuncID tid,
                       void *args, size_t arglen, 
                       const Predicate &predicate,
-                      MapperID mid, MappingTagID tag, Mapper *mapper,
-#ifdef LOW_LEVEL_LOCKS
-                      Lock map_lock
-#else
-                      ImmovableLock map_lock
-#endif
-                                             );
+                      MapperID mid, MappingTagID tag);
       void set_requirements(const std::vector<IndexSpaceRequirement> &indexes,
                             const std::vector<FieldSpaceRequirement> &fields,
                             const std::vector<RegionRequirement> &regions, bool perform_checks);
@@ -219,6 +209,7 @@ namespace LegionRuntime {
       virtual void perform_dependence_analysis(void);
       virtual bool perform_operation(void) = 0;
       virtual void trigger(void) = 0;
+      virtual MapperID get_mapper_id(void) const;
     public:
       virtual bool is_single(void) const = 0;
       virtual bool is_distributed(void) = 0;
@@ -249,6 +240,8 @@ namespace LegionRuntime {
       // Functions from Task
       virtual UniqueID get_unique_task_id(void) const { return get_unique_id(); }
     public:
+      inline bool is_leaf(void) const { return variants->leaf; }
+    public:
       // For returning privileges (stored in create_* lists)
       void return_privileges(const std::set<IndexSpace> &new_indexes,
                              const std::set<FieldSpace> &new_fields,
@@ -274,8 +267,8 @@ namespace LegionRuntime {
       bool invoke_mapper_locally_mapped(void);
       bool invoke_mapper_stealable(void);
       bool invoke_mapper_map_region_virtual(unsigned idx, Processor target);
-      ProcessorGroup invoke_mapper_select_target_group(void);
-      Processor invoke_mapper_select_final_proc(ProcessorGroup group);
+      Processor invoke_mapper_select_target_proc(void);
+      Processor::TaskFuncID invoke_mapper_select_variant(Processor target);
       void invoke_mapper_failed_mapping(unsigned idx, Processor target);
     protected:
       void clone_task_context_from(TaskContext *rhs);
@@ -284,12 +277,6 @@ namespace LegionRuntime {
       // Remember some fields are here already from the Task class
       Context parent_ctx;
       Predicate task_pred;
-      Mapper *mapper;
-#ifdef LOW_LEVEL_LOCKS
-      Lock mapper_lock;
-#else
-      ImmovableLock mapper_lock;
-#endif
     protected:
       friend class SingleTask;
       friend class GeneralizedOperation;
@@ -392,6 +379,8 @@ namespace LegionRuntime {
       LogicalRegion get_partition_subregion(LogicalPartition parent, IndexSpace handle);
       LogicalPartition get_region_subcolor(LogicalRegion parent, Color c);
       LogicalRegion get_partition_subcolor(LogicalPartition parent, Color c);
+      LogicalPartition get_partition_subtree(IndexPartition handle, FieldSpace space, RegionTreeID tid);
+      LogicalRegion get_region_subtree(IndexSpace handle, FieldSpace space, RegionTreeID tid);
     public:
       void unmap_physical_region(PhysicalRegion region);
     public:
@@ -452,8 +441,8 @@ namespace LegionRuntime {
       void invalidate_owned_contexts(void);
     protected:
       // The processor on which this task is executing
-      ProcessorGroup target_group;
       Processor executing_processor;
+      Processor::TaskFuncID low_id; 
       unsigned unmapped; // number of regions still unmapped
       std::vector<bool> non_virtual_mapped_region;
       // This vector is filled in by perform_operation which does the mapping
@@ -472,8 +461,6 @@ namespace LegionRuntime {
       std::list<TaskContext*> child_tasks;
       std::list<MappingOperation*> child_maps;
       std::list<DeletionOperation*> child_deletions;
-      // Set when the variant is selected after mapping succeeds
-      bool is_leaf;
       // For packing up return created fields
       std::map<unsigned,std::vector<FieldID> > need_pack_created_fields;
     };
@@ -545,7 +532,7 @@ namespace LegionRuntime {
       bool slice_index_space(void);
       virtual bool pre_slice(void) = 0;
       virtual bool post_slice(void) = 0; // What to do after slicing
-      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, ProcessorGroup target_group, 
+      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable) = 0;
       virtual void handle_future(const AnyPoint &point, const void *result, size_t result_size, Event ready_event) = 0;
       void clone_multi_from(MultiTask *rhs, IndexSpace new_space, bool recurse);
@@ -623,6 +610,7 @@ namespace LegionRuntime {
     public:
       Future get_future(void);
     private:
+      Processor current_proc;
       // Keep track of both whether the value has been set as well
       // as what its value is if it has
       bool distributed;
@@ -758,7 +746,7 @@ namespace LegionRuntime {
     public:
       // Function from MultiTask
       virtual bool map_and_launch(void);
-      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, ProcessorGroup target_group, 
+      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable);
       virtual bool pre_slice(void);
       virtual bool post_slice(void);
@@ -862,7 +850,7 @@ namespace LegionRuntime {
     public:
       // Functions from MultiTask
       virtual bool map_and_launch(void);
-      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, ProcessorGroup target_group, 
+      virtual SliceTask *clone_as_slice_task(IndexSpace new_space, Processor target_proc, 
                                              bool recurse, bool stealable);
       virtual bool pre_slice(void);
       virtual bool post_slice(void);
@@ -889,9 +877,8 @@ namespace LegionRuntime {
       bool locally_mapped;
       bool stealable;
       bool remote;
-      bool is_leaf;
       Event termination_event;
-      ProcessorGroup target_group;
+      Processor current_proc;
       std::vector<PointTask*> points;
       // For remote slices
       // orig_proc from Task

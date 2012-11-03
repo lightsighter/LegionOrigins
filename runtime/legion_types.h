@@ -96,6 +96,10 @@ namespace LegionRuntime {
       ERROR_INVALID_REGION_HANDLE = 61,
       ERROR_INVALID_PARTITION_HANDLE = 62,
       ERROR_VIRTUAL_MAP_IN_LEAF_TASK = 63,
+      ERROR_LEAF_MISMATCH = 64,
+      ERROR_INVALID_PROCESSOR_SELECTION = 65,
+      ERROR_INVALID_VARIANT_SELECTION = 66,
+      ERROR_INVALID_MAPPER_OUTPUT = 67,
     };
 
     // enum and namepsaces don't really get along well
@@ -180,10 +184,11 @@ namespace LegionRuntime {
     class TaskArgument;
     class ArgumentMap;
     class FutureMap;
-    class ColoringFunctor;
     class PhysicalRegion;
     class IndexAllocator;
     class FieldAllocator;
+    class IndexIterator;
+    template<typename T> struct ColoredPoints; 
     class Structure;
     class HighLevelRuntime;
     class Mapper;
@@ -194,6 +199,7 @@ namespace LegionRuntime {
     class Collectable;
     class Notifiable;
     class Waitable;
+    class Mappable; // For things that need to have a mapper and lock selelcted 
     class PredicateImpl;
     class FutureImpl;
     class FutureMapImpl;
@@ -262,8 +268,6 @@ namespace LegionRuntime {
     typedef LowLevel::RegionInstance PhysicalInstance;
     typedef LowLevel::Memory Memory;
     typedef LowLevel::Processor Processor;
-    typedef LowLevel::UtilityProcessor UtilityProcessor;
-    typedef LowLevel::ProcessorGroup ProcessorGroup;
     typedef LowLevel::Event Event;
     typedef LowLevel::UserEvent UserEvent;
     typedef LowLevel::Lock Lock;
@@ -272,6 +276,7 @@ namespace LegionRuntime {
     typedef LowLevel::ReductionOpUntyped ReductionOp;
     typedef LowLevel::Machine::ProcessorMemoryAffinity ProcessorMemoryAffinity;
     typedef LowLevel::Machine::MemoryMemoryAffinity MemoryMemoryAffinity;
+    typedef LowLevel::ElementMask::Enumerator Enumerator;
     typedef unsigned int Color;
     typedef unsigned int IndexPartition;
     typedef unsigned int FieldID;
@@ -281,14 +286,16 @@ namespace LegionRuntime {
     typedef unsigned int InstanceID;
     typedef unsigned int FieldSpaceID;
     typedef unsigned int GenerationID;
-    typedef unsigned int MappingTagID;
     typedef unsigned int TypeHandle;
     typedef unsigned int ProjectionID;
     typedef unsigned int RegionTreeID;
     typedef unsigned int UniqueManagerID;
+    typedef unsigned long MappingTagID;
+    typedef unsigned long VariantID;
     typedef Processor::TaskFuncID TaskID;
     typedef SingleTask* Context;
-    typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, ProcessorGroup group);
+    typedef std::map<Color,ColoredPoints<ptr_t> > Coloring;
+    typedef void (*RegistrationCallbackFnptr)(Machine *machine, HighLevelRuntime *rt, const std::set<Processor> &local_procs);
     typedef Color (*ProjectionFnptr)(const void*,size_t,unsigned);
     typedef bool (*PredicateFnptr)(const void*, size_t, const std::vector<Future> futures);
     typedef std::map<TypeHandle,Structure> TypeTable;

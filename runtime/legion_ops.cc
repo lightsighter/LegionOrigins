@@ -27,7 +27,7 @@ namespace LegionRuntime {
 
     //--------------------------------------------------------------------------
     GeneralizedOperation::GeneralizedOperation(HighLevelRuntime *rt)
-      : Lockable(), active(false), context_owner(false), forest_ctx(NULL), 
+      : Lockable(), Mappable(), active(false), context_owner(false), forest_ctx(NULL), 
         generation(0), runtime(rt)
     //--------------------------------------------------------------------------
     {
@@ -85,6 +85,10 @@ namespace LegionRuntime {
       }
       forest_ctx = NULL;
       context_owner = false;
+      mapper = NULL;
+#ifdef LOW_LEVEL_LOCKS
+      mapper_lock = Lock::NO_LOCK;
+#endif
       active = false;
     }
 
@@ -314,8 +318,6 @@ namespace LegionRuntime {
       mapped_event = UserEvent::create_user_event();
       ready_event = Event::NO_EVENT;
       unmapped_event = UserEvent::create_user_event();
-      mapper = runtime->get_mapper(id);
-      mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
       // Check privileges for the region requirement
       check_privilege();
@@ -341,8 +343,6 @@ namespace LegionRuntime {
       mapped_event = UserEvent::create_user_event();
       ready_event = Event::NO_EVENT;
       unmapped_event = UserEvent::create_user_event();
-      mapper = runtime->get_mapper(id);
-      mapper_lock = runtime->get_mapper_lock(id);
       tag = t;
       // Check privileges for the region requirement
       check_privilege();
@@ -492,12 +492,6 @@ namespace LegionRuntime {
       Context parent = parent_ctx;
 #endif
       parent_ctx = NULL;
-      mapper = NULL;
-#ifdef LOW_LEVEL_LOCKS
-      mapper_lock = Lock::NO_LOCK;
-#else
-      mapper_lock.clear();
-#endif
       tag = 0;
       map_dependent_waiters.clear();
 #ifndef INORDER_EXECUTION
@@ -664,7 +658,14 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
       // Enqueue this operation with the runtime
-      runtime->add_to_ready_queue(this);
+      runtime->add_to_ready_queue(parent_ctx->get_executing_processor(), this);
+    }
+
+    //--------------------------------------------------------------------------
+    MapperID MappingOperation::get_mapper_id(void) const
+    //--------------------------------------------------------------------------
+    {
+      return parent_ctx->get_mapper_id();
     }
 
     //--------------------------------------------------------------------------
@@ -1029,7 +1030,14 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
       // Enqueue this operation with the runtime
-      runtime->add_to_ready_queue(this);
+      runtime->add_to_ready_queue(parent_ctx->get_executing_processor(), this);
+    }
+
+    //--------------------------------------------------------------------------
+    MapperID DeletionOperation::get_mapper_id(void) const
+    //--------------------------------------------------------------------------
+    {
+      return parent_ctx->get_mapper_id();
     }
 
     //--------------------------------------------------------------------------
@@ -1135,16 +1143,12 @@ namespace LegionRuntime {
       {
         parent_ctx = NULL;
         task_pred = Predicate::TRUE_PRED;
-        mapper = NULL;
-#ifdef LOW_LEVEL_LOCKS
-        mapper_lock = Lock::NO_LOCK;
-#endif
         task_id = 0;
         args = NULL;
         arglen = 0;
         map_id = 0;
         tag = 0;
-        orig_proc = runtime->utility_proc;
+        orig_proc = Processor::NO_PROC;
         steal_count = 0;
         must_parallelism = false;
         is_index_space = false;
@@ -1186,9 +1190,6 @@ namespace LegionRuntime {
       }
       // This will remove a reference to any other predicate
       task_pred = Predicate::FALSE_PRED;
-#ifndef LOW_LEVEL_LOCKS
-      mapper_lock.clear();
-#endif
       deactivate_base();
     }
 
@@ -1196,13 +1197,7 @@ namespace LegionRuntime {
     void TaskContext::initialize_task(Context parent, Processor::TaskFuncID tid,
                                       void *a, size_t len, 
                                       const Predicate &predicate,
-                                      MapperID mid, MappingTagID t, Mapper *m,
-#ifdef LOW_LEVEL_LOCKS
-                                      Lock map_lock
-#else
-                                      ImmovableLock map_lock
-#endif
-                                                             )
+                                      MapperID mid, MappingTagID t)
     //--------------------------------------------------------------------------
     {
       task_id = tid;
@@ -1223,9 +1218,7 @@ namespace LegionRuntime {
       parent_ctx = parent;
       task_pred = predicate;
       map_id = mid;
-      mapper = m;
       tag = t;
-      mapper_lock = map_lock;
       // Initialize remaining fields in the Task as well
       if (parent != NULL)
         orig_proc = parent->get_executing_processor();
@@ -1590,9 +1583,6 @@ namespace LegionRuntime {
         derez.deserialize<Event>(e);
         mapped_preconditions.insert(e);
       }
-      // Get the mapper and mapper lock from the runtime
-      mapper = runtime->get_mapper(map_id);
-      mapper_lock = runtime->get_mapper_lock(map_id);
     }
 
     //--------------------------------------------------------------------------
@@ -1626,36 +1616,39 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    ProcessorGroup TaskContext::invoke_mapper_select_target_group(void)
+    Processor TaskContext::invoke_mapper_select_target_proc(void)
     //--------------------------------------------------------------------------
     {
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
-      ProcessorGroup result = mapper->select_target_group(this);
+      Processor result = mapper->select_target_processor(this);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(result.exists());
+      if (!result.exists())
+      {
+        log_task(LEVEL_ERROR,"Mapper selected invalid NO_PROC for target processor for task %s (ID %d)",
+                              this->variants->name, get_unique_id());
+        exit(ERROR_INVALID_PROCESSOR_SELECTION);
+      }
 #endif
       return result;
     }
 
     //--------------------------------------------------------------------------
-    Processor TaskContext::invoke_mapper_select_final_proc(ProcessorGroup group)
+    Processor::TaskFuncID TaskContext::invoke_mapper_select_variant(Processor target)
     //--------------------------------------------------------------------------
     {
-      const std::set<Processor> &options = group.get_all_processors();
-#ifdef DEBUG_HIGH_LEVEL
-      assert(!options.empty());
-#endif
-      // If there is only one then we know which one to pick
-      if (options.size() == 1)
-        return *(options.begin());
       AutoLock m_lock(mapper_lock);
       DetailedTimer::ScopedPush sp(TIME_MAPPER);
-      Processor result = mapper->select_final_processor(this, options); 
+      VariantID vid = mapper->select_task_variant(this, target);
 #ifdef DEBUG_HIGH_LEVEL
-      assert(result.exists());
+      if (!variants->has_variant(vid))
+      {
+        log_task(LEVEL_ERROR,"Mapper selected invalid variant ID %ld for task %s (ID %d)",
+                              vid, this->variants->name, get_unique_id());
+        exit(ERROR_INVALID_VARIANT_SELECTION);
+      }
 #endif
-      return result;
+      return variants->get_variant(vid).low_id;
     }
 
     //--------------------------------------------------------------------------
@@ -1692,6 +1685,13 @@ namespace LegionRuntime {
       unlock_context();
       if (ready)
         trigger();
+    }
+
+    //--------------------------------------------------------------------------
+    MapperID TaskContext::get_mapper_id(void) const
+    //--------------------------------------------------------------------------
+    {
+      return map_id;
     }
 
     //--------------------------------------------------------------------------
@@ -1907,8 +1907,8 @@ namespace LegionRuntime {
       if (activated)
       {
         executing_processor = Processor::NO_PROC;
+        low_id = 0;
         unmapped = 0;
-        is_leaf = false;
       }
       return activated;
     }
@@ -2070,7 +2070,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal child task launch performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2087,7 +2087,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal inline mapping performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2119,7 +2119,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal deletion performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2136,7 +2136,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal index space creation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2183,7 +2183,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal index partition performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2219,7 +2219,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal get index partition performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2237,7 +2237,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal get index subspace performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2255,7 +2255,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal create field space performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2314,7 +2314,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal field allocation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2339,7 +2339,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal field deallocation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2365,7 +2365,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal region creation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2386,7 +2386,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal region creation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2408,7 +2408,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal region creation performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2426,7 +2426,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal get region partition performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2444,7 +2444,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal get partition subregion performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2462,7 +2462,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal get region partition performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2480,7 +2480,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         log_task(LEVEL_ERROR,"Illegal get partition subregion performed in leaf task %s (ID %d)",
                               this->variants->name, get_unique_id());
@@ -2489,6 +2489,42 @@ namespace LegionRuntime {
 #endif
       lock_context();
       LogicalRegion result = forest_ctx->get_partition_subcolor(pid, c);
+      unlock_context();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalPartition SingleTask::get_partition_subtree(IndexPartition handle, FieldSpace space, RegionTreeID tid)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (is_leaf())
+      {
+        log_task(LEVEL_ERROR,"Illegal get partition subregion performed in leaf task %s (ID %d)",
+                              this->variants->name, get_unique_id());
+        exit(ERROR_LEAF_TASK_VIOLATION);
+      }
+#endif
+      lock_context();
+      LogicalPartition result = forest_ctx->get_partition_subtree(handle, space, tid);
+      unlock_context();
+      return result;
+    }
+
+    //--------------------------------------------------------------------------
+    LogicalRegion SingleTask::get_region_subtree(IndexSpace handle, FieldSpace space, RegionTreeID tid)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_HIGH_LEVEL
+      if (is_leaf())
+      {
+        log_task(LEVEL_ERROR,"Illegal get partition subregion performed in leaf task %s (ID %d)",
+                              this->variants->name, get_unique_id());
+        exit(ERROR_LEAF_TASK_VIOLATION);
+      }
+#endif
+      lock_context();
+      LogicalRegion result = forest_ctx->get_region_subtree(handle, space, tid);
       unlock_context();
       return result;
     }
@@ -2545,10 +2581,7 @@ namespace LegionRuntime {
           exit(ERROR_INVALID_UNMAP_OP);
         }
 #endif
-        // Lock the context in case this decides to change the region tree
-        lock_context();
         region.op.map->deactivate();
-        unlock_context();
       }
     }
 
@@ -2766,7 +2799,7 @@ namespace LegionRuntime {
       // Handle the future result
       handle_future(result, result_size, get_termination_event());
       
-      if (is_leaf)
+      if (is_leaf())
       {
         // Invoke the function for when we're done 
         finish_task();
@@ -2803,7 +2836,7 @@ namespace LegionRuntime {
           rez.serialize<Processor>(runtime->utility_proc);
           rez.serialize<Context>(this);
           // Launch the task on the utility processor
-          UtilityProcessor utility = runtime->utility_proc;
+          Processor utility = runtime->utility_proc;
           utility.spawn(CHILDREN_MAPPED_ID,rez.get_buffer(),buffer_size,wait_on_event);
         }
       }
@@ -3246,6 +3279,8 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
       bool map_success = true;
+      // First select the variant for this task
+      low_id = invoke_mapper_select_variant(target);
       // Do the mapping for all the regions
       // Hold the context lock when doing this
       forest_ctx->lock_context();
@@ -3270,7 +3305,7 @@ namespace LegionRuntime {
         if (invoke_mapper_map_region_virtual(idx, target))
         {
           // Can't be a leaf task
-          if (is_leaf)
+          if (is_leaf())
           {
             log_region(LEVEL_ERROR,"Illegal request for a virtual mapping of region (%x,%d,%d) index %d "
                                   "in LEAF task %s (ID %d)", regions[idx].region.index_space.id,
@@ -3314,6 +3349,7 @@ namespace LegionRuntime {
             forest_ctx->compute_index_path(regions[idx].parent.index_space,regions[idx].region.index_space, reg_mapper.path);
 #ifdef DEBUG_HIGH_LEVEL
             assert(result);
+            assert(!reg_mapper.success);
 #endif
             forest_ctx->map_region(reg_mapper, regions[idx].parent);
           }
@@ -3323,9 +3359,11 @@ namespace LegionRuntime {
           if (physical_instances[idx].is_virtual_ref())
           {
             unlock();
+            assert(!reg_mapper.success);
             // Mapping failed
             invoke_mapper_failed_mapping(idx, target);
             map_success = false;
+            physical_instances.pop_back();
             break;
           }
           non_virtual_mapped_region.push_back(true);
@@ -3337,11 +3375,6 @@ namespace LegionRuntime {
 
       if (map_success)
       {
-        // Mapping was a success.  Figure out if this is a leaf task or not
-        Machine *machine = Machine::get_machine();
-        Processor::Kind proc_kind = machine->get_processor_kind(target);
-        const TaskVariantCollection::Variant &variant = this->variants->select_variant(is_index_space,proc_kind);
-        this->is_leaf = variant.leaf;
         // Since the mapping was a success we now know that we're going to run on this processor
         this->executing_processor = target;
       }
@@ -3444,14 +3477,13 @@ namespace LegionRuntime {
       LegionSpy::log_task_events(get_unique_id(), is_index_space, (is_index_space ? *((unsigned*)index_point) : 0), 
                                   start_condition, get_termination_event());
 #endif
-      // Now we need to select the variant to run
-      const TaskVariantCollection::Variant &variant = variants->select_variant(is_index_space,runtime->proc_kind);
       // Launch the task, passing the pointer to this Context as the argument
       SingleTask *this_ptr = this; // dumb c++
 #ifdef DEBUG_HIGH_LEVEL
       assert(this->executing_processor.exists());
+      assert(low_id > 0);
 #endif
-      Event task_launch_event = this->executing_processor.spawn(variant.low_id,&this_ptr,sizeof(SingleTask*),start_condition);
+      Event task_launch_event = this->executing_processor.spawn(low_id,&this_ptr,sizeof(SingleTask*),start_condition);
 
       // After we launched the task, see if we had any atomic locks to release
       if (!needed_locks.empty())
@@ -3768,7 +3800,7 @@ namespace LegionRuntime {
       for (unsigned idx = 0; idx < splits.size(); idx++)
       {
         SliceTask *slice = this->clone_as_slice_task(splits[idx].space,
-                                                     splits[idx].group,
+                                                     splits[idx].proc,
                                                      splits[idx].recurse,
                                                      splits[idx].stealable);
         slices.push_back(slice);
@@ -3919,7 +3951,7 @@ namespace LegionRuntime {
       bool activated = activate_single(parent);
       if (activated)
       {
-        target_group = ProcessorGroup::NO_GROUP;
+        current_proc = Processor::NO_PROC;
         distributed = false;
         locally_set = false;
         locally_mapped = false;
@@ -3930,7 +3962,6 @@ namespace LegionRuntime {
         future = NULL;
         remote_future = NULL;
         remote_future_len = 0;
-        orig_proc = Processor::NO_PROC;
         orig_ctx = this;
         remote_start_event = Event::NO_EVENT;
         remote_mapped_event = Event::NO_EVENT;
@@ -4019,8 +4050,9 @@ namespace LegionRuntime {
       if (task_pred == Predicate::TRUE_PRED)
       {
         // Task evaluated should be run, put it on the ready queue
+        // for the processor that it originated on
         unlock();
-        runtime->add_to_ready_queue(this,false/*remote*/);
+        runtime->add_to_ready_queue(orig_proc, this,false/*remote*/);
       }
       else if (task_pred == Predicate::FALSE_PRED)
       {
@@ -4096,18 +4128,29 @@ namespace LegionRuntime {
     {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!distributed);
+      assert(current_proc.exists());
 #endif
       // Allow this to be re-entrant in case sanitization fails
-      target_group = invoke_mapper_select_target_group();
+      Processor target_proc = invoke_mapper_select_target_proc();
+#ifdef DEBUG_HIGH_LEVEL
+      if (!target_proc.exists())
+      {
+        log_run(LEVEL_ERROR,"Invalid mapper selection of NO_PROC for target processor of task %s (ID %d)",
+                          variants->name, get_unique_id());
+        exit(ERROR_INVALID_PROCESSOR_SELECTION);
+      }
+#endif
       distributed = true;
-      bool is_local = runtime->is_local_group(target_group);
       // If the target processor isn't us we have to
       // send our task away
-      if (!is_local)
+      if (target_proc != current_proc)
       {
-        runtime->send_task(target_group, this);
+        // Update the current proc and send it
+        current_proc = target_proc;
+        return runtime->send_task(target_proc, this);
       }
-      return is_local; 
+      // Definitely still local
+      return true;
     }
 
     //--------------------------------------------------------------------------
@@ -4121,8 +4164,7 @@ namespace LegionRuntime {
 #endif
         finish_task_unpack();
       }
-      Processor target = invoke_mapper_select_final_proc(target_group);
-      bool map_success = map_all_regions(target, termination_event, termination_event); 
+      bool map_success = map_all_regions(current_proc, termination_event, termination_event); 
       if (map_success)
       {
         // Mark that we're no longer stealable now that we've been mapped
@@ -4134,7 +4176,7 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
           assert(!locally_mapped); // we shouldn't be here if we were locally mapped
 #endif
-          size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx) + sizeof(is_leaf);
+          size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
           buffer_size += (regions.size()*sizeof(bool)); // mapped or not for each region
           lock_context();
           for (unsigned idx = 0; idx < regions.size(); idx++)
@@ -4154,7 +4196,6 @@ namespace LegionRuntime {
           Serializer rez(buffer_size);
           rez.serialize<Processor>(orig_proc);
           rez.serialize<Context>(orig_ctx);
-          rez.serialize<bool>(is_leaf);
           for (unsigned idx = 0; idx < regions.size(); idx++)
           {
             rez.serialize<bool>(non_virtual_mapped_region[idx]);
@@ -4269,6 +4310,7 @@ namespace LegionRuntime {
     {
       mapped_event = UserEvent::create_user_event();
       termination_event = UserEvent::create_user_event();
+      current_proc = this->orig_proc;
     }
 
     //--------------------------------------------------------------------------
@@ -4309,8 +4351,7 @@ namespace LegionRuntime {
       result += sizeof(stealable);
       result += sizeof(termination_event);
       result += sizeof(Context);
-      if (locally_mapped)
-        result += sizeof(is_leaf);
+      result += sizeof(current_proc);
       if (partially_unpacked)
       {
         result += remaining_bytes;
@@ -4319,7 +4360,7 @@ namespace LegionRuntime {
       {
         if (locally_mapped)
         {
-          if (is_leaf)
+          if (is_leaf())
           {
             // Don't need to pack the region trees, but still
             // need to pack the instances
@@ -4381,8 +4422,7 @@ namespace LegionRuntime {
       rez.serialize<bool>(stealable);
       rez.serialize<UserEvent>(termination_event);
       rez.serialize<Context>(orig_ctx);
-      if (locally_mapped)
-        rez.serialize<bool>(is_leaf);
+      rez.serialize<Processor>(current_proc);
       if (partially_unpacked)
       {
         rez.serialize(remaining_buffer,remaining_bytes);
@@ -4391,7 +4431,7 @@ namespace LegionRuntime {
       {
         if (locally_mapped)
         {
-          if (is_leaf)
+          if (is_leaf())
           {
             for (unsigned idx = 0; idx < regions.size(); idx++)
             {
@@ -4454,11 +4494,9 @@ namespace LegionRuntime {
       derez.deserialize<bool>(stealable);
       stealable_set = true;
       remote = true;
-      target_group = runtime->local_group; // if we we're sent here this is our new target group
       derez.deserialize<UserEvent>(termination_event);
       derez.deserialize<Context>(orig_ctx);
-      if (locally_mapped)
-        derez.deserialize<bool>(is_leaf);
+      derez.deserialize<Processor>(current_proc);
       remaining_bytes = derez.get_remaining_bytes();
       remaining_buffer = malloc(remaining_bytes);
       derez.deserialize(remaining_buffer,remaining_bytes);
@@ -4476,7 +4514,7 @@ namespace LegionRuntime {
       lock_context();
       if (locally_mapped)
       {
-        if (is_leaf)
+        if (is_leaf())
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(physical_instances.empty());
@@ -4551,7 +4589,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!is_leaf); // shouldn't be here if we're a leaf task
+      assert(!is_leaf()); // shouldn't be here if we're a leaf task
 #endif
       std::set<Event> cleanup_events;
       // Make sure all the deletion operations for this task have been performed
@@ -4579,7 +4617,7 @@ namespace LegionRuntime {
         // Only need to send things back if we had unmapped regions
         // and this isn't a leaf task.  Note virtual mappings on leaf
         // tasks are pretty worthless.
-        if ((unmapped > 0) && !is_leaf)
+        if ((unmapped > 0) && !is_leaf())
         {
           size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
           lock_context();
@@ -4692,7 +4730,7 @@ namespace LegionRuntime {
         rez.serialize<Processor>(runtime->utility_proc);
         rez.serialize<Context>(this);
         // Launch the task on the utility processor
-        UtilityProcessor utility = runtime->utility_proc;
+        Processor utility = runtime->utility_proc;
         utility.spawn(FINISH_ID,rez.get_buffer(),buffer_size,wait_on_event);
       }
     }
@@ -4706,7 +4744,7 @@ namespace LegionRuntime {
         size_t buffer_size = sizeof(orig_proc) + sizeof(orig_ctx);
         // Only need to send this stuff back if we're not a leaf task
         lock_context();
-        if (!is_leaf)
+        if (!is_leaf())
         {
           buffer_size += compute_privileges_return_size();
           buffer_size += compute_deletions_return_size();
@@ -4722,7 +4760,7 @@ namespace LegionRuntime {
         Serializer rez(buffer_size);
         rez.serialize<Processor>(orig_proc);
         rez.serialize<Context>(orig_ctx);
-        if (!is_leaf)
+        if (!is_leaf())
         {
           pack_privileges_return(rez);
           pack_deletions_return(rez);
@@ -4792,27 +4830,30 @@ namespace LegionRuntime {
         termination_event.trigger();
       }
 #ifdef DEBUG_HIGH_LEVEL
-      if (is_leaf)
+      if (is_leaf())
       {
         assert(child_tasks.empty());
         assert(child_maps.empty());
         assert(child_deletions.empty());
       }
 #endif
+      std::vector<TaskContext*> deactivated_children(child_tasks.begin(),child_tasks.end());
+      std::vector<MappingOperation*> deactivated_maps(child_maps.begin(),child_maps.end());
+      unlock();
+      // Don't want to be holding a lock while deactivating children
       // Deactivate all of our child tasks 
-      for (std::list<TaskContext*>::const_iterator it = child_tasks.begin();
-            it != child_tasks.end(); it++)
+      for (std::vector<TaskContext*>::const_iterator it = deactivated_children.begin();
+            it != deactivated_children.end(); it++)
       {
         (*it)->deactivate();
       }
       // Deactivate all of our child inline mapping operations
       // Deletions will take care of themselves
-      for (std::list<MappingOperation*>::const_iterator it = child_maps.begin();
-            it != child_maps.end(); it++)
+      for (std::vector<MappingOperation*>::const_iterator it = deactivated_maps.begin();
+            it != deactivated_maps.end(); it++)
       {
         (*it)->deactivate();
       }
-      unlock();
 
       // If we're remote or the top level task, deactivate ourself
       if (remote || top_level_task)
@@ -4827,7 +4868,6 @@ namespace LegionRuntime {
       assert(!locally_mapped); // shouldn't be here if we were locally mapped
 #endif
       Deserializer derez(args,arglen); 
-      derez.deserialize<bool>(is_leaf);
       non_virtual_mapped_region.resize(regions.size());
       unmapped = 0;
 #ifdef DEBUG_HIGH_LEVEL
@@ -4884,7 +4924,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!is_leaf);
+      assert(!is_leaf());
       assert(unmapped > 0);
 #endif
       Deserializer derez(args,arglen);
@@ -4951,7 +4991,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
       Deserializer derez(args,arglen);
-      if (!is_leaf)
+      if (!is_leaf())
       {
         unpack_privileges_return(derez);
         unpack_deletions_return(derez);
@@ -5081,7 +5121,6 @@ namespace LegionRuntime {
         slice_owner = NULL;
         local_point_argument = NULL;
         local_point_argument_len = 0;
-        target_group = ProcessorGroup::NO_GROUP;
       }
       return activated;
     }
@@ -5171,8 +5210,7 @@ namespace LegionRuntime {
     bool PointTask::perform_mapping(void)
     //--------------------------------------------------------------------------
     {
-      Processor target_proc = invoke_mapper_select_final_proc(target_group);
-      bool success = map_all_regions(target_proc, point_termination_event,
+      bool success = map_all_regions(slice_owner->current_proc, point_termination_event,
                                       slice_owner->get_termination_event());
       if (success && (unmapped == 0))
       {
@@ -5241,7 +5279,6 @@ namespace LegionRuntime {
       result += sizeof(local_point_argument_len);
       result += local_point_argument_len;
 
-      result += sizeof(is_leaf);
 #ifdef DEBUG_HIGH_LEVEL
       assert(non_virtual_mapped_region.size() == regions.size());
       assert(physical_instances.size() == regions.size());
@@ -5265,7 +5302,6 @@ namespace LegionRuntime {
       rez.serialize<UserEvent>(point_termination_event);
       rez.serialize<size_t>(local_point_argument_len);
       rez.serialize(local_point_argument,local_point_argument_len);
-      rez.serialize<bool>(is_leaf);
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
         bool non_virt = non_virtual_mapped_region[idx];
@@ -5296,7 +5332,6 @@ namespace LegionRuntime {
 #endif
       local_point_argument = malloc(local_point_argument_len);
       derez.deserialize(local_point_argument,local_point_argument_len);
-      derez.deserialize<bool>(is_leaf);
       non_virtual_mapped_region.resize(regions.size());
       for (unsigned idx = 0; idx < regions.size(); idx++)
       {
@@ -5343,7 +5378,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
-      assert(!is_leaf);
+      assert(!is_leaf());
 #endif
 
       std::set<Event> cleanup_events;
@@ -5393,7 +5428,7 @@ namespace LegionRuntime {
         rez.serialize<Processor>(runtime->utility_proc);
         rez.serialize<Context>(this);
         // Launch the task on the utility processor
-        UtilityProcessor utility = runtime->utility_proc;
+        Processor utility = runtime->utility_proc;
         utility.spawn(FINISH_ID,rez.get_buffer(),buffer_size,wait_on_event);
       }
     }
@@ -5658,7 +5693,7 @@ namespace LegionRuntime {
       {
         // Task evaluated should be run, put it on the ready queue
         unlock();
-        runtime->add_to_ready_queue(this);
+        runtime->add_to_ready_queue(orig_proc, this);
       }
       else if (task_pred == Predicate::FALSE_PRED)
       {
@@ -6029,9 +6064,7 @@ namespace LegionRuntime {
       Deserializer derez(args,arglen);
       size_t num_points;
       derez.deserialize<size_t>(num_points);
-      bool slice_is_leaf;
-      derez.deserialize<bool>(slice_is_leaf);
-      if (!slice_is_leaf)
+      if (!is_leaf())
       {
         unpack_privileges_return(derez);
         unpack_deletions_return(derez);
@@ -6151,7 +6184,7 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    SliceTask* IndexTask::clone_as_slice_task(IndexSpace new_space, ProcessorGroup target,
+    SliceTask* IndexTask::clone_as_slice_task(IndexSpace new_space, Processor target,
                                               bool recurse, bool steal)
     //--------------------------------------------------------------------------
     {
@@ -6161,9 +6194,8 @@ namespace LegionRuntime {
       result->locally_mapped = is_locally_mapped();
       result->stealable = steal;
       result->remote = false;
-      result->is_leaf = false;
       result->termination_event = this->termination_event;
-      result->target_group = target;
+      result->current_proc = target;
       result->orig_proc = this->orig_proc;
       result->index_owner = this;
       // denominator gets set by post_slice
@@ -6620,9 +6652,8 @@ namespace LegionRuntime {
         locally_mapped = false;
         stealable = false;
         remote = false;
-        is_leaf = false;
         termination_event = Event::NO_EVENT;
-        target_group = ProcessorGroup::NO_GROUP;
+        current_proc = Processor::NO_PROC;
         index_owner = NULL;
         remote_start_event = Event::NO_EVENT;
         remote_mapped_event = Event::NO_EVENT;
@@ -6723,9 +6754,15 @@ namespace LegionRuntime {
 #endif
       distributed = true;
       // Check to see if the target processor is the local one
-      if (!runtime->is_local_group(target_group))
+      if (!runtime->is_local_processor(current_proc))
       {
-        runtime->send_task(target_group,this);
+#ifdef DEBUG_HIGH_LEVEL
+        bool is_local = 
+#endif
+        runtime->send_task(current_proc,this);
+#ifdef DEBUG_HIGH_LEVEL
+        assert(!is_local);
+#endif
         // Now we can deactivate this task since it's been distributed
         this->deactivate();
         return false;
@@ -7027,11 +7064,10 @@ namespace LegionRuntime {
       result += sizeof(distributed);
       result += sizeof(locally_mapped);
       result += sizeof(stealable);
-      if (locally_mapped)
-        result += sizeof(is_leaf);
       result += sizeof(termination_event);
       result += sizeof(index_owner);
       result += sizeof(denominator);
+      result += sizeof(current_proc);
       if (partially_unpacked)
       {
         result += remaining_bytes;
@@ -7041,7 +7077,7 @@ namespace LegionRuntime {
         if (locally_mapped)
         {
           result += sizeof(size_t); // number of points
-          if (!is_leaf)
+          if (!is_leaf())
           {
             // Need to pack the region trees and the instances or
             // the state if they were virtually mapped
@@ -7127,11 +7163,10 @@ namespace LegionRuntime {
       rez.serialize<bool>(distributed);
       rez.serialize<bool>(locally_mapped);
       rez.serialize<bool>(stealable);
-      if (locally_mapped)
-        rez.serialize<bool>(is_leaf);
       rez.serialize<Event>(termination_event);
       rez.serialize<IndexTask*>(index_owner);
       rez.serialize<unsigned long>(denominator);
+      rez.serialize<Processor>(current_proc);
       if (partially_unpacked)
       {
         rez.serialize(remaining_buffer, remaining_bytes);
@@ -7145,7 +7180,7 @@ namespace LegionRuntime {
         if (locally_mapped)
         {
           rez.serialize<size_t>(points.size());
-          if (!is_leaf)
+          if (!is_leaf())
           {
             forest_ctx->pack_region_forest_shape(rez);
             forest_ctx->begin_pack_region_tree_state(rez, temp_split_factor);
@@ -7238,12 +7273,10 @@ namespace LegionRuntime {
       derez.deserialize<bool>(locally_mapped);
       derez.deserialize<bool>(stealable);
       remote = true;
-      if (locally_mapped)
-        derez.deserialize<bool>(is_leaf);
       derez.deserialize<Event>(termination_event);
-      target_group = runtime->local_group; // if it was sent here, this is the target group
       derez.deserialize<IndexTask*>(index_owner);
       derez.deserialize<unsigned long>(denominator);
+      derez.deserialize<Processor>(current_proc);
       remaining_bytes = derez.get_remaining_bytes();
       remaining_buffer = malloc(remaining_bytes);
       derez.deserialize(remaining_buffer,remaining_bytes);
@@ -7263,7 +7296,7 @@ namespace LegionRuntime {
       {
         size_t num_points;
         derez.deserialize<size_t>(num_points);
-        if (!is_leaf)
+        if (!is_leaf())
         {
           forest_ctx->unpack_region_forest_shape(derez);
           forest_ctx->begin_unpack_region_tree_state(derez, split_factor);
@@ -7404,7 +7437,7 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    SliceTask* SliceTask::clone_as_slice_task(IndexSpace new_space, ProcessorGroup target,
+    SliceTask* SliceTask::clone_as_slice_task(IndexSpace new_space, Processor target,
                                               bool recurse, bool steal)
     //--------------------------------------------------------------------------
     {
@@ -7414,9 +7447,8 @@ namespace LegionRuntime {
       result->locally_mapped = this->locally_mapped;
       result->stealable = steal;
       result->remote = this->remote;
-      result->is_leaf = false; // still unknown
       result->termination_event = this->termination_event;
-      result->target_group = target;
+      result->current_proc = target;
       result->index_owner = this->index_owner;
       result->partially_unpacked = this->partially_unpacked;
       if (partially_unpacked)
@@ -7486,7 +7518,6 @@ namespace LegionRuntime {
       // Clear out the region requirements since we don't actually want that clone
       result->regions.clear();
       result->slice_owner = this;
-      result->target_group = this->target_group;
       if (new_point)
         result->point_termination_event = UserEvent::create_user_event();
       return result;
@@ -7542,7 +7573,6 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(!points.empty());
 #endif
-      this->is_leaf = points[0]->is_leaf;
       // Initialize the non_virtual_mappings vector
       non_virtual_mappings.resize(regions.size());
       for (unsigned idx = 0; idx < non_virtual_mappings.size(); idx++)
@@ -7660,7 +7690,7 @@ namespace LegionRuntime {
       if (remote)
       {
         // Only send stuff back if we're not a leaf.
-        if (!is_leaf)
+        if (!is_leaf())
         {
           // Need to send back the results to the enclosing context
           size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner); 
@@ -7747,11 +7777,11 @@ namespace LegionRuntime {
       {
         size_t result_size = 0;
         // Need to send back the results to the enclosing context
-        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner) + sizeof(is_leaf);
+        size_t buffer_size = sizeof(orig_proc) + sizeof(index_owner);
         buffer_size += sizeof(size_t); // number of points
         // Need to send back the tasks for which we have privileges
         lock_context();
-        if (!is_leaf)
+        if (!is_leaf())
         {
           buffer_size += compute_privileges_return_size();
           buffer_size += compute_deletions_return_size();
@@ -7791,8 +7821,7 @@ namespace LegionRuntime {
         rez.serialize<Processor>(orig_proc);
         rez.serialize<IndexTask*>(index_owner);
         rez.serialize<size_t>(points.size());
-        rez.serialize<bool>(is_leaf);
-        if (!is_leaf)
+        if (!is_leaf())
         {
           pack_privileges_return(rez);
           pack_deletions_return(rez);

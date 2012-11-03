@@ -18,8 +18,6 @@ namespace LegionRuntime {
     class Lock;
     class Memory;
     class Processor;
-    class UtilityProcessor;
-    class ProcessorGroup;
 
     class IndexSpace;
     class IndexSpaceAllocator;
@@ -133,8 +131,8 @@ namespace LegionRuntime {
 
       bool exists(void) const { return id != 0; }
 
-      UtilityProcessor get_utility_processor(void) const;
-      ProcessorGroup get_processor_group(void) const;
+      Processor get_utility_processor(void) const;
+      const std::set<Processor>& get_local_processors(void) const;
 
       typedef unsigned TaskFuncID;
       typedef void (*TaskFuncPtr)(const void *args, size_t arglen, Processor proc);
@@ -146,6 +144,9 @@ namespace LegionRuntime {
 	LOC_PROC, // Latency core
 	UTIL_PROC, // Utility core
       };
+
+      void enable_idle_task(void);
+      void disable_idle_task(void);
 
       // special task IDs
       enum {
@@ -159,27 +160,6 @@ namespace LegionRuntime {
 
       Event spawn(TaskFuncID func_id, const void *args, size_t arglen,
 		  Event wait_on = Event::NO_EVENT) const;
-    };
-
-    class UtilityProcessor : public Processor {
-    public:
-      void enable_idle_task(void);
-      void disable_idle_task(void);
-    };
-
-    class ProcessorGroup {
-    public:
-      typedef unsigned id_t;
-      id_t id;
-      bool operator<(const ProcessorGroup& rhs) const { return id < rhs.id; }
-      bool operator==(const ProcessorGroup& rhs) const { return id == rhs.id; }
-      bool operator!=(const ProcessorGroup& rhs) const { return id != rhs.id; }
-
-      static const ProcessorGroup NO_GROUP;
-      bool exists(void) const { return id != 0; }
-    public:
-      const std::set<Processor>& get_all_processors(void) const;
-      UtilityProcessor get_utility_processor(void) const;
     };
 
     class Memory {
@@ -323,7 +303,7 @@ namespace LegionRuntime {
 
     template <class LHS, class RHS>
     struct ReductionListEntry {
-      ptr_t<LHS> ptr;
+      ptr_t ptr;
       RHS rhs;
     };
 
@@ -455,7 +435,7 @@ namespace LegionRuntime {
       void put_untyped(int index, off_t byte_offset, const void *src, size_t size) const;
 
       template <class T>
-      T read(ptr_t<T> ptr) const
+      T read(ptr_t ptr) const
 	{ 
 	  assert(!is_reduction_only());
 #ifdef POINTER_CHECKS
@@ -465,7 +445,7 @@ namespace LegionRuntime {
 	}
 
       template <class T>
-      void read_partial(ptr_t<T> ptr, off_t offset, void *dst, size_t size) const
+      void read_partial(ptr_t ptr, off_t offset, void *dst, size_t size) const
 	{
 #ifdef POINTER_CHECKS
           verify_access(ptr.value);
@@ -474,7 +454,7 @@ namespace LegionRuntime {
 	}
 
       template <class T>
-      void write(ptr_t<T> ptr, const T& newval) const
+      void write(ptr_t ptr, const T& newval) const
 	{
 #ifdef POINTER_CHECKS
           verify_access(ptr.value);
@@ -484,7 +464,7 @@ namespace LegionRuntime {
 	}
 
       template <class T>
-      void write_partial(ptr_t<T> ptr, off_t offset, const void *src, size_t size) const
+      void write_partial(ptr_t ptr, off_t offset, const void *src, size_t size) const
 	{
 #ifdef POINTER_CHECKS
           verify_access(ptr.value);
@@ -493,7 +473,7 @@ namespace LegionRuntime {
 	}
 
       template <class REDOP, class T, class RHS>
-      void reduce(ptr_t<T> ptr, RHS newval) const 
+      void reduce(ptr_t ptr, RHS newval) const 
 	{ 
 #ifdef POINTER_CHECKS
           verify_access(ptr.value);
@@ -660,7 +640,7 @@ namespace LegionRuntime {
 #endif
 
       template <class T>
-      T read(ptr_t<T> ptr) const 
+      T read(ptr_t ptr) const 
       { 
 #ifdef POINTER_CHECKS
         verify_access(ptr.value);
@@ -669,7 +649,7 @@ namespace LegionRuntime {
       }
 
       template <class T>
-      void write(ptr_t<T> ptr, const T& newval) const 
+      void write(ptr_t ptr, const T& newval) const 
       { 
 #ifdef POINTER_CHECKS
         verify_access(ptr.value);
@@ -678,7 +658,7 @@ namespace LegionRuntime {
       }
 
       template <class REDOP, class T, class RHS>
-      void reduce(ptr_t<T> ptr, RHS newval) const 
+      void reduce(ptr_t ptr, RHS newval) const 
       { 
 #ifdef POINTER_CHECKS
         verify_access(ptr.value);
@@ -687,7 +667,7 @@ namespace LegionRuntime {
       }
 
       template <class T>
-      T &ref(ptr_t<T> ptr) const 
+      T &ref(ptr_t ptr) const 
       { 
 #ifdef POINTER_CHECKS
         verify_access(ptr.value);
@@ -716,7 +696,7 @@ namespace LegionRuntime {
 
       // can't read or write a fold-only accessor
       template <class REDOP, class T, class RHS>
-      void reduce(ptr_t<T> ptr, RHS newval) const { REDOP::template fold<true>(((RHS*)array_base)[ptr.value], newval); }
+      void reduce(ptr_t ptr, RHS newval) const { REDOP::template fold<true>(((RHS*)array_base)[ptr.value], newval); }
     };
 
     template <> class RegionInstanceAccessorUntyped<AccessorReductionList> {
@@ -744,7 +724,7 @@ namespace LegionRuntime {
 
       // can't read or write a fold-only accessor
       template <class REDOP, class T, class RHS>
-      void reduce(ptr_t<T> ptr, RHS newval) const { 
+      void reduce(ptr_t ptr, RHS newval) const { 
         size_t my_pos = __sync_fetch_and_add(cur_size, 1);
 	if(my_pos < max_size) {
 	  ReductionListEntry<T,RHS> *entry = ((ReductionListEntry<T,RHS> *)entry_list)+my_pos;
@@ -792,7 +772,7 @@ namespace LegionRuntime {
       }
 
       template <class T>
-      T *gpu_ptr(ptr_t<T> ptr) const {
+      T *gpu_ptr(ptr_t ptr) const {
 #ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
@@ -802,7 +782,7 @@ namespace LegionRuntime {
 #ifdef __CUDACC__
       template <class T>
       __device__ __forceinline__
-      T read(ptr_t<T> ptr) const { 
+      T read(ptr_t ptr) const { 
 #ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
@@ -811,7 +791,7 @@ namespace LegionRuntime {
 
       template <class T>
       __device__ __forceinline__
-      void write(ptr_t<T> ptr, const T& newval) const { 
+      void write(ptr_t ptr, const T& newval) const { 
 #ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
@@ -820,7 +800,7 @@ namespace LegionRuntime {
 
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
-      void reduce(ptr_t<T> ptr, RHS newval) const { 
+      void reduce(ptr_t ptr, RHS newval) const { 
 #ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
@@ -829,7 +809,7 @@ namespace LegionRuntime {
 
       template <class T>
       __device__ __forceinline__
-      T &ref(ptr_t<T> ptr) const { 
+      T &ref(ptr_t ptr) const { 
 #ifdef POINTER_CHECKS 
         bounds_check(ptr);
 #endif
@@ -842,7 +822,7 @@ namespace LegionRuntime {
 #ifdef __CUDACC__
       __device__ __forceinline__
 #endif
-      void bounds_check(ptr_t<T> ptr) const
+      void bounds_check(ptr_t ptr) const
       {
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
 	off_t rel_ptr = ptr.value ;//- first_elmt;
@@ -878,7 +858,7 @@ namespace LegionRuntime {
       // no read or write on a reduction-fold-only accessor
       template <class REDOP, class T, class RHS>
       __device__ __forceinline__
-      void reduce(ptr_t<T> ptr, RHS newval) const { 
+      void reduce(ptr_t ptr, RHS newval) const { 
 #ifdef POINTER_CHECKS 
         assert((first_elmt <= ptr.value) && (ptr.value <= last_elmt));
 	off_t rel_ptr = ptr.value ;//- first_elmt;
@@ -907,18 +887,18 @@ namespace LegionRuntime {
 
       RegionInstanceAccessorUntyped<AT> ria;
 
-      ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
-      void write(ptr_t<ET> ptr, const ET& newval) const { ria.write(ptr, newval); }
-      ET& ref(ptr_t<ET> ptr) const { return ria.ref(ptr); }
+      ET read(ptr_t ptr) const { return ria.read(ptr); }
+      void write(ptr_t ptr, const ET& newval) const { ria.write(ptr, newval); }
+      ET& ref(ptr_t ptr) const { return ria.ref(ptr); }
 
-      void read_partial(ptr_t<ET> ptr, off_t offset, void *dst, size_t size) const
+      void read_partial(ptr_t ptr, off_t offset, void *dst, size_t size) const
       { ria.read_partial(ptr, offset, dst, size); }
 
-      void write_partial(ptr_t<ET> ptr, off_t offset, const void *src, size_t size) const
+      void write_partial(ptr_t ptr, off_t offset, const void *src, size_t size) const
       { ria.write_partial(ptr, offset, src, size); }
 
       template <class REDOP, class RHS>
-      void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
+      void reduce(ptr_t ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
 
       template <AccessorType AT2>
       bool can_convert(void) const { return ria.can_convert<AT2>(); }
@@ -940,8 +920,8 @@ namespace LegionRuntime {
 
       RegionInstanceAccessorUntyped<AccessorGPU> ria;
 
-      __device__ ET read(ptr_t<ET> ptr) const { return ria.read(ptr); }
-      __device__ void write(ptr_t<ET> ptr, const ET& newval) const { ria.write(ptr, newval); }
+      __device__ ET read(ptr_t ptr) const { return ria.read(ptr); }
+      __device__ void write(ptr_t ptr, const ET& newval) const { ria.write(ptr, newval); }
 
       //template <class REDOP, class RHS>
       //void reduce(ptr_t<ET> ptr, RHS newval) const { ria.template reduce<REDOP>(ptr, newval); }
@@ -975,7 +955,6 @@ namespace LegionRuntime {
     public:
       const std::set<Memory>&    get_all_memories(void) const { return memories; }
       const std::set<Processor>& get_all_processors(void) const { return procs; }
-      const std::set<ProcessorGroup>& get_all_groups(void) const { return groups; }
       // Return the set of memories visible from a processor
       const std::set<Memory>&    get_visible_memories(Processor p) const
       { return visible_memories_from_procs.find(p)->second; }
@@ -1018,7 +997,6 @@ namespace LegionRuntime {
     protected:
       std::set<Processor> procs;
       std::set<Memory> memories;
-      std::set<ProcessorGroup> groups;
       std::vector<ProcessorMemoryAffinity> proc_mem_affinities;
       std::vector<MemoryMemoryAffinity> mem_mem_affinities;
       std::map<Processor,std::set<Memory> > visible_memories_from_procs;

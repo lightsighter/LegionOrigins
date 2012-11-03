@@ -13,32 +13,19 @@ namespace LegionRuntime {
 
     class DefaultMapper : public Mapper {
     public:
-      // Some Mapping Tags that will be respected
-      // by the default mapper, but not necessarily 
-      // by anything derived from it.
-      enum {
-        MAPTAG_VIRTUAL_MAP_REGION   = (1U << 0),
-        MAPTAG_VIRTUAL_MAP_REGION_0 = (1U << 0),
-        MAPTAG_VIRTUAL_MAP_REGION_1 = (1U << 1),
-        MAPTAG_VIRTUAL_MAP_REGION_2 = (1U << 2),
-        MAPTAG_VIRTUAL_MAP_REGION_3 = (1U << 3),
-        MAPTAG_VIRTUAL_MAP_REGION_4 = (1U << 4),
-        MAPTAG_VIRTUAL_MAP_ANY_REGION = (1U << 5) - 1,
-      };
-    public:
-      DefaultMapper(Machine *machine, HighLevelRuntime *rt, ProcessorGroup group);
+      DefaultMapper(Machine *machine, HighLevelRuntime *rt, Processor local);
       virtual ~DefaultMapper(void);
     public:
       virtual void select_tasks_to_schedule(const std::list<Task*> &ready_tasks, std::vector<bool> &ready_mask);
       virtual bool map_task_locally(const Task *task);
       virtual bool spawn_task(const Task *task);
-      virtual ProcessorGroup select_target_group(const Task *task);
-      virtual Processor select_final_processor(const Task *task, const std::set<Processor> &options);
-      virtual ProcessorGroup target_task_steal(const std::set<ProcessorGroup> &blacklisted);
-      virtual void permit_task_steal(ProcessorGroup thief, const std::vector<const Task*> &tasks,
+      virtual Processor select_target_processor(const Task *task);
+      virtual Processor target_task_steal(const std::set<Processor> &blacklisted);
+      virtual void permit_task_steal(Processor thief, const std::vector<const Task*> &tasks,
                                       std::set<const Task*> &to_steal);
       virtual void slice_index_space(const Task *task, const IndexSpace &index_space,
                                       std::vector<Mapper::IndexSplit> &slice);
+      virtual VariantID select_task_variant(const Task *task, Processor target);
       virtual bool map_region_virtually(const Task *task, Processor target,
                                         const RegionRequirement &req, unsigned index);
       virtual void map_task_region(const Task *task, Processor target, 
@@ -71,7 +58,8 @@ namespace LegionRuntime {
       static Processor select_random_processor(const std::set<Processor> &options, Processor::Kind filter, Machine *machine);
     protected:
       HighLevelRuntime *const runtime;
-      const ProcessorGroup local_group;
+      const Processor local_proc;
+      const Processor::Kind local_kind;
       std::map<Processor,Processor::Kind> local_procs;
       Machine *const machine;
       // The maximum number of tasks a mapper will allow to be stolen at a time
@@ -95,7 +83,7 @@ namespace LegionRuntime {
       // The memory stack for each processor in this mapper
       std::map<Processor,std::vector<Memory> > memory_stacks;
       // For every processor group, get the set of types of processors that it has
-      std::map<ProcessorGroup,std::set<Processor::Kind> > group_kinds;
+      std::map<Processor,Processor::Kind> other_procs;
     };
 
   };

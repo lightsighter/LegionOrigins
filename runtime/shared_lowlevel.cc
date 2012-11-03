@@ -410,7 +410,8 @@ namespace LegionRuntime {
         ProcessorImpl(pthread_barrier_t *init, const Processor::TaskIDTable &table,
                       Processor p, size_t stacksize, ProcessorImpl *util)
           : init_bar(init), task_table(table), proc(p), 
-            utility(util->get_utility_processor()), utility_proc(util), has_scheduler(false),
+            utility(util->get_utility_processor()), utility_proc(util), 
+            has_scheduler(table.find(Processor::TASK_ID_PROCESSOR_IDLE) != table.end()),
             is_utility_proc(false), remaining_stops(0),
             scheduler_invoked(false), util_shutdown(false)
         {
@@ -439,12 +440,11 @@ namespace LegionRuntime {
         void initialize_state(size_t stacksize);
     public:
         // Operations for utility processors
-        UtilityProcessor get_utility_processor(void) const;
-        ProcessorGroup get_processor_group(void) const;
+        Processor get_utility_processor(void) const;
         void release_user(void);
         void utility_finish(void);
         const std::set<Processor>& get_utility_users(void) const;
-        void add_utility_user(Processor p);
+        void add_utility_user(Processor p, ProcessorImpl *impl);
     public:
 	Event spawn(Processor::TaskFuncID func_id, const void * args,
 				size_t arglen, Event wait_on);
@@ -457,6 +457,7 @@ namespace LegionRuntime {
         void disable_idle_task(void);
     private:
 	void execute_task(bool permit_shutdown);
+        bool perform_scheduling(bool need_lock);
     private:
 	class TaskDesc {
 	public:
@@ -472,7 +473,7 @@ namespace LegionRuntime {
         pthread_barrier_t *init_bar;
 	Processor::TaskIDTable task_table;
 	Processor proc;
-        UtilityProcessor utility;
+        Processor utility;
         ProcessorImpl *utility_proc;
 	std::list<TaskDesc> ready_queue;
 	std::list<TaskDesc> waiting_queue;
@@ -488,6 +489,7 @@ namespace LegionRuntime {
         bool scheduler_invoked;   // for traking if we've invoked the scheduler
         bool util_shutdown;       // for knowing when our utility processor is done
         std::set<Processor> util_users;// Users of the utility processor to know when it's safe to finish
+        std::vector<ProcessorImpl*> constituents; // User impls of the utility processor
     };
 
     ////////////////////////////////////////////////////////
@@ -1338,7 +1340,6 @@ namespace LegionRuntime {
     ////////////////////////////////////////////////////////
 
     /*static*/ const Processor Processor::NO_PROC = { 0 };
-    /*static*/ const ProcessorGroup ProcessorGroup::NO_GROUP = { 0 };
 
     // Processor Impl at top due to use in event
     
@@ -1350,46 +1351,32 @@ namespace LegionRuntime {
 	return p->spawn(func_id, args, arglen, wait_on);
     }
 
-    UtilityProcessor Processor::get_utility_processor(void) const
+    Processor Processor::get_utility_processor(void) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
         return p->get_utility_processor();
     }
 
-    ProcessorGroup Processor::get_processor_group(void) const
+    const std::set<Processor>& Processor::get_local_processors(void) const
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
-        return p->get_processor_group();
+        return p->get_utility_users();
     }
 
-    void UtilityProcessor::enable_idle_task(void)
+    void Processor::enable_idle_task(void)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
         p->enable_idle_task();
     }
 
-    void UtilityProcessor::disable_idle_task(void)
+    void Processor::disable_idle_task(void)
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
         ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(*this);
         p->disable_idle_task();
-    }
-
-    const std::set<Processor>& ProcessorGroup::get_all_processors(void) const
-    {
-        DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
-        ProcessorImpl *p = Runtime::get_runtime()->get_processor_impl(get_utility_processor());
-        return p->get_utility_users();
-    }
-
-    UtilityProcessor ProcessorGroup::get_utility_processor(void) const
-    {
-        UtilityProcessor util;
-        util.id = id;
-        return util;
     }
 
     void ProcessorImpl::initialize_state(size_t stacksize)
@@ -1456,21 +1443,9 @@ namespace LegionRuntime {
 	return result;
     }
 
-    UtilityProcessor ProcessorImpl::get_utility_processor(void) const
+    Processor ProcessorImpl::get_utility_processor(void) const
     {
         return utility;
-    }
-
-    ProcessorGroup ProcessorImpl::get_processor_group(void) const
-    {
-      if (is_utility_proc)
-      {
-        ProcessorGroup g;
-        g.id = utility.id;
-        return g;
-      }
-      else
-        return utility_proc->get_processor_group();
     }
 
     void ProcessorImpl::release_user()
@@ -1506,19 +1481,20 @@ namespace LegionRuntime {
 
     const std::set<Processor>& ProcessorImpl::get_utility_users(void) const
     {
-      return util_users;
+      if (is_utility_proc)
+        return util_users;
+      else
+        return utility_proc->get_utility_users();
     }
 
-    void ProcessorImpl::add_utility_user(Processor p)
+    void ProcessorImpl::add_utility_user(Processor p, ProcessorImpl *impl)
     {
       util_users.insert(p);
+      constituents.push_back(impl);
     }
 
     void ProcessorImpl::enable_idle_task(void)
     {
-#ifdef DEBUG_LOW_LEVEL
-        assert(is_utility_proc);
-#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         idle_task_enabled = true;
         // Wake up thread so it can run the idle task
@@ -1528,9 +1504,6 @@ namespace LegionRuntime {
 
     void ProcessorImpl::disable_idle_task(void)
     {
-#ifdef DEBUG_LOW_LEVEL
-        assert(is_utility_proc);
-#endif
         PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
         idle_task_enabled = false;    
         PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
@@ -1597,6 +1570,33 @@ namespace LegionRuntime {
 	PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
     }
 
+    bool ProcessorImpl::perform_scheduling(bool need_lock)
+    {
+      if (need_lock)
+        PTHREAD_SAFE_CALL(pthread_mutex_lock(mutex));
+      // See if we should invoke the scheduler
+      if (has_scheduler && idle_task_enabled && !scheduler_invoked
+          && !shutdown && ready_queue.empty())
+      {
+        scheduler_invoked = true;
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+        Processor::TaskFuncPtr scheduler = task_table[Processor::TASK_ID_PROCESSOR_IDLE];
+        scheduler(NULL, 0, proc);
+        // Return from the scheduler, so we can reevaluate status
+        scheduler_invoked = false;
+        // Lock released
+        return true;
+      }
+      // If we acquired the lock then we should always unlock it
+      if (need_lock)
+      {
+        PTHREAD_SAFE_CALL(pthread_mutex_unlock(mutex));
+        return true;
+      }
+      // Otherwise the scheduler wasn't invoked so we still hold the lock
+      return false;
+    }
+
     // Must always be holding the lock when calling this task
     // This task will always unlock it
     void ProcessorImpl::execute_task(bool permit_shutdown)
@@ -1613,6 +1613,32 @@ namespace LegionRuntime {
             break;
           }	
         }	
+        // If we don't have any work to do, check to see
+        // if we can run the idle task.  Also if we're the utility
+        // processor, and we don't have anything to do then try
+        // running the idle task for each of our constituents.
+        if (perform_scheduling(false/*need lock*/))
+        {
+          // If we return true then we've release the lock so we
+          // have to go back around the loop when we're done
+          if (is_utility_proc)
+          {
+            // Note we don't need the lock to read these
+            // since they don't change after the constructor is called
+            for (std::vector<ProcessorImpl*>::const_iterator it = constituents.begin();
+                  it != constituents.end(); it++)
+            {
+              // We should never be in our own list of constituents
+#ifdef DEBUG_LOW_LEVEL
+              assert((*it) != this);
+#endif
+              (*it)->perform_scheduling(true/*need lock*/);
+            }
+          }
+          // Now we need to return since we no longer hold the lock
+          return;
+        }
+#if 0
 	// Check to see how many tasks there are
 	// If there are too few, invoke the scheduler
         // If we've been told to shutdown, never invoke the scheduler
@@ -1629,6 +1655,7 @@ namespace LegionRuntime {
                 scheduler_invoked = false;
 		return;
 	}
+#endif
 	if (ready_queue.empty())
 	{	
 		if (shutdown && permit_shutdown && waiting_queue.empty())
@@ -2948,10 +2975,12 @@ namespace LegionRuntime {
         ((RegionInstance::Impl*)internal_data)->verify_access(ptr);
     }
 
+#if 0
     void RegionAccessor<AccessorArray>::verify_access(unsigned ptr) const
     {
         ((RegionInstance::Impl*)impl_ptr)->verify_access(ptr);
     }
+#endif
 #endif
 
 
@@ -2969,7 +2998,7 @@ namespace LegionRuntime {
     {
         DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
 	IndexSpace::Impl *r = Runtime::get_runtime()->get_free_metadata(num_elmts);	
-	log_region(LEVEL_INFO, "region created: id=%x num=%zd",
+	log_region(LEVEL_INFO, "index space created: id=%x num=%zd",
 		   r->get_metadata().id, num_elmts);
 	return r->get_metadata();
     }
@@ -2979,7 +3008,7 @@ namespace LegionRuntime {
       DetailedTimer::ScopedPush sp(TIME_LOW_LEVEL);
       IndexSpace::Impl *par = Runtime::get_runtime()->get_metadata_impl(parent);
       IndexSpace::Impl *r = Runtime::get_runtime()->get_free_metadata(par, mask);
-      log_region(LEVEL_INFO, "region created: id=%x parent=%x",
+      log_region(LEVEL_INFO, "index space created: id=%x parent=%x",
 		 r->get_metadata().id, parent.id);
       return r->get_metadata();
     }
@@ -3200,6 +3229,9 @@ namespace LegionRuntime {
 
     const ElementMask& IndexSpace::Impl::get_element_mask(void)
     {
+#ifdef DEBUG_LOW_LEVEL
+      assert(active);
+#endif
       return mask;
     }
 
@@ -3538,10 +3570,6 @@ namespace LegionRuntime {
             // Figure out how many users this guy will have
             unsigned num_users = (num_cpus/num_utility_cpus) + (idx < (num_cpus%num_utility_cpus) ? 1 : 0);
             temp_utils[idx] = new ProcessorImpl(init_barrier, task_table, p, cpu_stack_size, num_users);
-            // Make the processor groups at the same time
-            ProcessorGroup g;
-            g.id = num_cpus+idx+1;
-            groups.insert(g);
           }
           // Now we can make the processors themselves
           for (unsigned idx = 0; idx < num_cpus; idx++)
@@ -3556,7 +3584,7 @@ namespace LegionRuntime {
 #endif
             ProcessorImpl *impl = new ProcessorImpl(init_barrier, task_table, p, cpu_stack_size, temp_utils[utility_idx]);
             // Add this processor as utility user
-            temp_utils[utility_idx]->add_utility_user(p);
+            temp_utils[utility_idx]->add_utility_user(p, impl);
             Runtime::runtime->processors.push_back(impl);
           }
           // Finally we can add the utility processors to the set of processors
@@ -3575,10 +3603,6 @@ namespace LegionRuntime {
             procs.insert(p);
             ProcessorImpl *impl = new ProcessorImpl(init_barrier, task_table, p, cpu_stack_size);
             Runtime::runtime->processors.push_back(impl);
-            // Make the processor groups too
-            ProcessorGroup g;
-            g.id = idx + 1;
-            groups.insert(g);
           }
         }
 	
