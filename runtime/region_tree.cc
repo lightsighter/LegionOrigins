@@ -8607,6 +8607,10 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     {
       unique_managers.insert(manager);
+      // Go up
+      if (parent != NULL)
+        parent->find_required_above(unique_views, ordered_views, pack_mask);
+      // Then do ourselves
       if (unique_views.find(this) != unique_views.end())
       {
         if (!filtered)
