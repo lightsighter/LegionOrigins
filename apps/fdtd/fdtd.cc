@@ -303,7 +303,7 @@ static inline int cell_stride(vec3 v, vec3 n) {
 // the computation these cells will be read-only, but they need to be
 // initialized once to hold valid values.
 ////////////////////////////////////////////////////////////////////////
-class InitBlockColoring : public ColoringFunctor {
+class InitBlockColoring {
 public:
   InitBlockColoring(int nx, int ny, int nz,
                     std::vector<std::pair<int, int> > x_divs,
@@ -311,15 +311,14 @@ public:
                     std::vector<std::pair<int, int> > z_divs)
     : nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
 
-  virtual bool is_disjoint(void) { return true; }
+  bool is_disjoint(void) { return true; }
 
-  virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
-                                std::map<Color,ColoredPoints<unsigned> > &coloring) {
+  void perform_coloring(std::map<Color,ColoredPoints<ptr_t> > &coloring) {
     unsigned next_index = 0;
     int nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
     for (int id = 0; id < nbx*nby*nbz; id++) {
-      coloring[id] = ColoredPoints<unsigned>();
+      coloring[id] = ColoredPoints<ptr_t>();
     }
 
     // Color points in xyz cube.
@@ -342,7 +341,7 @@ public:
           log_app.debug("Assigning points %d..%d to block %d x %d x %d (id %d)",
                         next_index, next_index + block_size, bx, by, bz, id);
           coloring[id].ranges.insert(
-            std::pair<unsigned, unsigned>(next_index, next_index + block_size - 1));
+            std::pair<ptr_t, ptr_t>(next_index, next_index + block_size - 1));
           next_index += block_size;
         }
       }
@@ -364,7 +363,7 @@ private:
 // ghost cells. Each block will then be further sub-divided; see
 // below.
 ////////////////////////////////////////////////////////////////////////
-class OwnedBlockColoring : public ColoringFunctor {
+class OwnedBlockColoring {
 public:
   OwnedBlockColoring(int nx, int ny, int nz,
                      std::vector<std::pair<int, int> > x_divs,
@@ -372,15 +371,14 @@ public:
                      std::vector<std::pair<int, int> > z_divs)
     : nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
 
-  virtual bool is_disjoint(void) { return true; }
+  bool is_disjoint(void) { return true; }
 
-  virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
-                                std::map<Color,ColoredPoints<unsigned> > &coloring) {
+  void perform_coloring(std::map<Color,ColoredPoints<ptr_t> > &coloring) {
     unsigned next_index = 0;
     int nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
     for (int id = 0; id < nbx*nby*nbz; id++) {
-      coloring[id] = ColoredPoints<unsigned>();
+      coloring[id] = ColoredPoints<ptr_t>();
     }
 
     // Skip points for plane of points at x == 0 boundary.
@@ -408,7 +406,7 @@ public:
           log_app.debug("Assigning points %d..%d to block %d x %d x %d (id %d)",
                         next_index, next_index + block_size, bx, by, bz, id);
           coloring[id].ranges.insert(
-            std::pair<unsigned, unsigned>(next_index, next_index + block_size - 1));
+            std::pair<ptr_t, ptr_t>(next_index, next_index + block_size - 1));
           next_index += block_size;
         }
 
@@ -440,7 +438,7 @@ private:
 // negative direction. Each block will be split this way three times
 // to contruct the ghost cells needed in the computation.
 ////////////////////////////////////////////////////////////////////////
-class GhostBlockColoring : public ColoringFunctor {
+class GhostBlockColoring {
 public:
   GhostBlockColoring(dim_t dim, dir_t dir, int nx, int ny, int nz,
                      std::vector<std::pair<int, int> > x_divs,
@@ -448,14 +446,13 @@ public:
                      std::vector<std::pair<int, int> > z_divs)
     : dim(dim), dir(dir), nx(nx), ny(ny), nz(nz), x_divs(x_divs), y_divs(y_divs), z_divs(z_divs) {}
 
-  virtual bool is_disjoint(void) { return true; }
+  bool is_disjoint(void) { return true; }
 
-  virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
-                                std::map<Color,ColoredPoints<unsigned> > &coloring) {
+  void perform_coloring(std::map<Color,ColoredPoints<ptr_t> > &coloring) {
     int nbx = x_divs.size(), nby = y_divs.size(), nbz = z_divs.size();
 
     for (int id = 0; id < nbx*nby*nbz; id++) {
-      coloring[id] = ColoredPoints<unsigned>();
+      coloring[id] = ColoredPoints<ptr_t>();
     }
 
     for (int bx = 0; bx < nbx; bx++) {
@@ -691,12 +688,16 @@ void main_task(const void *input_args, size_t input_arglen,
 
   // Partion into init blocks.
   InitBlockColoring init_coloring(nx, ny, nz, x_divs, y_divs, z_divs);
-  IndexPartition init_indices = runtime->create_index_partition(ctx, ispace, colors, init_coloring);
+  Coloring init_result;
+  init_coloring.perform_coloring(init_result);
+  IndexPartition init_indices = runtime->create_index_partition(ctx, ispace, init_result, init_coloring.is_disjoint());
   LogicalPartition init_partition = runtime->get_logical_partition(ctx, cells, init_indices);
 
   // Partion into owned blocks.
   OwnedBlockColoring owned_coloring(nx, ny, nz, x_divs, y_divs, z_divs);
-  IndexPartition owned_indices = runtime->create_index_partition(ctx, ispace, colors, owned_coloring);
+  Coloring owned_result;
+  owned_coloring.perform_coloring(owned_result);
+  IndexPartition owned_indices = runtime->create_index_partition(ctx, ispace, owned_result, owned_coloring.is_disjoint());
   LogicalPartition owned_partition = runtime->get_logical_partition(ctx, cells, owned_indices);
 
   // Partition into ghost blocks.
@@ -706,12 +707,24 @@ void main_task(const void *input_args, size_t input_arglen,
   GhostBlockColoring yn_ghost_coloring(DIM_Y, DIR_NEG, nx, ny, nz, x_divs, y_divs, z_divs);
   GhostBlockColoring zp_ghost_coloring(DIM_Z, DIR_POS, nx, ny, nz, x_divs, y_divs, z_divs);
   GhostBlockColoring zn_ghost_coloring(DIM_Z, DIR_NEG, nx, ny, nz, x_divs, y_divs, z_divs);
-  IndexPartition xp_ghost_indices = runtime->create_index_partition(ctx, ispace, colors, xp_ghost_coloring);
-  IndexPartition xn_ghost_indices = runtime->create_index_partition(ctx, ispace, colors, xn_ghost_coloring);
-  IndexPartition yp_ghost_indices = runtime->create_index_partition(ctx, ispace, colors, yp_ghost_coloring);
-  IndexPartition yn_ghost_indices = runtime->create_index_partition(ctx, ispace, colors, yn_ghost_coloring);
-  IndexPartition zp_ghost_indices = runtime->create_index_partition(ctx, ispace, colors, zp_ghost_coloring);
-  IndexPartition zn_ghost_indices = runtime->create_index_partition(ctx, ispace, colors, zn_ghost_coloring);
+  Coloring xp_ghost_result;
+  xp_ghost_coloring.perform_coloring(xp_ghost_result);
+  IndexPartition xp_ghost_indices = runtime->create_index_partition(ctx, ispace, xp_ghost_result, xp_ghost_coloring.is_disjoint());
+  Coloring xn_ghost_result;
+  xn_ghost_coloring.perform_coloring(xn_ghost_result);
+  IndexPartition xn_ghost_indices = runtime->create_index_partition(ctx, ispace, xn_ghost_result, xn_ghost_coloring.is_disjoint());
+  Coloring yp_ghost_result;
+  yp_ghost_coloring.perform_coloring(yp_ghost_result);
+  IndexPartition yp_ghost_indices = runtime->create_index_partition(ctx, ispace, yp_ghost_result, yp_ghost_coloring.is_disjoint());
+  Coloring yn_ghost_result;
+  yn_ghost_coloring.perform_coloring(yn_ghost_result);
+  IndexPartition yn_ghost_indices = runtime->create_index_partition(ctx, ispace, yn_ghost_result, yn_ghost_coloring.is_disjoint());
+  Coloring zp_ghost_result;
+  zp_ghost_coloring.perform_coloring(zp_ghost_result);
+  IndexPartition zp_ghost_indices = runtime->create_index_partition(ctx, ispace, zp_ghost_result, zp_ghost_coloring.is_disjoint());
+  Coloring zn_ghost_result;
+  zn_ghost_coloring.perform_coloring(zn_ghost_result);
+  IndexPartition zn_ghost_indices = runtime->create_index_partition(ctx, ispace, zn_ghost_result, zn_ghost_coloring.is_disjoint());
   LogicalPartition ghost_partition[NDIMS][NDIRS];
   ghost_partition[DIM_X][DIR_POS] = runtime->get_logical_partition(ctx, cells, xp_ghost_indices);
   ghost_partition[DIM_X][DIR_NEG] = runtime->get_logical_partition(ctx, cells, xn_ghost_indices);
@@ -913,7 +926,7 @@ void init_task(const void * input_global_args, size_t input_global_arglen,
   while (enabled->get_next(position, length)) {
     for (int index = position; index < position + length; index++) {
       for (int field = 0; field < NDIMS*2; field++) {
-        accessor[field].write(ptr_t<double>(index), 0.0);
+        accessor[field].write(ptr_t(index), 0.0);
       }
     }
   }
@@ -958,8 +971,8 @@ void source_task(const void * input_global_args, size_t input_global_arglen,
   for (int x = min[0]; x < max[0]; x++) {
     for (int y = min[1]; y < max[1]; y++) {
       for (int z = min[2]; z < max[2]; z++) {
-        ptr_t<double> i = cell_id(vec3(x, y, z), n);
-        f.write(i, f.read(i) + 0.1);
+        ptr_t i = cell_id(vec3(x, y, z), n);
+        f.write(i, f.read<double>(i) + 0.1);
       }
     }
   }
@@ -1021,7 +1034,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
       Accessor &g2b = is_boundary(dir, y + d, rmin[1], rmax[1]) ? ghost2 : read2;
       for (int z = rmin[2]; z < rmax[2]; z++) {
         vec3 v = rot3(vec3(x, y, z), -(dim + 1));
-        ptr_t<double> i = cell_id(v, n);
+        ptr_t i = cell_id(v, n);
         // Elliott: Debugging
         f.write(i, 1.0);
         //f.write(i, f.read(i) - dtdx*(g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
@@ -1065,7 +1078,7 @@ void dump_task(const void *input_args, size_t input_arglen,
         printf("y = %d", y);
         for (int x = 1; x < nx + 1; x++) {
           int c = cell_id(x, y, z, nx, ny, nz);
-          printf("  %.3f", accessor[f].read(ptr_t<double>(c)));
+          printf("  %.3f", accessor[f].read<double>(ptr_t(c)));
         }
         printf("\n");
       }
@@ -1074,7 +1087,7 @@ void dump_task(const void *input_args, size_t input_arglen,
 }
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
-                    ProcessorGroup local_group) {
+                    const std::set<Processor> &local_procs) {
   // TODO (Elliott): Customize mappers
 }
 
