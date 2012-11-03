@@ -37,7 +37,7 @@ struct Entry {
 struct Block {
   float alpha;
   LogicalRegion r_x, r_y, r_z;
-  unsigned entry_x[BLOCK_SIZE], entry_y[BLOCK_SIZE], entry_z[BLOCK_SIZE];
+  ptr_t entry_x[BLOCK_SIZE], entry_y[BLOCK_SIZE], entry_z[BLOCK_SIZE];
   unsigned id;
 };
 
@@ -48,18 +48,6 @@ struct MainArgs {
   IndexSpace ispace;
   FieldSpace fspace;
   LogicalRegion r_x, r_y, r_z;
-};
-
-class Coloring : public ColoringFunctor {
-public:
-  virtual bool is_disjoint(void) { return true; }
-  virtual void perform_coloring(IndexSpace color_space, IndexSpace parent_space,
-                                std::map<Color,ColoredPoints<unsigned> > &coloring) {
-    for (unsigned i = 0; i < *get_num_blocks(); i++) {
-      coloring[i] = ColoredPoints<unsigned>();
-      coloring[i].ranges.insert(std::pair<unsigned, unsigned>(BLOCK_SIZE*i, BLOCK_SIZE*(i + 1)-1));
-    }
-  }
 };
 
 float get_rand_float() {
@@ -101,7 +89,7 @@ void top_level_task(const void *args, size_t arglen,
 
   Future f = runtime->execute_task(ctx, TASKID_MAIN, indexes, fields, main_regions,
 				   TaskArgument(&main_args, sizeof(MainArgs)));
-  //f.get_void_result();
+  f.get_void_result();
 
   // Destroy our logical regions clean up the region trees
   runtime->destroy_logical_region(ctx, main_args.r_x);
@@ -130,9 +118,8 @@ void main_task(const void *args, size_t arglen,
 
   // Allocate space in the regions
   std::vector<Block> blocks(*get_num_blocks());
-  printf("Allocating...");
-  unsigned initial_index = alloc.alloc(main_args->num_elems);
-  unsigned next_index = initial_index;
+  ptr_t initial_index = alloc.alloc(main_args->num_elems);
+  ptr_t next_index = initial_index;
   for (unsigned i = 0; i < *get_num_blocks(); i++) {
     blocks[i].alpha = main_args->alpha;
     blocks[i].id = i;
@@ -150,7 +137,10 @@ void main_task(const void *args, size_t arglen,
   IndexSpace colors = runtime->create_index_space(ctx, *get_num_blocks());
   runtime->create_index_allocator(ctx, colors).alloc(*get_num_blocks());
   Coloring coloring;
-  IndexPartition partition = runtime->create_index_partition(ctx, main_args->ispace, colors, coloring);
+  for (unsigned i = 0; i < *get_num_blocks(); i++) {
+    coloring[i].ranges.insert(std::pair<ptr_t, ptr_t>(BLOCK_SIZE*i, BLOCK_SIZE*(i + 1)-1));
+  }
+  IndexPartition partition = runtime->create_index_partition(ctx, main_args->ispace, coloring, true/*disjoint*/);
   LogicalPartition p_x = runtime->get_logical_partition(ctx, main_args->r_x, partition);
   LogicalPartition p_y = runtime->get_logical_partition(ctx, main_args->r_y, partition);
   LogicalPartition p_z = runtime->get_logical_partition(ctx, main_args->r_z, partition);
@@ -197,7 +187,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap init_f =
     runtime->execute_index_space(ctx, TASKID_INIT_VECTORS, colors,
                                  index_reqs, field_reqs, init_regions, global, arg_map, Predicate::TRUE_PRED, false);
-  //init_f.wait_all_results();
+  init_f.wait_all_results();
 
   printf("STARTING MAIN SIMULATION LOOP\n");
   struct timespec ts_start, ts_end;
@@ -213,7 +203,7 @@ void main_task(const void *args, size_t arglen,
   FutureMap add_f =
     runtime->execute_index_space(ctx, TASKID_ADD_VECTORS, colors,
                                  index_reqs, field_reqs, add_regions, global, arg_map, Predicate::TRUE_PRED, false);
-  //add_f.wait_all_results();
+  add_f.wait_all_results();
 
   // Print results
   clock_gettime(CLOCK_MONOTONIC, &ts_end);
@@ -257,13 +247,13 @@ void main_task(const void *args, size_t arglen,
     bool success = true;
     for (unsigned i = 0; i < *get_num_blocks(); i++) {
       for (unsigned j = 0; j < BLOCK_SIZE; j++) {
-        unsigned entry_x = blocks[i].entry_x[j];
-        unsigned entry_y = blocks[i].entry_y[j];
-        unsigned entry_z = blocks[i].entry_z[j];
+        ptr_t entry_x = blocks[i].entry_x[j];
+        ptr_t entry_y = blocks[i].entry_y[j];
+        ptr_t entry_z = blocks[i].entry_z[j];
 
-        Entry x_val = a_x.read(ptr_t<Entry>(entry_x));
-        Entry y_val = a_y.read(ptr_t<Entry>(entry_y));
-        Entry z_val = a_z.read(ptr_t<Entry>(entry_z));
+        Entry x_val = a_x.read<Entry>((entry_x));
+        Entry y_val = a_y.read<Entry>((entry_y));
+        Entry z_val = a_z.read<Entry>((entry_z));
         float compute = main_args->alpha * x_val.v + y_val.v;
         if (z_val.v != compute)
         {
@@ -311,11 +301,11 @@ void init_vectors_task(const void *global_args, size_t global_arglen,
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
     Entry entry_x;
     entry_x.v = get_rand_float();
-    a_x.write(ptr_t<Entry>(block->entry_x[i]), entry_x);
+    a_x.write((block->entry_x[i]), entry_x);
 
     Entry entry_y;
     entry_y.v = get_rand_float();
-    a_y.write(ptr_t<Entry>(block->entry_y[i]), entry_y);
+    a_y.write((block->entry_y[i]), entry_y);
   }
 #else
   {
@@ -357,12 +347,12 @@ void add_vectors_task(const void *global_args, size_t global_arglen,
   LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> a_z = r_z.get_accessor<AccessorGeneric>();
 
   for (unsigned i = 0; i < BLOCK_SIZE; i++) {
-    float x = a_x.read(ptr_t<Entry>(block->entry_x[i])).v;
-    float y = a_y.read(ptr_t<Entry>(block->entry_y[i])).v;
+    float x = a_x.read<Entry>((block->entry_x[i])).v;
+    float y = a_y.read<Entry>((block->entry_y[i])).v;
     
     Entry entry_z;
     entry_z.v = block->alpha * x + y;
-    a_z.write(ptr_t<Entry>(block->entry_z[i]), entry_z);
+    a_z.write((block->entry_z[i]), entry_z);
   }
 }
 
@@ -762,7 +752,7 @@ private:
 #endif
 
 void create_mappers(Machine *machine, HighLevelRuntime *runtime,
-                    ProcessorGroup local_group) {
+                    const std::set<Processor> &local_procs) {
 #ifdef USE_SAXPY_SHARED
   //runtime->replace_default_mapper(new SharedMapper(machine, runtime, local));
 #else
