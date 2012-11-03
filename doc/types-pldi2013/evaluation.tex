@@ -51,7 +51,7 @@ allocating cells in them.
 %(i.e., partition-then-allocate).  
 Another difference is that Fluid
 maintains separate regions for ghost cells rather using multiple partitions of
-the regions containing shared data.  Region relationships are used for remembering
+the regions containing shared data.  Region relationships are used to capture
 which regions are required for each grid.
 
 %\subsubsection{Adaptive Mesh Refinement}
@@ -158,7 +158,7 @@ each figure the problem size stays the same as the number of processors increase
 how overhead is affected by changing problem size (weak scaling).  For cases where there
 is an existing implementation to compare against we have included a dotted line indicating
 baseline performance.  In a few cases (Figures~\ref{fig:fluid_overhead} and 
-\ref{fig:amr4096}) checking overhead is the difference
+\ref{fig:amr4096}), the checking overhead is the difference
 between better and worse performance than the baseline.  The overall
 performance relative to the baseline implementations is discussed in \cite{Legion12}.
 
@@ -186,7 +186,7 @@ performance relative to the baseline implementations is discussed in \cite{Legio
 \end{figure}
 
 In addition to total processor overhead, we also measured performance gain from eliding checks in 
-terms of wall-clock time.  Since most region accesses occur in leaf tasks the checks parallelize 
+terms of wall-clock time.  Since most region accesses occur in leaf tasks, the checks parallelize 
 well.  Wall-clock performance gains from eliding memory checks ranged from 1-10\%, 1-15\%, 
 and 2-71\% for Circuit, Fluid, and AMR respectively.  Performance gains for AMR were larger than
 the other applications because AMR was already memory bound and the additional checks intensified

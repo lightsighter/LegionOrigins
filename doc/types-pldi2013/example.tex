@@ -2,8 +2,8 @@
 \section{Circuit Example}
 \label{sec:example}
 
-Listing~\ref{lst:circuit_ex} shows a circuit simulation written (with
-one exception) in the core Legion language (see
+Listing~\ref{lst:circuit_ex} shows a circuit simulation written
+in the core Legion language (see
 Section~\ref{sec:legioncore}).  The input is a graph of circuit
 elements and connecting wires.  To perform parallel
 simulation the graph is partitioned into pieces, after which the
@@ -11,26 +11,30 @@ simulation is run for a number of time steps.  Each time step has
 three phases: calculation of each wire's current, distribution of charge to
 the nodes connected to each wire, and updating of node voltages.
 
-The entry function is {\tt simulate\_circuit} (line 15), which is
-parameterized on regions {\tt rl}, {\tt rw}, and {\tt rn}.
-The wires and nodes are contained in regions {\tt rw} and {\tt rn},
-respectively.  The {\tt rl} region holds lists of pointers to the nodes and wires.
+The entry function is {\tt simulate\_circuit} (line 15), which accepts a 
+linked list of nodes contained in region {\tt rn} and a linked list of 
+wires contained in region {\tt rw}.  The linked list elements themselves
+are in region {\tt rl}.
 When {\tt simulate\_circuit} is invoked it must have both read and
 write privileges for the regions {\tt rl}, {\tt rw}, and {\tt rn}
-(line 17); the type system statically enforces the functional restriciton that
+(line 17); the type system statically verifies that
 {\tt simulate\_circuit} only accesses these regions and their subregions.
 
 Partitioning of the graph is done using {\em colorings} built in the
 {\tt color\_circuit} function (line 18-19).  A coloring maps region
-elements to colors (i.e. integers), with each color corresponding
+elements to colors (Core Legion uses integers), with each color corresponding
  to a new subregion
 to be created.  Note that it is impossible to pick a single static
 partitioning scheme that would do well for all graphs.  Dynamic
 partitioning using colorings provides the programmer the flexibility
 to make partitioning decisions based on input data.
 
-The {\tt color\_circuit} function returns three colorings.  The first
-maps each node to the graph piece that owns it.
+The {\tt color\_circuit} function is responsible for specifying how the
+circuit is to be partitioned.  The body of this function is not shown as the
+ideal algorithm for partitioning data will be application specific.  The 
+only restriction imposed by the Legion programming model is that the result of
+the algorithm be provided in the form of colorings.  For our circuit example,
+there are three colorings.  The first maps each node to the graph piece that owns it.
 The third maps each wire to a graph piece that
 owns one of its nodes.  The second coloring captures, for each piece $p$,
 the nodes in other pieces on the boundary of $p$, often referred to as
@@ -38,9 +42,12 @@ the nodes in other pieces on the boundary of $p$, often referred to as
 %We describe how ghost node regions are used in
 %conjunction with the owned nodes shortly.  
 Note that 
-ghost nodes may be on the boundary of multiple pieces and therefore colored
-multiple ways.  The second coloring is a {\em multicoloring} because
-it may map the same element to multiple colors.
+ghost nodes may be on the boundary of multiple pieces and therefore be included in
+multiple ghost regions.  For conciseness, a bit of syntactic sugar is used here the
+form of a {\em multicoloring}, which allows the mapping of an element to multiple 
+colors.  Although multicolorings are not part of the Core Legion described in 
+Section~\ref{sec:legioncore}, they can be easily implemented using a separate 
+coloring for each color in the multicoloring.
 
 After creating the colorings, the application partitions the node and wire
 regions into {\em subregions} according to the colorings (lines 21-25).  For
@@ -54,9 +61,6 @@ disjointness of the subregions (i.e. {\tt rn0 $*$ rn1}) and the inclusion of
 each subregion in the original region (e.g. {\tt rn0 $\leq$ rn}).  Line
 23 is similar, but uses a multicoloring, so the subregions may be {\em aliased},
 and only the inclusion constraints are introduced into the static environment.
-Although multicolorings are not part of the Core Legion described in 
-Section~\ref{sec:legioncore}, they can be easily implemented using a separate 
-coloring for each color in the multicoloring.
 
 The circuit simulation uses an {\em allocate-then-partition} style of
 computation, where a large data structure is first allocated and then
@@ -71,7 +75,8 @@ After partitioning the circuit into pieces, the application creates
 instances of {\tt CircuitPiece} (defined on lines 9-12) for each piece
 (lines 28-33).  {\tt CircuitPiece} is a {\em region relationship}, a
 bounded existential type.  Region relationships allow the programmer
-to {\em pack} a group of regions together and remember properties
+to {\em pack} a group of regions and pointers into those regions together
+and remember properties
 about them such as disjointness and subregion relationships (lines 29
 and 33).  The type system verifies the properties hold statically when
 packing; when region relationships are {\em unpacked} the same
@@ -121,7 +126,7 @@ execution of the two {\tt update\_voltage} calls with {\tt rn0} and {\tt rn1}.  
 both cases, this knowledge was statically available in {\tt simulate\_circuit}
 and could have been captured in a region relationship at the cost
 of much more complicated code.  Instead, an inexpensive dynamic disjointness
-check by the Legion runtime will discover the parallelism.
+check by the Legion runtime will (re)discover the parallelism.
 
 Listing~\ref{lst:circuit_leaf} shows the leaf functions for each phase.
 Each function iterates over the list of wires or
@@ -138,7 +143,8 @@ In addition to privileges, functions can also specify {\em coherence}
 on regions.  Coherence specifies what updates the function may
 observe from other functions using aliased regions.  
 If not otherwise specified, coherence defaults to {\em exclusive}, 
-meaning the function must appear to execute in program order.  
+meaning the function must appear to execute in program order relative to
+other function calls.  
 Line 14 in Listing~\ref{lst:circuit_leaf} shows
 an example of {\tt atomic}, a relaxed coherence mode requiring
 that operations to {\tt rn} and {\tt rg} appear atomic relative
