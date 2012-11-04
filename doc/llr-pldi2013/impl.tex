@@ -1,0 +1,369 @@
+
+\section{Runtime Implementation}
+\label{sec:impl}
+
+There are currently two implementations of our interface:
+one that works only on shared memory machines and another that
+runs on large clusters with both CPUs and GPUs.  The shared-memory
+implementation uses the POSIX threads library\cite{PTHREADS} (Pthreads)
+and is primarily used for debugging.
+The implementation for heterogeneous clusters uses Pthreads as 
+well as the CUDA runtime library for GPUs\cite{CUDA} and the GASNet
+API for large clusters\cite{GASNET07}.  
+
+The heterogeneous implementation
+models a cluster with CPUs and GPUs as having two kinds of processors 
+and four kinds of memory.  Every CPU core is presented as a different {\tt CPU} processor
+and every GPU is a {\tt GPU} processor.  This matches the scheduling granularity available
+in the Pthreads and CUDA APIs respectively.  The first kind of memory is the 
+system memory that is accessible by every CPU core on a given node.  The second is the 
+framebuffer memory on each GPU (and accessible only by that GPU).  The third kind
+of memory is system memory on a node that has been made accessible to the GPU(s) on
+that node as well as the CPU cores, commonly referred to as {\em zero-copy memory}.
+The final kind of memory is the portion of system memory on each node that has been registered with
+the GASNet runtime to allow {\em remote memory access} (RMA) by other nodes in the cluster.
+We refer to this memory as {\em GASNet memory}.
+%% For every node in the system
+%% there is a memory corresponding to the DRAM associated with that node.  For
+%% every GPU in the system there are two memories corresponding to the framebuffer
+%% memory and the zero-copy memory associated with that GPU \footnote{Zero-copy 
+%% memory contains pages that are mapped in both framebuffer and node memory with
+%% coherence maintained by the PCI-E protocol.}. The last memory is 
+%% a global GASNet memory that represents pages that have been registered 
+%% with all nodes in the system for supporting remote memory accesses (RMAs).
+%% The GASNet memory provides the illusion of global memory.  CPU processors
+%% can directly access their node memory, all zero-copy memories for GPUs on
+%% their node, and the GASNet memory.  GPU processors can only access their
+%% framebuffer memory and their zero-copy memory.  Copies are permitted
+%% between all pairs of memory except between any framebuffer memory and
+%% the GASNet memory.
+
+In addition to the RMA capabilities, GASNet provides {\em active messages} for 
+inter-node communication.  Active messages consist of a command and payload that
+are sent by one node to another without any previous coordination.  Upon arrival
+at a destination node, a handler routine is invoked to process the message.
+%The handler may issue a response to the sender, but this is optional, and avoided
+%as much as possible in our implementation due to the latencies involved in waiting
+%for a response.  
+One example of a case where we use active messages involves the {\tt spawn} call on a {\tt Processor}
+object.  If the processor is not on the same node as the requestor, the information
+%about the task (e.g. the task ID and arguments, the actual target {\tt Processor},
+%the prerequisite event (if any), and the completion event ID) 
+for the task is sent in an
+active message to the node containing the target processor.  The recipient node
+unpacks the message, and either places the task on the ready queue for the target
+processor or marks it as being deferred until the prerequisite event has triggered.
+%No response is sent to the original requestor.  The requestor already knows the event
+%that corresponds to the completion of this task (since it was provided in the active
+%message) - there is no utility in knowing exactly when the active message itself has
+%been processed.
+
+%% To support inter-node operations our implementation relies on GASNet active
+%% messages for communication.  Active messages are a command and a payload
+%% that are sent remotely and cause a handler to be run on the target node.
+%% A simple example of our use of active messages can be illustrated by the 
+%% {\tt spawn} call on a {\tt Processor} object.  Consider the case where {\tt spawn}
+%% is invoked on a processor that is on a remote node.  This operation is converted into
+%% an active message that contains all the information about the task launch.
+%% When the active message is handled by the remote node, the task and all its
+%% metadata are registered with the processor on which the task was launched.
+%% While most of the implementation of our heterogeneous runtime is straight
+%% forward, the next three sections describe in greater detail the nuances
+%% of the implementation of events, locks, and reduction instances.
+
+%% Our implementation uses a hierarchical model, in which data structures are shared by
+%% all threads on the same node (taking advantage of the shared address space and low
+%% latencies of using Pthreads mutexes and/or lock-free data structures).
+
+%Due to space constraints, we will not cover every part of our implementation in
+%detail, instead limiting our discussion to the three most interesting aspects:
+%events, locks, and reduction instances.
+Due to space constraints we cover only the most interesting parts of the implementation in detail.
+We limit our discussion to three aspects:
+events, locks, and reduction instances.
+
+\subsection{Event Implementation}
+\label{subsec:eventimpl}
+
+Events are created on demand and are {\em owned} by the node on which they
+were created.  The creation of an event occurs with no inter-node communication.
+The space of event
+handles is divided across the nodes at start-up time, allowing each node to assign handles
+to new events without the risk of conflicting with another node's assignments.  The static division
+of event handles also permits any node to determine the owning node of an event
+without any communication.
+%No broadcast of
+%the event creation is required either, as the static division is sufficient to allow any
+%node to correctly determine an event's owning node when (and only if) an operation on that
+%event is performed on the other node.
+
+%At event creation time, the owning node allocates a data structure to track the state of the event
+%(i.e. triggered or not) as well as record a list of the operations that are known to be dependent
+%on the event (e.g. initiation of a copy operation, placing a task on a processor's ready queue, waking
+%up a waiting task).  However, the owning node only keeps a list of the dependent operations from the same
+%node.  Every other node also allocates a corresponding data structure (the first time the event
+%is referenced) to remember if the event has already triggered and to record its local dependent operations.
+%Arbitrarily many dependent operations from a
+%single node are aggregated into a single {\em event subscription} active message that is sent to the
+%owning node.  The owning node keeps a bitmask of which other nodes have subscribed to the event, and when the
+%event finally does trigger, a single {\em event trigger} active message is sent to each subscribing node,
+%which notes that the event has triggered (in case queries come after the trigger) and executes the list
+%of local operations that were dependent on that event.  (In the case that the triggering of the event has
+%occurred before the reception of an event subscription, a trigger message is sent immediatel to the 
+%new subscriber.)
+When a new event is created, the owning node allocates a data structure to track the state of
+the event ({\em triggered} or {\em untriggered}) as well as to record a list of dependent operations
+(e.g. copy operation or task launch) from the same node called {\em waiters}.
+The first operation dependent on an event
+from a remote node will allocate the same data structure on the remote node.  A single
+{\em event subscription} active message is then sent from the remote node to the owning node indicating
+that the remote node should be informed when the event triggers.  Arbitrarily many dependent operations on
+the remote node can then be added to the list of waiters without any additional communication.
+When the event does trigger, the owner node notifies all local waiters and
+sends a single {\em event trigger} active message to each node from which it has seen an event subscription
+to notify remote waiters.
+In the case where an event triggers while a subscription message is in flight from a remote node, the owner node will
+immediately respond with a trigger message.
+
+The actual triggering of an event may occur on any node.  If it occurs on a node other than the owning
+node, an {\em event trigger} active message is sent from the triggering node back to the owning node, which
+then forwards that message to all the other subscribed nodes.  The triggering node will automatically
+notify its waiters and no message is sent from the owning node back to the triggering node.
+%with the exception of the triggering node, which was
+%able to execute its locally dependent operations (if any) immediately.  
+While a remote trigger of an event can result in
+the latency of a triggering operation being at least two active message flight times, it bounds the number of active
+messages required per event to $2N-2$ where $N$ is the number of nodes 
+%(which can be much smaller than the number of dependent operations) 
+monitoring the event.  An alternative
+would have been to share the list of subscribers so that the triggering node could notify all interested
+nodes directly.  However, such an algorithm is both more complicated due to race conditions, and requires $O(N^2)$
+active messages.  Any algorithm that is super-linear with the node count will not scale well, 
+and as we will see in Section~\ref{subsec:eventmicro}, the latency of a single event trigger
+active message is very small. 
+%and any algorithm that is super-linear with the node count will not scale well.
+%either is or will soon be an scalability issue for large systems.
+
+The data structure used to track an event cannot be freed until all operations on that event have been
+performed.  Creation and triggering can each happen only once, but there can be an arbitrary number of operations
+that are dependent on an event.   Furthermore, some operations may not be requested until long after the
+event has triggered.  Other systems incorporating events address this by reference counting event
+handles\cite{Khronos:OpenCL}, but such reference counting adds both client and runtime overhead even when
+limited to a single node; further overhead and complexity would be expected for a cluster-level
+reference-counting approach.
+
+%Instead of focusing on freeing event data structures, our implementation aggressively recycles them, 
+%needing fewer total event data structures than a referencing counting implementation while also eliminating
+%the overhead of reference counting.  The key observation is that one {\em generational event} data structure
+% can efficiently capture the state of one {\em untriggered} event and a very large number (e.g. $2^{32}-1$)
+%of already-triggered events.  An event's handle is expanded to include its generation number as well as the
+%identifier for the underlying generational event.  In addition to the triggered-or-not state and list of
+%dependent operations
+%for the most recent generation, the owning node also remembers how many previous generations have already
+%been triggered.  (There is no need to keep a list of dependent operations on previous generations.  Any
+%new operation that is dependent on a generation that is known to be already triggered can immediately be
+%executed.)  When an event is created, any generational event for whom the most recent generation has 
+%triggered can be reused - the generation is increased by one and the state is returned to ``untriggered.''
+%As before, this can be done with no inter-node communication.
+Instead of attempting to free event data structures, our implementation aggressively recycles them.
+Compared to a reference counting scheme our implementation requires fewer total event data structures
+and has no client/runtime overhead.  The key observation is that one {\em generational event}
+data structure can efficiently capture the state of one untriggered event and a very large 
+number (e.g. $2^{32}-1$) of already-triggered events.  To accomplish this, we extend each event
+handle to include its generation number as well as the identifier for its generational event.  Each
+generational event remembers how many previous generations have already been triggered.  Any
+new operation that is dependent on a generation that is known to already be triggered can immediately
+be executed.  A generational event can be reused for a new generation as soon as the current generation has triggered. To
+create a new event, a node finds a generational event in the triggered state,
+increases the generation by one, and sets the generational event's state to untriggered.  As before, 
+this can be done with no inter-node communication.
+
+%A remote node's data structure is also efficient - the boolean values for whether the event
+%has triggered and whether the event has already been subscribed to are replaced with the numbers of the most
+%recent generation known to have triggered (this is received in the event trigger active message) and of the
+%most recent generation the remote node has subscribed to (this is sent in the event subscription active
+%message).  And as with the owner node's data structure, only
+%one list of dependent operations is needed.  Although the latencies of a large system can delay the
+%reception of an event trigger active message, if an operation is created that depends on a later generation
+%of an event than what the current list of events is dependent on, that serves as a roundabout indication that
+%the previous generation has indeed triggered, allowing the existing list of operations to be executed.
+Nodes also maintain generational event data structures corresponding to remote events that they have
+observed.  These data structures maintain the most recent known generation to have triggered as well
+as the generation of the most recent subscription message sent (if any).  The distributed nature
+of the system allows remote generational events to perform an interesting optimization.  If at any point a
+remote generational event receives a request to wait on a later generation than its current
+generation,
+then it is safe to infer that all generations up to the requested generation have already 
+been triggered because a new generation of the event was already created by the event's owner node.
+All local waiters can then be notified even before receiving the event trigger message for the current generation.
+
+Barriers are implemented as an extension of events.  In place of an event's triggered/untriggered state,
+a barrier's owner tracks the number of outstanding arrivals.  When the arrival count 
+reaches zero, the barrier is considered to have triggered.  Remote nodes send {\em barrier update}
+active messages containing an adjustment value that is positive for {\tt alter\_arrival\_count} operations 
+and negative for {\tt arrive} operations.  A simplified version of vector clocks\cite{Fidge1998} is used
+to detect the race condition in which the barrier owner receives an {\tt arrive} operation before the
+corresponding {\tt alter\_arrival\_count}.  When detected, the decrement of the count 
+is delayed to avoid a spurious triggering of the barrier.
+
+%% Events are created on demand by each node.  The ID of the creating node is encoded
+%% in the upper bits of each event's ID and the creating node is said to be the 
+%% event's {\em owner}.  If an event is used as an argument to an
+%% operation on a remote node then the remote node can determine the owner of 
+%% the event and send an active message to become a {\em subscriber} of the event.  When a
+%% remote node becomes a subscriber to an event it guarantees that it will receive an active
+%% message from the event's owner when the event triggers.  To minimize the amount
+%% of communication that occurs between nodes, each node remembers the events to which it
+%% is subscribed and guarantees that it only subscribes to an event once.  In the case
+%% where there may be many remote waiters on an event 
+%% this can dramatically reduce the number of inter-node active messages.
+
+%% When an event triggers, it automatically notifies all of the operations that are waiting
+%% on its local node.  The owner node will also send active messages to all of the subscriber nodes
+%% telling them that the event has triggered.  Even though the event has now notified all of
+%% its waiters, the memory on the owning node for storing the event cannot be reclaimed 
+%% because there still may be handles to the event in the system which will request to
+%% use this event in the future.  These requests will need to be satisfied saying that 
+%% the event has already triggered for the duration of the application.  Rather than waste
+%% the resources, we recycle event implementations.
+
+%% A {\em dynamic event} is a logical construct that will only be triggered once and is the level
+%% of abstraction at which the programmer reasons about events.  A {\em physical event} is an
+%% actual event implementation that consumes resources on its owner node.  Multiple dynamic events
+%% can be mapped to a single physical event.  However, for each physical event there can be at most
+%% one {\em active} event in the set of dynamic events that are mapped to it.  An active event is a 
+%% dynamic event that is yet to trigger.  By only having one active dyanmic event at a time 
+%% there is no need to disambiguate event triggers that are sent to the physical event.  Each
+%% physical event maintains a count of the number of trigger operations that it has observed.
+
+%% When the runtime needs to return a handle corresponding to a new dynamic event, it finds
+%% a physical event which currently has no active events (e.g. the trigger count equals the number
+%% of dynamic events mapped to the physical event).  The runtime increases the count
+%% of the number of dynamic events mapped to the physical event.  The handle that is returned 
+%% corresponds to a new dynamic event which contains an ID that refers to the physical
+%% event it is mapped to and a {\em generation} that is the dynamic event number for the particular
+%% physical event.  Note that by definition the generation will always be one greater than the
+%% trigger count at the time of dynamic event creation.
+
+%% Within this framework it is now very easy to test whether the dynamic event specified by a
+%% handle has triggered.  Using the ID that is contained within the handle we find the
+%% physical event implementation (which may require an active message if the owner node is
+%% remote from where the test is begin performed).  We can then compare the generation of
+%% the handle to the number of observed triggers contained by the physical event.  If the
+%% number of physical triggers is greater than or equal to the handle's generation, then
+%% the dynamic event has triggered.  We show in Section~\ref{sec:apps} that in practice
+%% the number of needed physical events is significantly less than the number of dynamic events.
+
+%% We also leverage the mapping of dynamic events onto physical events to improve the efficiency
+%% of subscriptions.  Nodes cache the last generation for every physical event for which they
+%% have seen a trigger notification.  If the trigger test described above detects a trigger based
+%% on the cached information then there would be no need for the subscription which would save an
+%% active message.  If the event has not been detected to have
+%% triggered locally then an active message is sent to the owner which would always have been necesary
+%% without the dynamic to physical event mapping.
+
+\subsection{Deferred Lock Implementation}
+\label{subsec:lockimpl}
+
+Like events, deferred locks, or locks from here on, are created on demand by the node on which the creation request was made.  The lock
+handles are also statically divided across the nodes, allowing the creation to be done without inter-node
+communication.  Whereas event ownership is static, locks may migrate; the {\em creating}
+node is the initial owner, but that ownership can be transferred to other nodes.
+
+Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
+state of a lock on the node.
+%(they differ only in when the structure is allocated -
+%nodes other than the creator still wait until the first reference to the lock on that node).  
+The structure tracks the following:
+\begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
+\item {\em owner node} - the most recently known owner of the lock.  If the current node is the owner, this
+information is always accurate.  If not, this information may be stale, but by induction the recorded 
+owner is guaranteed to know the actual owner or the next node to query about ownership.
+\item {\em lock status} - records whether the lock is currently held.  This is only valid if the node
+is the current owner.
+\item {\em local waiters} - a list of pending local lock requests.  This data is always valid on all nodes.
+\item {\em remote waiters} - a bitmask of which other nodes have pending requests.  This bitmask is only
+valid on the current owner.
+\item {\em local payload pointer and size} - the local node's copy of the lock payload
+\end{itemize}
+
+When a lock request is made, an event is created to track when the grant occurs.  The current node then
+examines its copy of the lock data structure to determine if it is the owner.
+%(creating it if this the first operation for that lock on that node).  
+If the current node is the owner and the lock isn't
+held, the lock is granted immediately and the event is triggered.  If the lock is held, the event is added
+to the list of local waiters.  Note that the event associated with
+the lock request is the only data that must be stored.
+%(This is the only thing that is stored.  The actual ``requestor'' of the lock
+%is implicitly captured in which operations are dependent on the lock grant event.)  
+If the current node isn't the owner, a {\em lock request} active message is
+sent to the most recently known owner.  If the receiver of a lock request message is no
+longer the owner, it forwards the message on to the node it has recorded as the owner.
+%(If that information proves to be stale, the request is forwarded
+%by the receiving node, eventually catching up to the current owner.)  
+If the current owner's status shows
+the lock is currently held, the bit for the requesting node is set in the remote waiters bitmask.  If the lock is
+not held, the ownership of the lock is given to the requesting node via a {\em lock transfer} active
+message.  A lock transfer message includes the bitmask of remote waiters and an up-to-date copy 
+of the lock's payload.  The inclusion of the payload in the active message is the reason for the 
+4KB size limit specified on payloads in Section~\ref{subsec:locks}.
+
+Similarly, an unlock request is first checked against the local node's lock state.  If the local node is
+not the owner, an {\em unlock} active message is sent to the most recently known owner, which is forwarded
+if necessary.  Once the unlock request is on the lock's current owning node, the local waiter list is
+examined.  If the list is non-empty, the lock remains in the locked state and the first lock grant
+event is pulled off the local waiter list and triggered.  If instead the local waiter list is empty, the
+lock state is changed to unlocked, and the bitmask of remote waiters is examined.  If there are any, then
+one of them is chosen and the corresponding node becomes the new owner via a lock transfer active message.
+
+The unfairness that results from a lock favoring local waiters over remote waiters is intentional.  When the
+contention on a lock is high (the only time the question of fairness is relevant), the latencies
+involved in transferring a lock between nodes can be the limiter on throughput.  By minimizing the number
+of lock transfers, the throughput on the lock is maximized.  This effect will be demonstrated in
+Section~\ref{subsec:lockmicro}.
+
+A similar issue can arise with the forwarding of lock request active messages.  If two nodes are
+transferring a lock very quickly back and forth, a third node's request could be forwarded an arbitrary
+number of times as it chases the lock around.  Although this can result in unfairness, it doesn't 
+prevent forward progress.  A lock is only transferred to a node with at least one local waiter, so if 
+the third node's request ever became the only one left, the lock transferring would stop and the request
+would eventually catch up.
+
+\subsection{Reduction Instances}
+\label{subsec:reducimpl}
+
+In addition to normal physical regions, our implementation supports two different layouts of data for
+reduction-only physical regions called {\em reduction instances}.   
+These layouts are designed to optimize for the common pattern where 
+multiple tasks make commutative {\em reductions} into shared data.  Instead of having to copy an existing 
+physical region to a suitable memory and then apply individual reduction operations, reduction instances 
+allow a large number of reduction operations to be accumulated and transferred efficiently to the original 
+location of the data. This decoupling from the original location of the data can allow allow greater parallelism
+in cases where processors cannot all access the same memory (e.g. many GPUs).
+
+The first kind of reduction-only physical region is a {\em reduction fold instance}, which may only be
+used for reduction operations that support a {\em fold} operation (see Listing~\ref{lst:regionapi}).  
+A reduction fold instance is similar
+to a normal physical region in that it is implemented as an array, indexed by the same element indices used
+for the normal physical regions.  The difference is that each array element is a value of the reduction's
+{\tt RHS} type which is generally the same size or smaller than the actual element type of the region 
+(i.e. the {\tt LHS} type).  When the client requests a reduction operation to a particular location, 
+the supplied right-hand-side value is folded in
+to the corresponding location in the array.  An arbitrary number of reductions can be folded into each location.
+When the reduction fold instance is copied back to a normal instance, the contents of the reduction instance
+are transferred in a large block to the location of the normal instance.  On the receiving side
+the runtime automatically applies the reduction instance to the destination region
+by invoking the reduction function once for each location in the region via a cache-friendly 
+linear sweep over the memory.
+
+The second kind of reduction instance is a {\em reduction list instance}.  Although it generally doesn't
+perform as well as a reduction fold instance, it can be better for cases with sparse updates.  It is also
+valid option for when a reduction operation doesn't support a {\em fold} operation.  Instead of folding
+together multiple reductions to the same location, a reduction list instance keeps a log of every
+reduction operation requested (i.e. the location and the right-hand-side value).  When the reduction list 
+instance is copied back to a normal physical region, the whole list is transferred and then replayed at
+the target region's location.  Except in sparse update cases, this list is often larger than the target
+region, and any randomness in the sequence of locations in the list can impact the memory access efficiency
+of the reductions to the target region.  However, as we will show in section~\ref{subsec:reducmicro}, 
+the benefits of enabling parallelism and hiding latency usually more than make up for these drawbacks.
+

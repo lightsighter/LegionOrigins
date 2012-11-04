@@ -1,0 +1,69 @@
+
+\section{Related Work}
+\label{sec:related}
+
+MPI is the current industry standard for programming large
+supercomputers\cite{MPI}.  While MPI supports asynchronous
+communication operations there is no mechanism for composing
+asynchronous operations.  GASNet is another interface for programming
+large clusters that centers around active messages\cite{GASNET07}.  GASNet
+is a part of the heterogeneous implementation of our interface, but like
+MPI, does not support composition of asynchronous active messages with
+other constructs.  Co-array Fortran, UPC, and Titanium
+are array based languages that implement bulk-synchronous
+programming models similar to MPI that allow for asynchronous
+exchanges of data\cite{COARRAY_FORTRAN,UPC99,JV:Yel98}.  Like
+MPI however, none of these languages allow for general composition
+of asynchronous tasks, communication, and synchronization.
+
+Both POSIX threads and OpenMP\cite{OPENMP98} are used for intra-node parallel
+programming in large machines, but neither support any asynchronous
+operations.  CUDA\cite{CUDA} and OpenCL\cite{Khronos:OpenCL} support
+the composition of asynchronous kernel launches and asynchronous copies
+between a host node and a single GPU.  However, the only synchronization
+options available in both interfaces are blocking operations on either
+a stream or a work queue.  OpenCL has events similar to our interface for
+expressing ordering, but has no synchronization primitive for expressing
+more relaxed properties such as atomicity that can be described by a
+deferred lock.  OpenCL events are not valid globally, but can only be
+used within a single GPU context.
+
+Cilk is a parallel programming model that has demonstrated the power of
+asynchronous function calls\cite{CILK95}.  The Cilk {\em work-first}
+principle provides a compelling theoretical argument for parallel programming
+interfaces such as ours that optimize for throughput at the potential
+expense of adding additional latency to the critical 
+dependence path\cite{Frigo98}.
+
+The Threaded Abstract Machine (TAM) is a programming model designed to
+make it easy to port dataflow programs onto a parallel machine\cite{CullerGSvE93}.  
+Conceptually our interface is similar to the dataflow languages TAM supported.
+However, the implementation of TAM is designed for a class of much smaller machines
+and therefore is based on heavier communication and threading mechanisms.
+While TAM supports composable asynchronous computation and communication, its
+synchronization mechanisms still require blocking operations.
+
+Chapel\cite{Chamberlain:Chapel} and X10\cite{X1005} are high-level parallel
+programming languages that support asynchronous operations.  The constructs
+introduced in these languages are higher-level and have complex 
+semantics.  We view our interface as providing a target
+for implementing these higher-level asynchronous operations in an efficient
+manner similar to Legion\cite{Legion12}.
+
+Physical regions in our interface are related to
+arrays from the Sequoia runtime interface\cite{Houston08} in that they
+both allow the runtime to do specialized operations on data by being
+aware of the structure of data.  Sequoia's runtime interface supported
+asynchronous tasks and copies, but did not permit composition of
+asynchronous operations.
+
+The implementation of our interface shares similarities with large
+distributed systems.  Many distributed systems implement a publish/subscribe
+abstraction for supporting communication that is similar in some ways to how
+we manage events and event waiters\cite{Aguilera99,Carzaniga01}.  Work has
+also been done on using object oriented languages to build event-based
+distributed systems\cite{Eugster01,Harrison97,Chang91}.  In these cases
+callbacks are registered to run when event operations are triggered
+remotely.  Events in these systems are much heavier weight
+and often carry large data payloads.  In many distributed event systems
+the focus is on resiliency instead of performance\cite{Ostrowski09}.

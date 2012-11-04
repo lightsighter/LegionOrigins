@@ -1,0 +1,124 @@
+
+\section{Introduction}
+\label{sec:intro}
+
+% Big machines -> latencies are growing
+% Processors can't be blocked, need to be able to continue handling work
+% Operations need to be composable
+% deferred execution model
+
+% Contributions:
+% - An event system where every operation can take an event and returns an event
+% - Handles are globally valid
+% - More flexible synchronization primitive for this environment: deferred locks
+% - Physical regions for data movement including special versions for reductions
+
+% Parallel programs have three parts
+%  Parallel control
+%  Data movement in the memory hierarchy
+%  Synchronization
+
+% Bulk-synchronous
+% asynchronous components are not composable
+
+A characteristic feature of current and future heterogeneous
+supercomputers is the large, variable, and growing latencies between
+components.  The well-known mechanism for masking unpredictable or
+long latencies is to use {\em asynchronous operations} that do not block,
+thereby enabling other useful work to be done while the asynchronous
+operations complete. Current implementation primitives for parallel
+programming systems, however, rely on blocking constructs that were
+designed for machines many orders of magnitude
+smaller\cite{MPI,COARRAY_FORTRAN,UPC99}; these primitives expose
+latency on today's large, distributed parallel machines.
+
+
+Most current programming systems for large-scale parallel processing provide some variant
+of the {\em bulk-synchronous} execution model\cite{Valiant90}.  Bulk-synchronous models
+partition computations into {\em phases} that are either parallel computation, data
+communication, or synchronization.  At any given point in time all processors
+are engaged in the same kind of phase.  Bulk-synchrony
+makes it easy to reason about parallel execution but
+hinders attempts to hide the increasingly long-latency communication
+or memory movement phases.  
+%In older machines this was not a problem because slower
+%processors and smaller machines meant computation phases were much larger than
+%communication or synchronization phases.  However, today's machines are much
+%larger with faster processors, causing an increasing percentage of time
+%to be spent in the communication and synchronization phases.
+
+To combat this problem, parallel programming libraries have introduced
+asynchronous constructs allowing programmers to overlap phases.  For
+example, MPI has asynchronous {\em send} and {\em receive} operations
+for sending messages in parallel with computation \cite{MPI}.  There
+are two problems with this approach.  First, not all phases support
+asynchronous constructs.  Second, the asynchronous operations do not
+compose.  There is no way to express that one asynchronous computation
+should begin as soon as another asynchronous communication operation
+has completed.  The result is that at some point there must be
+blocking operations to coordinate synchronous and asynchronous phases.
+If blocking calls are not accurately placed in the program they can
+lead to processor stalls that expose latency.  Placement of blocking
+calls is difficult to reason about because 
+they can be dependent on input data, algorithmic decisions, 
+and the underlying hardware.  Instead, to hide as much
+latency as possible and to minimize processor stalls, 
+%regardless of inputs, algorithmic choices, or underlying hardware,
+all three major aspects of parallel programs (computation, data movement,
+synchronization) should be asynchronous and composable.
+
+We propose a new low-level interface for programming modern
+supercomputers that is fully asynchronous. In our system, one can
+asynchronously compose computation, data movement, and
+synchronization.  The basic mechanism that enables composition of 
+asynchronous operations
+is an {\em event} primitive.  Events provide a mechanism
+for naming a point in the future when an asynchronous operation
+(computation, data copy, or synchronization) will complete.  Every
+call to perform an operation $p$ in our runtime returns immediately
+with an event that {\em triggers} when $p$ has completed.
+Furthermore, every call to perform an operation $p$ can take as a
+precondition an event that must trigger before $p$ can begin.
+%Any number of operations can be depedendent on a single event, and
+%a events can be merged to allow an operation to wait for multiple
+%events before it begins.
+Events can be merged into new events and multiple operations
+can use an event as a precondition.
+  Using
+events clients can compose arbitrary chains of dependent
+operations, which the runtime is free to execute in any way that
+respects the event dependences.  With this freedom the runtime can
+schedule operations to optimize throughput while hiding the long
+latency operations.
+
+The following sections describe our contributions:
+\begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
+\item We present an interface for asynchronously composing
+parallel computation, data movement, and synchronization using events (Section~\ref{subsec:events}).  
+
+\item To support synchronization in our event system we introduce {\em deferred locks}, 
+a novel synchronization primitive that operates in an asynchronous environment (Section~\ref{subsec:locks}).
+
+\item We describe a physical region system that provides structural information about
+data layout.  The structural information provided by physical regions enables an extensible
+interface for conjoining operations on data (e.g. reductions) with asynchronous data movement for 
+further latency hiding (Section~\ref{subsec:phyreg}).
+
+\item Our approach depends on the efficient handling of very large numbers of events.
+We describe a distributed implementation of our interface that requires no global coordination
+and has modest local storage costs.  We describe optimizations for the implementation of events, 
+deferred locks, and reductions (Section~\ref{sec:impl}).
+
+\item We report on micro-benchmarks that are designed to stress
+our implementation.  The results indicate that our implementation approaches the performance of
+the underlying hardware (Section~\ref{sec:micro}).
+
+\item We demonstrate that our interface is powerful enough to support Legion \cite{Legion12}, a higher-level
+programming system, and that real Legion applications programmed to our interface
+are capable of achieving high-performance (Section~\ref{sec:apps}).  Furthermore, we demonstrate
+that the same applications written in a bulk-synchronous model incur performance penalties between 22-135\%.
+\end{itemize}
+
+Section~\ref{sec:related} describes related work and Section~\ref{sec:conclusion}
+concludes.
+
