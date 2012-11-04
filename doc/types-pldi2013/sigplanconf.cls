@@ -531,7 +531,7 @@
   \typeout{Using natbib package with 'numbers' citation style.}
   \usepackage[numbers,sort&compress,square]{natbib}
 \fi
-\setlength{\bibsep}{3pt plus .5pt minus .25pt}
+\setlength{\bibsep}{2pt plus .5pt minus .25pt}
 
 \fi
 

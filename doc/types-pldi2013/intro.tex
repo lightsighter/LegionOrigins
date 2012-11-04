@@ -35,7 +35,7 @@ through the memory hierarchy.
 Previous work has explored two approaches for describing the organization of data
 in distributed memory programs.
 One class of work uses fully static analyses with no runtime overhead, but 
-disallows potential data aliasing to make the analyis tractable, limiting expressivity.
+disallows potential data aliasing to make the analysis tractable, limiting expressivity.
 Two recent examples, Sequoia \cite{Fatahalian06} and 
 Deterministic Parallel Java (DPJ) \cite{Bocchino09}, each provide a 
 mechanism to statically partition the heap.
@@ -107,9 +107,9 @@ a task (or any of its subtasks) may perform on each logical region argument.
 To support additional parallelism in the presence of aliased data,
 Legion provides {\em coherence} modes at the granularity of regions,
 which allow relaxed constraints on task execution order, even
-in case where tasks do access the same region.  The programmer may
-specify that tasks conflicting on a region must execute serially (in
-program order, the default), {\em atomically} with respect to each
+in cases where tasks access the same region.  The programmer may
+specify that tasks conflicting on a region run: in
+program order (the default), {\em atomically} with respect to each
 other, or even {\em simultaneously} if the application has alternative
 methods for ensuring determinism or can tolerate non-deterministic
 behavior in that region.
@@ -125,7 +125,7 @@ behavior in that region.
 The critical feature in Legion that makes static analysis tractable
 and dynamic analysis efficient in the presence of potential aliasing is logical regions.
 Alias analysis is a very hard static analysis problem, but is both easy and
-inexpensive if done dynamically at the granulatiry of logical regions instead
+inexpensive if done dynamically at the granularity of logical regions instead
 of individual memory locations; similarly
 checks on individual memory accesses are expensive if done dynamically, but
 cheap if done statically within the context of local logical region privileges.
@@ -135,7 +135,8 @@ cheap if done statically within the context of local logical region privileges.
 %heap locations, while checks that must be done on individual values are only
 %cheap if done statically.  
 Explicating and evaluating the design of Legion's
-static and dynamic semantics and its implications are the topics of this paper,
+static and dynamic semantics is the topic of this paper, 
+%and its implications are the topics of this paper,
 which we present as a series of contributions:
 \begin{itemize}
 \item We present a type system for {\em Core Legion} programs that statically

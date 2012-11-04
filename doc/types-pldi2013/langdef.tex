@@ -482,18 +482,18 @@ The {\em pack} and {\em unpack} expressions allow regions and pointers into thos
 %  Logical region names are lexically scoped and if stored in the heap as-is, can only be read within the same scope.  
 A {\em region relationship} captures statically known constraints between regions;
 because the {\em pack} rule verifies these constraints hold when the 
-region relationship value is created,{\em unpack} can reintroduce these constraints on
-the (fresh) logical region names when the value is read and unpacked from the heap.
-Crucially for soundness,  region relationships do not capture privileges.
+region relationship value is created, {\em unpack} can reintroduce these constraints on
+the (fresh) logical region names when the value is unpacked from the heap.
+Crucially for soundness, region relationships do not capture privileges.
 %
 % FIXME  It would be nice to add some comments about unpack here, and how the constraints introduced by unpack
 % must be sufficient to allow access to the new regions if they are to be used, which generally requires the type
 % have a free region variable capturing subregioning relationships between the packed regions and some existing region
 % in scope for which privileges are held.
 % 
-Finally, task calls verify the requirement that the privileges held by a called task are a subset of those held
-by the caller.  In addition to being necessary for the proof of soundness, this property is critical to
-enabling hierarchical and distributed scheduling of tasks.
+Task calls verify the requirement that the privileges held by a called task are a subset of those held
+by the caller.  In addition to being necessary for the proof of soundness, this property is critical for 
+hierarchical and distributed scheduling of tasks.
 
 \begin{comment}
 \begin{figure*}
@@ -771,7 +771,7 @@ Instead we use a bottom-up approach with big-step semantics.
 Each expression has a clobber set $C$ of memory locations that might 
 be modified by concurrent evaluations.  While a read from a location not in $C$ is {\em coherent}
 (returning the most recently written value), the value read from a location $l$ in $C$ may be any
-value.  Determing which value is deferred until all potentially-concurrent
+value.  Determining which value is deferred until all potentially-concurrent
 modifications to $l$ are observable in the evaluation of a parent expression whose clobber set does
 not include $l$ and a consistent interleaving of the subexpressions' memory traces is determined.
 %With this formulation, the criteria for when a hierarchical scheduler may execute subexpressions in parallel can be
@@ -1252,8 +1252,11 @@ then
 $\valueconsist{v}{T}$, $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
 \end{thm}
 
-The proof, which can be found in the submitted appendix, is made
-straightforward by the compositional operational semantics.
+The proof is made straightforward by the compositional operational
+semantics.  The proof, along with proofs of all theorems and lemmas
+in this paper, can be found in the submitted appendix.
+%The proof, which can be found in the submitted appendix, is made
+%straightforward by the compositional operational semantics.
 %It proceeds by standard induction on the structure of the
 %derivation in the operational semantics, at each step showing that
 %subexpressions have consistent starting environments and that the
@@ -1664,7 +1667,7 @@ Let $\oton{e}$ be well-typed Legion expressions, each with its own privileges $\
 Let $M$ be a region mapping, $L$ a local value mapping,
 $H$ a heap typing, and $S$ be an initial store satisfying
 $\mapconsist{\Omega}$, $\localconsist{L}{\Gamma}$, and $\storeconsist{S}{H}$.
-If $\Phi_i \nonint[M]^A \Phi_j$ for $1 \leq i < j \leq n$, then for any permuatation $(\oton{\pi})$ of
+If $\Phi_i \nonint[M]^A \Phi_j$ for $1 \leq i < j \leq n$, then for any permutation $(\oton{\pi})$ of
 $(1, \ldots, n)$, $E_{\pi_1} \dplus \ldots \dplus E_{\pi_n}$ is a valid interleaving.
 \end{thm}
 

@@ -114,7 +114,7 @@ GPUs, environments for which debugging tools are primitive at best.
 To locate the application bugs causing these illegal accesses, we initially added 
 dynamic checks on  all region accesses for both CPUs and GPUs which  
 added considerable runtime overhead.  
-To preserve the benefit of checking every access, but eliminate the cost of dynamic checks we implemented the type, privilege, and coherence checker we have described. 
+To preserve the benefit of checking every access without the cost of dynamic checks, we implemented the type, privilege, and coherence checker we have described. 
 We then rewrote the applications in this language and type checked them, at which point the
 dynamic region access checks could be safely elided.
 

@@ -22,11 +22,11 @@ write privileges for the regions {\tt rl}, {\tt rw}, and {\tt rn}
 
 Partitioning of the graph is done using {\em colorings} built in the
 {\tt color\_circuit} function (line 18-19).  A coloring maps region
-elements to colors (Core Legion uses integers), with each color corresponding
+elements to colors (integers in Core Legion), with each color corresponding
  to a new subregion
 to be created.  Note that it is impossible to pick a single static
 partitioning scheme that would do well for all graphs.  Dynamic
-partitioning using colorings provides the programmer the flexibility
+partitioning using colorings enables the programmer 
 to make partitioning decisions based on input data.
 
 The {\tt color\_circuit} function is responsible for specifying how the
@@ -55,7 +55,7 @@ simplicity, our example only partitions the circuit into two pieces.
 Line 21 uses coloring {\tt pc.1} to partition {\tt rn} into {\tt rn0}, and {\tt rn1}.
 Subregion {\tt rn0} will contain all locations with a color of 0 in {\tt pc.1},
 while {\tt rn1} will contain all locations with a color of 1.  This
-partitioning uses a coloring and results in {\em disjoint} subpartitions.
+partitioning results in {\em disjoint} subpartitions.
 Constraints are introduced into the static environment describing both the
 disjointness of the subregions (i.e. {\tt rn0 $*$ rn1}) and the inclusion of
 each subregion in the original region (e.g. {\tt rn0 $\leq$ rn}).  Line
@@ -84,8 +84,9 @@ properties are reintroduced into the static checking environment
 (lines 40-41).  A key feature underlying the soundness of the Legion
 type system is that privileges cannot be packed in a region
 relationship---privileges belong to functions. When a function unpacks
-a region relationship it must already hold privileges for the new
-regions it finds in the packed value.  For example, on line 40 the
+a region relationship it must already hold privileges for the unpacked regions. 
+%new regions it finds in the packed value.  
+For example, on line 40 the
 function {\tt execute\_time\_steps} has read/write privileges for
 region {\tt rn0} because it has read/write privileges for {\tt rn} and
 the {\tt CircuitPiece} region relationship constraints ensure $\tt rn0
