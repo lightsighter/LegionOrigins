@@ -105,17 +105,18 @@ a task (or any of its subtasks) may perform on each logical region argument.
 %belong to multiple different regions.  
 
 To support additional parallelism in the presence of aliased data,
-Legion provides {\em coherence} modes at the granularity of regions, which allow
-relaxed constraints on the execution order of tasks, even in case where they
-do access the same region.  The programmer may
-specify that tasks conflicting on a region  must execute serially (in program
-order, the default), {\em atomically} with respect to each other, or even
-{\em simultaneously} if the application has alternative methods for ensuring
-determinism or can tolerate non-deterministic behavior in that region..
+Legion provides {\em coherence} modes at the granularity of regions,
+which allow relaxed constraints on task execution order, even
+in case where tasks do access the same region.  The programmer may
+specify that tasks conflicting on a region must execute serially (in
+program order, the default), {\em atomically} with respect to each
+other, or even {\em simultaneously} if the application has alternative
+methods for ensuring determinism or can tolerate non-deterministic
+behavior in that region.
 
-To guarantee the safety and correctness of programs, Legion relies on
-a combination of static and dynamic analysis based on the privilege
-and coherence systems.  
+%To guarantee the safety and correctness of programs, Legion relies on
+%a combination of static and dynamic analysis based on the privilege
+%and coherence systems.  
 %To efficiently guarantee the safety and
 %correctness of programs using first-class regions,
 %privilege and coherence properties in the presence of arbitrary region
