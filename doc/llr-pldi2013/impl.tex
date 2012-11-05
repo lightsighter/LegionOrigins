@@ -322,12 +322,14 @@ involved in transferring a lock between nodes can be the limiter on throughput. 
 of lock transfers, the throughput on the lock is maximized.  This effect will be demonstrated in
 Section~\ref{subsec:lockmicro}.
 
+\texcomment{
 A similar issue can arise with the forwarding of lock request active messages.  If two nodes are
 transferring a lock very quickly back and forth, a third node's request could be forwarded an arbitrary
 number of times as it chases the lock around.  Although this can result in unfairness, it doesn't 
 prevent forward progress.  A lock is only transferred to a node with at least one local waiter, so if 
 the third node's request ever became the only one left, the lock transferring would stop and the request
 would eventually catch up.
+}
 
 \subsection{Reduction Instances}
 \label{subsec:reducimpl}
