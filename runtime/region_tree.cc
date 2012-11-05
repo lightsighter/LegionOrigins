@@ -1347,8 +1347,7 @@ namespace LegionRuntime {
         RegionNode *top_node = get_node(req.region);
         std::set<InstanceManager*> needed_managers;
         result += top_node->compute_state_size(ctx, packing_mask, 
-                    needed_managers, //unique_views, ordered_views, 
-                    false/*mark invalid views*/, true/*recurse*/);
+                    needed_managers, false/*mark invalid views*/, true/*recurse*/);
         // Now for each of the managers get the set of required views
         for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
               it != needed_managers.end(); it++)
@@ -1363,11 +1362,9 @@ namespace LegionRuntime {
         // Pack the parent state without recursing
         std::set<InstanceManager*> needed_managers;
         result += top_node->parent->compute_state_size(ctx, packing_mask, 
-                        needed_managers, //unique_managers, unique_views, ordered_views,
-                        false/*mark invalid views*/, false/*recurse*/); //, top_node->row_source->color);
+                        needed_managers, false/*mark invalid views*/, false/*recurse*/);
         result += top_node->compute_state_size(ctx, packing_mask,
-                        needed_managers, //unique_managers, unique_views, ordered_views, 
-                        false/*mark invalid views*/, true/*recurse*/);
+                        needed_managers, false/*mark invalid views*/, true/*recurse*/);
         for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
               it != needed_managers.end(); it++)
         {
@@ -1926,8 +1923,7 @@ namespace LegionRuntime {
         RegionNode *top_node = get_node(req.region);
         std::set<InstanceManager*> needed_managers;
         result += top_node->compute_state_size(ctx, packing_mask,
-                          needed_managers, //unique_managers, unique_views, ordered_views, 
-                          true/*mark invalide views*/, true/*recurse*/);
+                          needed_managers, true/*mark invalide views*/, true/*recurse*/);
         for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
               it != needed_managers.end(); it++)
         {
@@ -1952,8 +1948,8 @@ namespace LegionRuntime {
           RegionNode *top_node = get_node(req.region);
           std::set<InstanceManager*> needed_managers;
           result += top_node->compute_diff_state_size(ctx, packing_mask,
-                          needed_managers, //unique_managers, unique_views, ordered_views, 
-                          diff_regions, diff_partitions, true/*invalidate views*/, true/*recurse*/);
+                          needed_managers, diff_regions, diff_partitions, 
+                          true/*invalidate views*/, true/*recurse*/);
           for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
                 it != needed_managers.end(); it++)
           {
@@ -1969,8 +1965,8 @@ namespace LegionRuntime {
           PartitionNode *top_node = get_node(req.partition);
           std::set<InstanceManager*> needed_managers;
           result += top_node->compute_diff_state_size(ctx, packing_mask,
-                          needed_managers, //unique_managers, unique_views, ordered_views, 
-                          diff_regions, diff_partitions, true/*invalidate views*/, true/*recurse*/);
+                          needed_managers, diff_regions, diff_partitions, 
+                          true/*invalidate views*/, true/*recurse*/);
           for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
                 it != needed_managers.end(); it++)
           {
@@ -2436,8 +2432,7 @@ namespace LegionRuntime {
       RegionNode *top_node = get_node(handle);
       std::set<InstanceManager*> needed_managers;
       result += top_node->compute_state_size(ctx, packing_mask,
-                      needed_managers, //unique_managers, unique_views, ordered_views, 
-                      true/*mark invalid views*/, true/*recursive*/);
+                      needed_managers, true/*mark invalid views*/, true/*recursive*/);
       for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
             it != needed_managers.end(); it++)
       {
@@ -2546,8 +2541,7 @@ namespace LegionRuntime {
       RegionNode *top_node = get_node(handle);
       std::set<InstanceManager*> needed_managers;
       result += top_node->compute_state_size(ctx, packing_mask,
-                      needed_managers, //unique_managers, unique_views, ordered_views, 
-                      true/*mark invalid views*/, true/*recursive*/);
+                      needed_managers, true/*mark invalid views*/, true/*recursive*/);
       for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
             it != needed_managers.end(); it++)
       {
@@ -6069,9 +6063,7 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t RegionNode::compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                           std::set<InstanceManager*> &unique_managers,
-                                          //std::map<InstanceView*,FieldMask> &unique_views,
-                                          //std::vector<InstanceView*> &ordered_views,
-                                          bool mark_invalid_views, bool recurse) //, int sub /*= -1*/) 
+                                          bool mark_invalid_views, bool recurse) 
     //--------------------------------------------------------------------------
     {
       if (physical_states.find(ctx) == physical_states.end())
@@ -6089,19 +6081,6 @@ namespace LegionRuntime {
         result += sizeof(InstanceKey);
         result += sizeof(it->second);
         unique_managers.insert(it->first->get_manager());
-#if 0
-        if (sub > -1)
-        {
-#ifdef DEBUG_HIGH_LEVEL
-          assert(!recurse);
-#endif
-          //it->first->find_required_views(unique_managers, unique_views, ordered_views, pack_mask, Color(sub));
-        }
-        else
-        {
-          //it->first->find_required_views(unique_managers, unique_views, ordered_views, pack_mask);
-        }
-#endif
         if (mark_invalid_views && !(it->second - pack_mask))
           it->first->mark_to_be_invalidated();
       }
@@ -6122,8 +6101,7 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_state_size(ctx, overlap, 
-                          unique_managers, //unique_views, ordered_views, 
-                          mark_invalid_views, true/*recurse*/);
+                          unique_managers, mark_invalid_views, true/*recurse*/);
           }
         }
       }
@@ -6250,8 +6228,6 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t RegionNode::compute_diff_state_size(ContextID ctx, const FieldMask &pack_mask,
                                               std::set<InstanceManager*> &unique_managers,
-                                              //std::map<InstanceView*,FieldMask> &unique_views,
-                                              //std::vector<InstanceView*> &ordered_views,
                                               std::vector<RegionNode*> &diff_regions,
                                               std::vector<PartitionNode*> &diff_partitions,
                                               bool invalidate_views, bool recurse)
@@ -6312,8 +6288,8 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_diff_state_size(ctx, overlap, 
-                          unique_managers, //unique_views, ordered_views, 
-                          diff_regions, diff_partitions, invalidate_views, true/*recurse*/);
+                          unique_managers, diff_regions, diff_partitions, 
+                          invalidate_views, true/*recurse*/);
           }
         }
       }
@@ -6971,8 +6947,6 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t PartitionNode::compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                               std::set<InstanceManager*> &unique_managers, 
-                                              //std::map<InstanceView*,FieldMask> &unique_views,
-                                              //std::vector<InstanceView*> &ordered_views,
                                               bool mark_invalid_views, bool recurse)
     //--------------------------------------------------------------------------
     {
@@ -6998,8 +6972,7 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_state_size(ctx, overlap, 
-                        unique_managers, //unique_views, ordered_views, 
-                        mark_invalid_views, true/*recurse*/);
+                        unique_managers, mark_invalid_views, true/*recurse*/);
           }
         }
       }
@@ -7075,8 +7048,6 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t PartitionNode::compute_diff_state_size(ContextID ctx, const FieldMask &pack_mask,
                                           std::set<InstanceManager*> &unique_managers,
-                                          //std::map<InstanceView*,FieldMask> &unique_views,
-                                          //std::vector<InstanceView*> &ordered_views,
                                           std::vector<RegionNode*> &diff_regions,
                                           std::vector<PartitionNode*> &diff_partitions,
                                           bool invalidate_views, bool recurse)
@@ -7115,8 +7086,8 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_diff_state_size(ctx, overlap, 
-                          unique_managers, //unique_views, ordered_views, 
-                          diff_regions, diff_partitions, invalidate_views, true/*recurse*/);
+                          unique_managers, diff_regions, diff_partitions, 
+                          invalidate_views, true/*recurse*/);
           }
         }
       }
@@ -8867,8 +8838,6 @@ namespace LegionRuntime {
       packing_aliased_users.clear();
       packing_aliased_copy_users.clear();
       packing_aliased_valid_events.clear();
-      // Reset filtered back to false
-      //filtered = false;
     }
 
     //--------------------------------------------------------------------------
@@ -9162,96 +9131,6 @@ namespace LegionRuntime {
         }
       }
     }
-
-#if 0
-    //--------------------------------------------------------------------------
-    void InstanceView::find_required_views(std::set<InstanceManager*> &unique_managers,
-            std::map<InstanceView*,FieldMask> &unique_views,
-            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask, Color filter)
-    //--------------------------------------------------------------------------
-    {
-      unique_managers.insert(manager);
-      // Go up
-      if (parent != NULL)
-        parent->find_required_above(unique_views, ordered_views, pack_mask);
-      // Then do ourselves
-      if (unique_views.find(this) != unique_views.end())
-      {
-        if (!filtered)
-          return;
-      }
-      else
-      {
-        unique_views[this] = pack_mask;
-        ordered_views.push_back(this);
-        filtered = true;
-      }
-      // Only go down the filtered children 
-      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
-            children.begin(); it != children.end(); it++)
-      {
-        if (it->first.first == filter)
-        {
-          it->second->find_required_below(unique_views, ordered_views, pack_mask);
-        }
-      }
-    }
-
-    //--------------------------------------------------------------------------
-    void InstanceView::find_required_views(std::set<InstanceManager*> &unique_managers,
-            std::map<InstanceView*,FieldMask> &unique_views,
-            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask)
-    //--------------------------------------------------------------------------
-    {
-      unique_managers.insert(manager);
-      // Otherwise go up the tree to find all the points we need
-      if (parent != NULL)
-        parent->find_required_above(unique_views, ordered_views, pack_mask);
-      // Then add ourselves and our children
-      find_required_below(unique_views, ordered_views, pack_mask);
-    }
-
-    //--------------------------------------------------------------------------
-    void InstanceView::find_required_above(std::map<InstanceView*,FieldMask> &unique_views,
-            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask)
-    //--------------------------------------------------------------------------
-    {
-      // Quick check to see if we're already added
-      if (unique_views.find(this) != unique_views.end())
-        return;
-      // Otherwise handle our parent first, then us
-      if (parent != NULL)
-        parent->find_required_above(unique_views, ordered_views, pack_mask);
-      unique_views[this] = pack_mask;
-      ordered_views.push_back(this);
-    }
-
-    //--------------------------------------------------------------------------
-    void InstanceView::find_required_below(std::map<InstanceView*,FieldMask> &unique_views,
-            std::vector<InstanceView*> &ordered_views, const FieldMask &pack_mask)
-    //--------------------------------------------------------------------------
-    {
-      if (unique_views.find(this) != unique_views.end())
-      {
-        if (!filtered)
-          return;
-      }
-      else
-      {
-        unique_views[this] = pack_mask;
-        ordered_views.push_back(this);
-      }
-      // Then add all the child instances
-      // We always do at least one round of the children to make sure we don't
-      // miss any because the current view was only added with a filter applied
-      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
-            children.begin(); it != children.end(); it++)
-      {
-        it->second->find_required_below(unique_views, ordered_views, pack_mask);
-      }
-      filtered = false;
-    }
-#endif
 
     //--------------------------------------------------------------------------
     bool InstanceView::has_added_users(void) const

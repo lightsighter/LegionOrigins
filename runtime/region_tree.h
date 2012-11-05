@@ -640,8 +640,6 @@ namespace LegionRuntime {
     public:
       size_t compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers, 
-                                //std::map<InstanceView*,FieldMask> &unique_views,
-                                //std::vector<InstanceView*> &ordered_views,
                                 bool mark_invalid_views, bool recurse); //, int sub = -1);
       void pack_physical_state(ContextID ctx, const FieldMask &pack_mask,
                                 Serializer &rez, bool invalidate_views, bool recurse);
@@ -649,8 +647,6 @@ namespace LegionRuntime {
     public:
       size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers,
-                                //std::map<InstanceView*,FieldMask> &unique_views,
-                                //std::vector<InstanceView*> &ordered_views,
                                 std::vector<RegionNode*> &diff_regions,
                                 std::vector<PartitionNode*> &diff_partitions,
                                 bool invalidate_views, bool recurse);
@@ -718,8 +714,6 @@ namespace LegionRuntime {
     public:
       size_t compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers, 
-                                //std::map<InstanceView*,FieldMask> &unique_views,
-                                //std::vector<InstanceView*> &ordered_views,
                                 bool mark_invalid_views, bool recurse);
       void pack_physical_state(ContextID ctx, const FieldMask &mask,
                                 Serializer &rez, bool invalidate_views, bool recurse);
@@ -727,8 +721,6 @@ namespace LegionRuntime {
     public:
       size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers,
-                                //std::map<InstanceView*,FieldMask> &unique_views,
-                                //std::vector<InstanceView*> &ordered_views,
                                 std::vector<RegionNode*> &diff_regions,
                                 std::vector<PartitionNode*> &diff_partitions,
                                 bool invalidate_views, bool recurse);
@@ -1039,20 +1031,6 @@ namespace LegionRuntime {
                               std::vector<AliasedCopyUser> &add_aliased_copies,
                               std::vector<AliasedEvent> &add_aliased_events,
                               const FieldMask &packing_mask);
-#if 0
-    public:
-      void find_required_views(std::set<InstanceManager*> &unique_managers, 
-              std::map<InstanceView*,FieldMask> &unique_views, 
-              std::vector<InstanceView*> &ordered_views, const FieldMask &mask, Color filter);
-      void find_required_views(std::set<InstanceManager*> &unique_managers,
-              std::map<InstanceView*,FieldMask> &unique_views,
-              std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
-    private:
-      void find_required_above(std::map<InstanceView*,FieldMask> &unique_views,
-              std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
-      void find_required_below(std::map<InstanceView*,FieldMask> &unique_views,
-              std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
-#endif
     public:
       bool has_added_users(void) const;
       size_t compute_return_state_size(const FieldMask &pack_mask, bool overwrite, 
