@@ -725,6 +725,7 @@ class TaskInstance(object):
         self.is_index_space = is_index
         self.marked = False
         self.name = 'task_node_'+str(handle.uid)+'_'+str(handle.point)
+        self.previous_dependences = set()
 
     def traverse(self, component):
         if self.marked:
@@ -745,8 +746,11 @@ class TaskInstance(object):
         self.start_event.print_prev_dependences(printer, self.name)
 
     def print_prev_dependences(self, printer, later_name):
-        # Print the dependence, don't traverse back any farther
-        printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];') 
+        # Check to see if we already printed this dependence
+        if later_name not in self.previous_dependences:
+            # Print the dependence, don't traverse back any farther
+            printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];') 
+            self.previous_dependences.add(later_name)
 
 class IndexInstance(object):
     def __init__(self, uid, term):
@@ -772,6 +776,7 @@ class CopyInstance(object):
         self.mask = mask
         self.marked = False
         self.name = 'copy_node_'+str(uid)
+        self.previous_dependences = set()
 
     def traverse(self, component):
         if self.marked:
@@ -792,7 +797,10 @@ class CopyInstance(object):
         self.start_event.print_prev_dependences(printer, self.name)
 
     def print_prev_dependences(self, printer, later_name):
-        printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];')
+        # Check to make sure we haven't printed this dependence before
+        if later_name not in self.previous_dependences:
+            printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];')
+            self.previous_dependences.add(later_name)
 
 class MapInstance(object):
     def __init__(self, uid, start, term):
@@ -801,6 +809,7 @@ class MapInstance(object):
         self.term_event = term
         self.name = 'mapping_node_'+str(uid)
         self.marked = False
+        self.previous_dependences = set()
 
     def traverse(self, component):
         if self.marked:
@@ -818,7 +827,9 @@ class MapInstance(object):
         self.start_event.print_prev_dependences(printer, self.name)
 
     def print_prev_dependences(self, printer, later_name):
-        printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];')
+        if later_name not in self.previous_dependences:
+            printer.println(self.name+' -> '+later_name+' [style=solid,color=black,penwidth=2];')
+            self.previous_dependences.add(later_name)
 
 class EventGraphPrinter(object):
     def __init__(self,path,name):
