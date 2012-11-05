@@ -22,7 +22,7 @@ def main():
     if len(sys.argv) < 2:
         usage()
 
-    opts, args = getopt(sys.argv[1:],'lp')
+    opts, args = getopt(sys.argv[1:],'lpk')
     opts = dict(opts)
     if len(args) <> 1:
         usage()
@@ -34,6 +34,10 @@ def main():
     make_pictures = False
     if '-p' in opts:
         make_pictures = True
+
+    keep_temp_files = False
+    if '-k' in opts:
+        keep_temp_files = True
 
     file_name = args[0]
 
@@ -57,6 +61,11 @@ def main():
         event_graph.make_pictures(ops_state,temp_dir)
 
     print "Legion Spy analysis complete.  Exiting..."
+    if keep_temp_files:
+        try:
+            subprocess.check_call(['cp '+temp_dir+'* .'],shell=True)
+        except:
+            print "WARNING: Unable to copy temporary files into current directory"
 
 
 # Everything below here is the old version of legion spy except
