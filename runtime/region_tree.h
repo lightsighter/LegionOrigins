@@ -640,17 +640,17 @@ namespace LegionRuntime {
     public:
       size_t compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers, 
-                                std::map<InstanceView*,FieldMask> &unique_views,
-                                std::vector<InstanceView*> &ordered_views,
-                                bool mark_invalid_views, bool recurse, int sub = -1);
+                                //std::map<InstanceView*,FieldMask> &unique_views,
+                                //std::vector<InstanceView*> &ordered_views,
+                                bool mark_invalid_views, bool recurse); //, int sub = -1);
       void pack_physical_state(ContextID ctx, const FieldMask &pack_mask,
                                 Serializer &rez, bool invalidate_views, bool recurse);
       void unpack_physical_state(ContextID ctx, Deserializer &derez, bool recurse, unsigned shift = 0);
     public:
       size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers,
-                                std::map<InstanceView*,FieldMask> &unique_views,
-                                std::vector<InstanceView*> &ordered_views,
+                                //std::map<InstanceView*,FieldMask> &unique_views,
+                                //std::vector<InstanceView*> &ordered_views,
                                 std::vector<RegionNode*> &diff_regions,
                                 std::vector<PartitionNode*> &diff_partitions,
                                 bool invalidate_views, bool recurse);
@@ -718,8 +718,8 @@ namespace LegionRuntime {
     public:
       size_t compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers, 
-                                std::map<InstanceView*,FieldMask> &unique_views,
-                                std::vector<InstanceView*> &ordered_views,
+                                //std::map<InstanceView*,FieldMask> &unique_views,
+                                //std::vector<InstanceView*> &ordered_views,
                                 bool mark_invalid_views, bool recurse);
       void pack_physical_state(ContextID ctx, const FieldMask &mask,
                                 Serializer &rez, bool invalidate_views, bool recurse);
@@ -727,8 +727,8 @@ namespace LegionRuntime {
     public:
       size_t compute_diff_state_size(ContextID, const FieldMask &pack_mask,
                                 std::set<InstanceManager*> &unique_managers,
-                                std::map<InstanceView*,FieldMask> &unique_views,
-                                std::vector<InstanceView*> &ordered_views,
+                                //std::map<InstanceView*,FieldMask> &unique_views,
+                                //std::vector<InstanceView*> &ordered_views,
                                 std::vector<RegionNode*> &diff_regions,
                                 std::vector<PartitionNode*> &diff_partitions,
                                 bool invalidate_views, bool recurse);
@@ -858,6 +858,11 @@ namespace LegionRuntime {
       void find_info(FieldID fid, std::vector<IndexSpace::CopySrcDstField> &sources);
       InstanceManager* clone_manager(const FieldMask &mask, FieldSpaceNode *node) const;
     public:
+      // This function helps to find views that need to be sent from the a specific logical region
+      // and any of it's children with an optional filter on the chosen children
+      void find_views_from(LogicalRegion handle, std::map<InstanceView*,FieldMask> &unique_views,
+                            std::vector<InstanceView*> &ordered_views, const FieldMask &packing_mask, int filter = -1);
+    public:
       size_t compute_send_size(void) const;
       void pack_manager_send(Serializer &rez, unsigned long num_ways);
       static void unpack_manager_send(RegionTreeForest *context, Deserializer &derez, unsigned long split_factor);
@@ -949,6 +954,26 @@ namespace LegionRuntime {
         ReductionOpID redop;
         unsigned references;
       };
+      struct AliasedUser {
+      public:
+        AliasedUser(void) { }
+        AliasedUser(const FieldMask &mask, const TaskUser &user)
+          : valid_mask(mask), task_user(user) { }
+      public:
+        FieldMask valid_mask;
+        TaskUser task_user;
+      };
+      struct AliasedCopyUser {
+      public:
+        AliasedCopyUser(void) { }
+        AliasedCopyUser(const FieldMask &mask, Event ready, ReductionOpID op)
+          : valid_mask(mask), ready_event(ready), redop(op) { }
+      public:
+        FieldMask valid_mask;
+        Event ready_event;
+        ReductionOpID redop;
+      };
+      typedef std::pair<Event,FieldMask> AliasedEvent;
     public:
       InstanceView(InstanceManager *man, InstanceView *par,  
                     RegionNode *reg, RegionTreeForest *ctx, bool made_local);
@@ -973,14 +998,15 @@ namespace LegionRuntime {
       inline const FieldMask& get_physical_mask(void) const { return manager->get_allocated_fields(); }
       inline InstanceKey get_key(void) const { return InstanceKey(manager->unique_id, logical_region->handle); }
       inline InstanceManager* get_manager(void) const { return manager; }
+      inline LogicalRegion get_handle(void) const { return logical_region->handle; }
       Event perform_final_close(const FieldMask &mask);
       void copy_from(RegionMapper &rm, InstanceView *src_view, const FieldMask &copy_mask);
       void find_copy_preconditions(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
       const PhysicalUser& find_user(UniqueID uid) const;
     private:
       void check_state_change(bool adding);
-      void find_dependences_above(std::set<Event> &wait_on, const PhysicalUser &user);
-      void find_dependences_above(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
+      void find_dependences_above(std::set<Event> &wait_on, const PhysicalUser &user, InstanceView *child);
+      void find_dependences_above(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask, InstanceView *child);
       bool find_dependences_below(std::set<Event> &wait_on, const PhysicalUser &user);
       bool find_dependences_below(std::set<Event> &wait_on, bool writing, ReductionOpID redop, const FieldMask &mask);
       bool find_local_dependences(std::set<Event> &wait_on, const PhysicalUser &user);
@@ -995,6 +1021,26 @@ namespace LegionRuntime {
       size_t compute_send_size(const FieldMask &pack_mask);
       void pack_view_send(const FieldMask &pack_mask, Serializer &rez);
       static void unpack_view_send(RegionTreeForest *context, Deserializer &derez);
+    public:
+      void find_required_views(std::map<InstanceView*,FieldMask> &unique_views,
+             std::vector<InstanceView*> &ordered_views, const FieldMask &packing_mask, int filter);
+      void find_required_below(std::map<InstanceView*,FieldMask> &unique_views,
+             std::vector<InstanceView*> &ordered_views, const FieldMask &packing_mask);
+    public:
+      void find_aliased_above(std::vector<AliasedUser> &add_aliased_users, 
+                              std::vector<AliasedCopyUser> &add_aliased_copies,
+                              std::vector<AliasedEvent> &add_aliased_events,
+                              const FieldMask &packing_mask, InstanceView *child_source);
+      void find_aliased_below(std::vector<AliasedUser> &add_aliased_users, 
+                              std::vector<AliasedCopyUser> &add_aliased_copies,
+                              std::vector<AliasedEvent> &add_aliased_events,
+                              const FieldMask &packing_mask);
+      void find_aliased_local(std::vector<AliasedUser> &add_aliased_users, 
+                              std::vector<AliasedCopyUser> &add_aliased_copies,
+                              std::vector<AliasedEvent> &add_aliased_events,
+                              const FieldMask &packing_mask);
+#if 0
+    public:
       void find_required_views(std::set<InstanceManager*> &unique_managers, 
               std::map<InstanceView*,FieldMask> &unique_views, 
               std::vector<InstanceView*> &ordered_views, const FieldMask &mask, Color filter);
@@ -1006,13 +1052,14 @@ namespace LegionRuntime {
               std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
       void find_required_below(std::map<InstanceView*,FieldMask> &unique_views,
               std::vector<InstanceView*> &ordered_views, const FieldMask &mask);
+#endif
     public:
       bool has_added_users(void) const;
       size_t compute_return_state_size(const FieldMask &pack_mask, bool overwrite, 
           std::map<EscapedUser,unsigned> &escaped_users, std::set<EscapedCopy> &escaped_copies);
       size_t compute_return_users_size(std::map<EscapedUser,unsigned> &escaped_users,
                                        std::set<EscapedCopy> &escaped_copies,
-                                       bool already_returning);
+                                       bool already_returning, const FieldMask &returning_mask);
       void pack_return_state(const FieldMask &mask, bool overwrite, Serializer &rez);
       void pack_return_users(Serializer &rez);
       static void unpack_return_state(RegionTreeForest *context, Deserializer &derez);
@@ -1021,6 +1068,12 @@ namespace LegionRuntime {
       size_t compute_simple_return(void) const;
       void pack_simple_return(Serializer &rez);
       static void unpack_simple_return(RegionTreeForest *context, Deserializer &derez);
+    public:
+      // Some helper methods
+      template<typename T>
+      static void pack_vector(const std::vector<T> &to_pack, Serializer &rez);
+      template<typename T>
+      static void unpack_vector(std::vector<T> &target, Deserializer &derez);
     public:
       InstanceManager *const manager;
       InstanceView *const parent;
@@ -1031,7 +1084,10 @@ namespace LegionRuntime {
       friend class InstanceManager;
       unsigned valid_references;
       bool local_view; // true until it is sent back in some form
-      std::map<std::pair<Color,Color>,InstanceView*> children;
+      typedef std::pair<Color,Color> ChildKey;
+      std::map<ChildKey,InstanceView*> children;
+      // For each child keep track of other children with which it aliases
+      std::map<InstanceView*,std::vector<InstanceView*> > aliased_children;
       // The next four members only deal with garbage collection
       // and should be passed back whenever an InstanceView is
       // passed back and is not remote
@@ -1049,9 +1105,21 @@ namespace LegionRuntime {
       std::map<UniqueID,FieldMask> epoch_users;
       std::map<Event,FieldMask> epoch_copy_users;
       std::map<Event,FieldMask> valid_events;
+      // These are users and valid events that would normally come
+      // from doing 'find_dependences_above', but since we are
+      // remote we summarize them here.  Note we never have to
+      // send these back since they are always only a summary of 
+      // things that already existing on the original node.
+      std::vector<AliasedUser> aliased_users;
+      std::vector<AliasedCopyUser> aliased_copy_users;
+      std::vector<AliasedEvent> aliased_valid_events;
+      // Everything below here is used for serializing and deserializing instance views
       size_t packing_sizes[7]; // storage for packing instances
-      bool filtered; // for knowing if we only packed a subset of open children
       bool to_be_invalidated; // about to be invalidated
+      // For packing aliased things to be sent remotely 
+      std::vector<AliasedUser> packing_aliased_users;
+      std::vector<AliasedCopyUser> packing_aliased_copy_users;
+      std::vector<AliasedEvent> packing_aliased_valid_events;
     };
 
     /////////////////////////////////////////////////////////////

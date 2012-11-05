@@ -1345,18 +1345,36 @@ namespace LegionRuntime {
       if (req.handle_type == SINGULAR)
       {
         RegionNode *top_node = get_node(req.region);
+        std::set<InstanceManager*> needed_managers;
         result += top_node->compute_state_size(ctx, packing_mask, 
-                    unique_managers, unique_views, ordered_views, false/*mark invalid views*/, true/*recurse*/);
+                    needed_managers, //unique_views, ordered_views, 
+                    false/*mark invalid views*/, true/*recurse*/);
+        // Now for each of the managers get the set of required views
+        for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
+              it != needed_managers.end(); it++)
+        {
+          unique_managers.insert(*it);
+          (*it)->find_views_from(req.region, unique_views, ordered_views, packing_mask);
+        }
       }
       else
       {
         PartitionNode *top_node = get_node(req.partition);
         // Pack the parent state without recursing
+        std::set<InstanceManager*> needed_managers;
         result += top_node->parent->compute_state_size(ctx, packing_mask, 
-                        unique_managers, unique_views, ordered_views,
-                        false/*mark invalid views*/, false/*recurse*/, top_node->row_source->color);
+                        needed_managers, //unique_managers, unique_views, ordered_views,
+                        false/*mark invalid views*/, false/*recurse*/); //, top_node->row_source->color);
         result += top_node->compute_state_size(ctx, packing_mask,
-                        unique_managers, unique_views, ordered_views, false/*mark invalid views*/, true/*recurse*/);
+                        needed_managers, //unique_managers, unique_views, ordered_views, 
+                        false/*mark invalid views*/, true/*recurse*/);
+        for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
+              it != needed_managers.end(); it++)
+        {
+          unique_managers.insert(*it);
+          (*it)->find_views_from(top_node->parent->handle, unique_views, ordered_views, 
+                                  packing_mask, top_node->row_source->color);
+        }
       }
       return result;
     }
@@ -1906,8 +1924,16 @@ namespace LegionRuntime {
 #endif
         // Pack the entire state of the tree
         RegionNode *top_node = get_node(req.region);
+        std::set<InstanceManager*> needed_managers;
         result += top_node->compute_state_size(ctx, packing_mask,
-                          unique_managers, unique_views, ordered_views, true/*mark invalide views*/, true/*recurse*/);
+                          needed_managers, //unique_managers, unique_views, ordered_views, 
+                          true/*mark invalide views*/, true/*recurse*/);
+        for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
+              it != needed_managers.end(); it++)
+        {
+          unique_managers.insert(*it);
+          (*it)->find_views_from(req.region, unique_views, ordered_views, packing_mask);
+        }
 #ifdef DEBUG_HIGH_LEVEL
         TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, false/*send*/);
 #endif
@@ -1924,9 +1950,16 @@ namespace LegionRuntime {
         if (req.handle_type == SINGULAR)
         {
           RegionNode *top_node = get_node(req.region);
+          std::set<InstanceManager*> needed_managers;
           result += top_node->compute_diff_state_size(ctx, packing_mask,
-                          unique_managers, unique_views, ordered_views, 
+                          needed_managers, //unique_managers, unique_views, ordered_views, 
                           diff_regions, diff_partitions, true/*invalidate views*/, true/*recurse*/);
+          for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
+                it != needed_managers.end(); it++)
+          {
+            unique_managers.insert(*it);
+            (*it)->find_views_from(req.region, unique_views, ordered_views, packing_mask);
+          }
 #ifdef DEBUG_HIGH_LEVEL
           TreeStateLogger::capture_state(runtime, idx, task_name, top_node, ctx, true/*pack*/, false/*send*/);
 #endif
@@ -1934,9 +1967,16 @@ namespace LegionRuntime {
         else
         {
           PartitionNode *top_node = get_node(req.partition);
+          std::set<InstanceManager*> needed_managers;
           result += top_node->compute_diff_state_size(ctx, packing_mask,
-                          unique_managers, unique_views, ordered_views, 
+                          needed_managers, //unique_managers, unique_views, ordered_views, 
                           diff_regions, diff_partitions, true/*invalidate views*/, true/*recurse*/);
+          for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
+                it != needed_managers.end(); it++)
+          {
+            unique_managers.insert(*it);
+            (*it)->find_views_from(top_node->parent->handle, unique_views, ordered_views, packing_mask);
+          }
           // Also need to invalidate the valid views of the parent
 #ifdef DEBUG_HIGH_LEVEL
           assert(top_node->parent != NULL);
@@ -2073,8 +2113,9 @@ namespace LegionRuntime {
         for (std::vector<InstanceView*>::const_iterator it = returning_views.begin();
               it != returning_views.end(); it++)
         {
+          std::map<InstanceView*,FieldMask>::const_iterator finder = unique_views.find(*it);
           result += (*it)->compute_return_users_size(escaped_users, escaped_copies,
-                                        (unique_views.find(*it) != unique_views.end()));
+                                        (finder != unique_views.end()), finder->second);
         }
       }
       result += sizeof(size_t); // number of returning managers
@@ -2393,8 +2434,16 @@ namespace LegionRuntime {
       if (!packing_mask)
         return result;
       RegionNode *top_node = get_node(handle);
+      std::set<InstanceManager*> needed_managers;
       result += top_node->compute_state_size(ctx, packing_mask,
-                      unique_managers, unique_views, ordered_views, true/*mark invalid views*/, true/*recursive*/);
+                      needed_managers, //unique_managers, unique_views, ordered_views, 
+                      true/*mark invalid views*/, true/*recursive*/);
+      for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
+            it != needed_managers.end(); it++)
+      {
+        unique_managers.insert(*it);
+        (*it)->find_views_from(handle, unique_views, ordered_views, packing_mask);
+      }
 #ifdef DEBUG_HIGH_LEVEL
       TreeStateLogger::capture_state(runtime, handle, task_name, top_node, ctx, true/*pack*/, 0/*shift*/);
 #endif
@@ -2495,8 +2544,16 @@ namespace LegionRuntime {
       if (!packing_mask)
         return result;
       RegionNode *top_node = get_node(handle);
+      std::set<InstanceManager*> needed_managers;
       result += top_node->compute_state_size(ctx, packing_mask,
-                      unique_managers, unique_views, ordered_views, true/*mark invalid views*/, true/*recursive*/);
+                      needed_managers, //unique_managers, unique_views, ordered_views, 
+                      true/*mark invalid views*/, true/*recursive*/);
+      for (std::set<InstanceManager*>::const_iterator it = needed_managers.begin();
+            it != needed_managers.end(); it++)
+      {
+        unique_managers.insert(*it);
+        (*it)->find_views_from(handle, unique_views, ordered_views, packing_mask);
+      }
 #ifdef DEBUG_HIGH_LEVEL
       TreeStateLogger::capture_state(runtime, handle, task_name, top_node, ctx, true/*pack*/, 0/*shift*/);
 #endif
@@ -6012,9 +6069,9 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t RegionNode::compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                           std::set<InstanceManager*> &unique_managers,
-                                          std::map<InstanceView*,FieldMask> &unique_views,
-                                          std::vector<InstanceView*> &ordered_views,
-                                          bool mark_invalid_views, bool recurse, int sub /*= -1*/) 
+                                          //std::map<InstanceView*,FieldMask> &unique_views,
+                                          //std::vector<InstanceView*> &ordered_views,
+                                          bool mark_invalid_views, bool recurse) //, int sub /*= -1*/) 
     //--------------------------------------------------------------------------
     {
       if (physical_states.find(ctx) == physical_states.end())
@@ -6031,17 +6088,20 @@ namespace LegionRuntime {
           continue;
         result += sizeof(InstanceKey);
         result += sizeof(it->second);
+        unique_managers.insert(it->first->get_manager());
+#if 0
         if (sub > -1)
         {
 #ifdef DEBUG_HIGH_LEVEL
           assert(!recurse);
 #endif
-          it->first->find_required_views(unique_managers, unique_views, ordered_views, pack_mask, Color(sub));
+          //it->first->find_required_views(unique_managers, unique_views, ordered_views, pack_mask, Color(sub));
         }
         else
         {
-          it->first->find_required_views(unique_managers, unique_views, ordered_views, pack_mask);
+          //it->first->find_required_views(unique_managers, unique_views, ordered_views, pack_mask);
         }
+#endif
         if (mark_invalid_views && !(it->second - pack_mask))
           it->first->mark_to_be_invalidated();
       }
@@ -6062,7 +6122,8 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_state_size(ctx, overlap, 
-                          unique_managers, unique_views, ordered_views, mark_invalid_views, true/*recurse*/);
+                          unique_managers, //unique_views, ordered_views, 
+                          mark_invalid_views, true/*recurse*/);
           }
         }
       }
@@ -6189,8 +6250,8 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t RegionNode::compute_diff_state_size(ContextID ctx, const FieldMask &pack_mask,
                                               std::set<InstanceManager*> &unique_managers,
-                                              std::map<InstanceView*,FieldMask> &unique_views,
-                                              std::vector<InstanceView*> &ordered_views,
+                                              //std::map<InstanceView*,FieldMask> &unique_views,
+                                              //std::vector<InstanceView*> &ordered_views,
                                               std::vector<RegionNode*> &diff_regions,
                                               std::vector<PartitionNode*> &diff_partitions,
                                               bool invalidate_views, bool recurse)
@@ -6207,7 +6268,8 @@ namespace LegionRuntime {
       {
         if (it->second * pack_mask)
           continue;
-        it->first->find_required_views(unique_managers, unique_views, ordered_views, pack_mask);
+        // Get the unique manager for which we will need to send views
+        unique_managers.insert(it->first->get_manager());
       }
       if (!state.added_views.empty() || !state.added_states.empty())
       {
@@ -6250,7 +6312,7 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_diff_state_size(ctx, overlap, 
-                          unique_managers, unique_views, ordered_views, 
+                          unique_managers, //unique_views, ordered_views, 
                           diff_regions, diff_partitions, invalidate_views, true/*recurse*/);
           }
         }
@@ -6909,8 +6971,8 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t PartitionNode::compute_state_size(ContextID ctx, const FieldMask &pack_mask,
                                               std::set<InstanceManager*> &unique_managers, 
-                                              std::map<InstanceView*,FieldMask> &unique_views,
-                                              std::vector<InstanceView*> &ordered_views,
+                                              //std::map<InstanceView*,FieldMask> &unique_views,
+                                              //std::vector<InstanceView*> &ordered_views,
                                               bool mark_invalid_views, bool recurse)
     //--------------------------------------------------------------------------
     {
@@ -6936,7 +6998,7 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_state_size(ctx, overlap, 
-                        unique_managers, unique_views, ordered_views, 
+                        unique_managers, //unique_views, ordered_views, 
                         mark_invalid_views, true/*recurse*/);
           }
         }
@@ -7013,8 +7075,8 @@ namespace LegionRuntime {
     //--------------------------------------------------------------------------
     size_t PartitionNode::compute_diff_state_size(ContextID ctx, const FieldMask &pack_mask,
                                           std::set<InstanceManager*> &unique_managers,
-                                          std::map<InstanceView*,FieldMask> &unique_views,
-                                          std::vector<InstanceView*> &ordered_views,
+                                          //std::map<InstanceView*,FieldMask> &unique_views,
+                                          //std::vector<InstanceView*> &ordered_views,
                                           std::vector<RegionNode*> &diff_regions,
                                           std::vector<PartitionNode*> &diff_partitions,
                                           bool invalidate_views, bool recurse)
@@ -7053,7 +7115,7 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             result += color_map[pit->first]->compute_diff_state_size(ctx, overlap, 
-                          unique_managers, unique_views, ordered_views, 
+                          unique_managers, //unique_views, ordered_views, 
                           diff_regions, diff_partitions, invalidate_views, true/*recurse*/);
           }
         }
@@ -7297,6 +7359,50 @@ namespace LegionRuntime {
       InstanceManager *clone = context->create_manager(location, instance, new_infos,
                                                     fspace, mask, false/*remote*/, true/*clone*/);
       return clone;
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceManager::find_views_from(LogicalRegion handle, std::map<InstanceView*,FieldMask> &unique_views,
+                  std::vector<InstanceView*> &ordered_views, const FieldMask &packing_mask, int filter /*= -1*/)
+    //--------------------------------------------------------------------------
+    {
+      // Go through our views and see if we can find the one we want to pack from
+      InstanceView *target = NULL;
+      for (std::vector<InstanceView*>::const_iterator it = all_views.begin();
+            it != all_views.end(); it++)
+      {
+        if ((*it)->get_handle() == handle)
+        {
+          target = *it;
+          break;
+        }
+      }
+      // Check to see if we found it
+      if (target != NULL)
+      {
+        // It does exist, so get the required views from this perspective
+        target->find_required_views(unique_views, ordered_views, packing_mask, filter);
+      }
+      else
+      {
+        // Otherwise, this is easy, all the views have to be sent, so add them
+        // Note: they are already in a good order for serialization
+        for (std::vector<InstanceView*>::const_iterator it = all_views.begin();
+              it != all_views.end(); it++)
+        {
+          std::map<InstanceView*,FieldMask>::iterator finder = unique_views.find(*it);
+          if (finder != unique_views.end())
+          {
+            // Update the mask
+            finder->second |= packing_mask;
+          }
+          else
+          {
+            ordered_views.push_back(*it);
+            unique_views[*it] = packing_mask;
+          }
+        }
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -7589,7 +7695,7 @@ namespace LegionRuntime {
                                RegionNode *reg, RegionTreeForest *contx, bool made_local)
       : manager(man), parent(par), logical_region(reg), 
         context(contx), valid_references(0), local_view(made_local),
-        filtered(false), to_be_invalidated(false)
+        to_be_invalidated(false)
     //--------------------------------------------------------------------------
     { 
     }
@@ -7644,7 +7750,40 @@ namespace LegionRuntime {
     void InstanceView::add_child_view(Color pc, Color rc, InstanceView *child)
     //--------------------------------------------------------------------------
     {
-      std::pair<Color,Color> key(pc,rc);
+      ChildKey key(pc,rc);
+      std::vector<InstanceView*> aliased_set;
+      // First go through all our current children and see if any of them alias
+      // with the new child
+      IndexSpaceNode *index_node = logical_region->row_source;
+      for (std::map<std::pair<Color,Color>,InstanceView*>::const_iterator it = 
+            children.begin(); it != children.end(); it++)
+      {
+        if (it->first.first != pc)
+        {
+          // Different partitions, see if they are disjoint or not
+          if (!index_node->are_disjoint(it->first.first, pc))
+          {
+            aliased_set.push_back(it->second);
+            aliased_children[it->second].push_back(child);
+          }
+        }
+        else
+        {
+#ifdef DEBUG_HIGH_LEVEL
+          assert(it->first.second != rc); // should never have the same key
+#endif
+          // Same partition, see if it is disjoint or if siblings are
+          IndexPartNode *index_part = index_node->get_child(pc);
+          if (!index_part->are_disjoint(it->first.second, rc))
+          {
+            aliased_set.push_back(it->second);
+            aliased_children[it->second].push_back(child);
+          }
+        }
+      }
+      aliased_children[child] = aliased_set;
+      
+      // Then add the child
 #ifdef DEBUG_HIGH_LEVEL
       assert(children.find(key) == children.end());
 #endif
@@ -7658,7 +7797,7 @@ namespace LegionRuntime {
       // Find any dependences above or below for a specific user 
       std::set<Event> wait_on;
       if (parent != NULL)
-        parent->find_dependences_above(wait_on, user);
+        parent->find_dependences_above(wait_on, user, this);
       bool all_dominated = find_dependences_below(wait_on, user);
       Event wait_event = Event::merge_events(wait_on);
 #ifdef LEGION_SPY
@@ -7904,7 +8043,7 @@ namespace LegionRuntime {
     {
       // Find any dependences above or below for a copy reader
       if (parent != NULL)
-        parent->find_dependences_above(wait_on, writing, redop, mask);
+        parent->find_dependences_above(wait_on, writing, redop, mask, this);
       find_dependences_below(wait_on, writing, redop, mask);
     }
 
@@ -7944,22 +8083,42 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void InstanceView::find_dependences_above(std::set<Event> &wait_on, const PhysicalUser &user)
+    void InstanceView::find_dependences_above(std::set<Event> &wait_on, const PhysicalUser &user, InstanceView* child)
     //--------------------------------------------------------------------------
     {
       find_local_dependences(wait_on, user);
       if (parent != NULL)
-        parent->find_dependences_above(wait_on, user);
+        parent->find_dependences_above(wait_on, user, this);
+      // Also need to find any dependences in aliased children below
+#ifdef DEBUG_HIGH_LEVEL
+      assert(aliased_children.find(child) != aliased_children.end());
+#endif
+      const std::vector<InstanceView*> &aliases = aliased_children[child];
+      for (std::vector<InstanceView*>::const_iterator it = aliases.begin();
+            it != aliases.end(); it++)
+      {
+        (*it)->find_dependences_below(wait_on, user);
+      }
     }
 
     //--------------------------------------------------------------------------
     void InstanceView::find_dependences_above(std::set<Event> &wait_on, bool writing, 
-                                            ReductionOpID redop, const FieldMask &mask)
+                                            ReductionOpID redop, const FieldMask &mask, InstanceView *child)
     //--------------------------------------------------------------------------
     {
       find_local_dependences(wait_on, writing, redop, mask);
       if (parent != NULL)
-        parent->find_dependences_above(wait_on, writing, redop, mask);
+        parent->find_dependences_above(wait_on, writing, redop, mask, this);
+      // Also need to find any dependences in aliased children below
+#ifdef DEBUG_HIGH_LEVEL
+      assert(aliased_children.find(child) != aliased_children.end());
+#endif
+      const std::vector<InstanceView*> &aliases = aliased_children[child];
+      for (std::vector<InstanceView*>::const_iterator it = aliases.begin();
+            it != aliases.end(); it++)
+      {
+        (*it)->find_dependences_below(wait_on, writing, redop, mask);
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -8001,6 +8160,15 @@ namespace LegionRuntime {
             it != valid_events.end(); it++)
       {
         // Check for field disjointness
+        if (!(it->second * user.field_mask))
+        {
+          wait_on.insert(it->first);
+        }
+      }
+      // Also need to go through any aliased events
+      for (std::vector<AliasedEvent>::const_iterator it = aliased_valid_events.begin();
+            it != aliased_valid_events.end(); it++)
+      {
         if (!(it->second * user.field_mask))
         {
           wait_on.insert(it->first);
@@ -8059,6 +8227,39 @@ namespace LegionRuntime {
           }
         }
       }
+      // Check the aliased users too
+      for (std::vector<AliasedUser>::const_iterator it = aliased_users.begin();
+            it != aliased_users.end(); it++)
+      {
+        if (!(it->valid_mask * user.field_mask))
+        {
+          DependenceType dtype = check_dependence_type(it->task_user.user.usage, user.usage);
+          switch (dtype)
+          {
+            // Atomic and simultaneous are not dependences here since we know that they
+            // are using the same physical instance
+            case NO_DEPENDENCE:
+            case ATOMIC_DEPENDENCE:
+            case SIMULTANEOUS_DEPENDENCE:
+              {
+                all_dominated = false;
+                break;
+              }
+            case TRUE_DEPENDENCE:
+            case ANTI_DEPENDENCE:
+              {
+                // Has a dependence, figure out which event to add
+                if (it->task_user.use_multi)
+                  wait_on.insert(it->task_user.user.multi_term);
+                else
+                  wait_on.insert(it->task_user.user.single_term);
+                break;
+              }
+            default:
+              assert(false); // should never get here
+          }
+        }
+      }
 
       if (IS_READ_ONLY(user.usage))
       {
@@ -8091,6 +8292,16 @@ namespace LegionRuntime {
               wait_on.insert(finder->first);
             else
               all_dominated = false;
+          }
+        }
+        // Also need to check the aliased reduction copy users
+        for (std::vector<AliasedCopyUser>::const_iterator it = aliased_copy_users.begin();
+              it != aliased_copy_users.end(); it++)
+        {
+          if (!(it->valid_mask * user.field_mask))
+          {
+            if (it->redop != 0)
+              wait_on.insert(it->ready_event);
           }
         }
       }
@@ -8127,6 +8338,16 @@ namespace LegionRuntime {
               all_dominated = false;
           }
         }
+        // Also do any aliased reductions
+        for (std::vector<AliasedCopyUser>::const_iterator it = aliased_copy_users.begin();
+              it != aliased_copy_users.end(); it++)
+        {
+          if (!(it->valid_mask * user.field_mask))
+          {
+            if (it->redop != user.usage.redop)
+              wait_on.insert(it->ready_event);
+          }
+        }
       }
       else
       {
@@ -8158,6 +8379,13 @@ namespace LegionRuntime {
             wait_on.insert(finder->first);
           }
         }
+        // Also do any aliased copies
+        for (std::vector<AliasedCopyUser>::const_iterator it = aliased_copy_users.begin();
+              it != aliased_copy_users.end(); it++)
+        {
+          if (!(it->valid_mask * user.field_mask))
+            wait_on.insert(it->ready_event);
+        }
       }
       return all_dominated;
     }
@@ -8173,6 +8401,15 @@ namespace LegionRuntime {
             it != valid_events.end(); it++)
       {
         // Check for field disjointness
+        if (!(it->second * mask))
+        {
+          wait_on.insert(it->first);
+        }
+      }
+      // Also need to check any aliased users
+      for (std::vector<AliasedEvent>::const_iterator it = aliased_valid_events.begin();
+            it != aliased_valid_events.end(); it++)
+      {
         if (!(it->second * mask))
         {
           wait_on.insert(it->first);
@@ -8217,6 +8454,21 @@ namespace LegionRuntime {
             }
           }
         }
+        // Handle the aliased users
+        for (std::vector<AliasedUser>::const_iterator it = aliased_users.begin();
+              it != aliased_users.end(); it++)
+        {
+          if (!(it->valid_mask * mask))
+          {
+            if ((redop != it->task_user.user.usage.redop))
+            {
+              if (it->task_user.use_multi)
+                wait_on.insert(it->task_user.user.multi_term);
+              else
+                wait_on.insert(it->task_user.user.single_term);
+            }
+          }
+        }
         // Also handle the copy users
         for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
               it != epoch_copy_users.end(); it++)
@@ -8251,6 +8503,21 @@ namespace LegionRuntime {
             }
             else
               wait_on.insert(it->first);
+          }
+        }
+        // Handle the aliased copy users
+        for (std::vector<AliasedCopyUser>::const_iterator it = aliased_copy_users.begin();
+              it != aliased_copy_users.end(); it++)
+        {
+          if (!(it->valid_mask * mask))
+          {
+            if (redop != 0)
+            {
+              if (it->redop != redop)
+                wait_on.insert(it->ready_event);
+            }
+            else
+              wait_on.insert(it->ready_event);
           }
         }
       }
@@ -8294,6 +8561,20 @@ namespace LegionRuntime {
               all_dominated = false;
           }
         }
+        for (std::vector<AliasedUser>::const_iterator it = aliased_users.begin();
+              it != aliased_users.end(); it++)
+        {
+          if (!(it->valid_mask * mask))
+          {
+            if (HAS_WRITE(it->task_user.user.usage))
+            {
+              if (it->task_user.use_multi)
+                wait_on.insert(it->task_user.user.multi_term);
+              else
+                wait_on.insert(it->task_user.user.single_term);
+            }
+          }
+        }
         // Also see if we have any copy users in non-reduction mode
         for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
               it != epoch_copy_users.end(); it++)
@@ -8322,6 +8603,16 @@ namespace LegionRuntime {
               all_dominated = false;
             else
               wait_on.insert(it->first);
+          }
+        }
+        // Handle the aliased copy users
+        for (std::vector<AliasedCopyUser>::const_iterator it = aliased_copy_users.begin();
+              it != aliased_copy_users.end(); it++)
+        {
+          if (!(it->valid_mask * mask))
+          {
+            if (it->redop != 0)
+              wait_on.insert(it->ready_event);
           }
         }
       }
@@ -8459,6 +8750,35 @@ namespace LegionRuntime {
         result += sizeof(ReductionOpID);
         packing_sizes[2]++;
       }
+      result += sizeof(size_t); // number of aliased users
+      // Also need to pack any aliased users that we have here as well
+      // as the ones that we've computed we need to send
+      for (std::vector<AliasedUser>::const_iterator it = aliased_users.begin();
+            it != aliased_users.end(); it++)
+      {
+        if (it->valid_mask * pack_mask)
+          continue;
+        packing_aliased_users.push_back(AliasedUser(it->valid_mask & pack_mask, it->task_user));
+      }
+      result += (packing_aliased_users.size() * sizeof(AliasedUser));
+      result += sizeof(size_t); // number of aliased copy users
+      for (std::vector<AliasedCopyUser>::const_iterator it = aliased_copy_users.begin();
+            it != aliased_copy_users.end(); it++)
+      {
+        if (it->valid_mask * pack_mask)
+          continue;
+        packing_aliased_copy_users.push_back(AliasedCopyUser(it->valid_mask & pack_mask, it->ready_event, it->redop));
+      }
+      result += (packing_aliased_copy_users.size() * sizeof(AliasedCopyUser));
+      result += sizeof(size_t); // number of aliased valid events
+      for (std::vector<AliasedEvent>::const_iterator it = aliased_valid_events.begin();
+            it != aliased_valid_events.end(); it++)
+      {
+        if (it->second * pack_mask)
+          continue;
+        packing_aliased_valid_events.push_back(AliasedEvent(it->first, it->second & pack_mask));
+      }
+      result += (packing_aliased_valid_events.size() * sizeof(AliasedEvent));
       return result;
     }
 
@@ -8541,8 +8861,14 @@ namespace LegionRuntime {
         }
         rez.serialize(finder->second);
       }
+      pack_vector<AliasedUser>(packing_aliased_users, rez);
+      pack_vector<AliasedCopyUser>(packing_aliased_copy_users, rez);
+      pack_vector<AliasedEvent>(packing_aliased_valid_events, rez);
+      packing_aliased_users.clear();
+      packing_aliased_copy_users.clear();
+      packing_aliased_valid_events.clear();
       // Reset filtered back to false
-      filtered = false;
+      //filtered = false;
     }
 
     //--------------------------------------------------------------------------
@@ -8598,8 +8924,246 @@ namespace LegionRuntime {
         result->epoch_copy_users[copy_event] = copy_mask;
         result->copy_users[copy_event] = redop;
       }
+      unpack_vector<AliasedUser>(result->aliased_users, derez);
+      unpack_vector<AliasedCopyUser>(result->aliased_copy_users, derez);
+      unpack_vector<AliasedEvent>(result->aliased_valid_events, derez);
     }
 
+    //--------------------------------------------------------------------------
+    void InstanceView::find_required_views(std::map<InstanceView*,FieldMask> &unique_views,
+            std::vector<InstanceView*> &ordered_views, const FieldMask &packing_mask, int filter)
+    //--------------------------------------------------------------------------
+    {
+      // First add ourselves
+      std::map<InstanceView*,FieldMask>::iterator finder = unique_views.find(this);
+      if (finder != unique_views.end())
+      {
+        finder->second |= packing_mask;
+      }
+      else
+      {
+        unique_views[this] = packing_mask;
+        ordered_views.push_back(this);
+      }
+
+      // Then compute any aliased users from above
+      if (parent != NULL)
+      {
+        // Find any aliased users from above
+        parent->find_aliased_above(packing_aliased_users, packing_aliased_copy_users,
+                                    packing_aliased_valid_events, packing_mask, this);
+      }
+
+      // Finaly find users below, doing different things if we are filtered or not.
+      // If we are filtered, add users in any filtered children that are not disjoint
+      // with the target child to the aliased set.
+      if (filter > -1)
+      {
+        Color child_filter = unsigned(filter);
+        // Get all the children in the path that we want, otherwise check to see
+        // if they are aliased, if they are add them to our aliased set
+        for (std::map<ChildKey,InstanceView*>::const_iterator it = children.begin();
+              it != children.end(); it++)
+        {
+          if (it->first.first == child_filter)
+          {
+            it->second->find_required_below(unique_views, ordered_views, packing_mask);
+          }
+          else
+          {
+            // Otherwise check to see if it is aliased
+            if (!logical_region->row_source->are_disjoint(child_filter, it->first.first))
+            {
+              it->second->find_aliased_below(packing_aliased_users, packing_aliased_copy_users,
+                                              packing_aliased_valid_events, packing_mask);
+            }
+          }
+        }
+      }
+      else
+      {
+        // Get all the children
+        for (std::map<ChildKey,InstanceView*>::const_iterator it = children.begin();
+              it != children.end(); it++)
+        {
+          it->second->find_required_below(unique_views, ordered_views, packing_mask);
+        }
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_required_below(std::map<InstanceView*,FieldMask> &unique_views,
+            std::vector<InstanceView*> &ordered_views, const FieldMask &packing_mask)
+    //--------------------------------------------------------------------------
+    {
+      // First add ourselves
+      std::map<InstanceView*,FieldMask>::iterator finder = unique_views.find(this);
+      if (finder != unique_views.end())
+      {
+        finder->second |= packing_mask;
+      }
+      else
+      {
+        unique_views[this] = packing_mask;
+        ordered_views.push_back(this);
+      }
+      // Now do any children that we might have
+      for (std::map<ChildKey,InstanceView*>::const_iterator it = children.begin();
+            it != children.end(); it++)
+      {
+        it->second->find_required_below(unique_views, ordered_views, packing_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_aliased_above(std::vector<AliasedUser> &add_aliased_users,
+                                          std::vector<AliasedCopyUser> &add_aliased_copies,
+                                          std::vector<AliasedEvent> &add_aliased_events,
+                                          const FieldMask &packing_mask, InstanceView *child_source)
+    //--------------------------------------------------------------------------
+    {
+      // If we have a parent, go up first
+      if (parent != NULL)
+        parent->find_aliased_above(add_aliased_users, add_aliased_copies,
+                                    add_aliased_events, packing_mask, this);
+
+      // Now do ourselves
+      find_aliased_local(add_aliased_users, add_aliased_copies,
+                          add_aliased_events, packing_mask);
+
+#ifdef DEBUG_HIGH_LEVEL
+      assert(aliased_children.find(child_source) != aliased_children.end());
+#endif
+      // Now do any children which are aliased with the child source
+      const std::vector<InstanceView*> &aliases = aliased_children[child_source];
+      for (std::vector<InstanceView*>::const_iterator it = aliases.begin();
+            it != aliases.end(); it++)
+      {
+        (*it)->find_aliased_below(add_aliased_users, add_aliased_copies,
+                                  add_aliased_events, packing_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_aliased_below(std::vector<AliasedUser> &add_aliased_users, 
+                                          std::vector<AliasedCopyUser> &add_aliased_copies,
+                                          std::vector<AliasedEvent> &add_aliased_events,
+                                          const FieldMask &packing_mask)
+    //--------------------------------------------------------------------------
+    {
+      // Do ourselves first, then do all our children
+      find_aliased_local(add_aliased_users, add_aliased_copies,
+                          add_aliased_events, packing_mask);
+
+      for (std::map<ChildKey,InstanceView*>::const_iterator it = children.begin();
+            it != children.end(); it++)
+      {
+        it->second->find_aliased_below(add_aliased_users, add_aliased_copies,
+                                        add_aliased_events, packing_mask);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    void InstanceView::find_aliased_local(std::vector<AliasedUser> &add_aliased_users, 
+                                          std::vector<AliasedCopyUser> &add_aliased_copies,
+                                          std::vector<AliasedEvent> &add_aliased_events,
+                                          const FieldMask &packing_mask)
+    //--------------------------------------------------------------------------
+    {
+      // Go through all our different users and valid events and find the ones
+      // that overlap with the packing mask
+      for (std::map<UniqueID,FieldMask>::const_iterator it = epoch_users.begin();
+            it != epoch_users.end(); it++)
+      {
+        if (!(it->second * packing_mask))
+        {
+          // Find it and add it to the list of aliased users
+          std::map<UniqueID,TaskUser>::const_iterator finder = users.find(it->first);
+          if (finder == users.end())
+          {
+            finder = added_users.find(it->first);
+#ifndef LEGION_SPY
+#ifdef DEBUG_HIGH_LEVEL
+            assert(finder != added_users.end());
+#endif
+#else
+            if (finder == added_users.end())
+            {
+              finder = deleted_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != deleted_users.end());
+#endif
+            }
+#endif
+          }
+          add_aliased_users.push_back(AliasedUser(it->second & packing_mask, finder->second));
+        }
+      }
+      for (std::map<Event,FieldMask>::const_iterator it = epoch_copy_users.begin();
+            it != epoch_copy_users.end(); it++)
+      {
+        if (!(it->second * packing_mask))
+        {
+          // Find it and add it to the list of aliased copy users
+          std::map<Event,ReductionOpID>::const_iterator finder = copy_users.find(it->first);
+          if (finder == copy_users.end())
+          {
+            finder = added_copy_users.find(it->first);
+#ifndef LEGION_SPY
+#ifdef DEBUG_HIGH_LEVEL
+            assert(finder != added_copy_users.end());
+#endif
+#else
+            if (finder == added_copy_users.end())
+            {
+              finder = deleted_copy_users.find(it->first);
+#ifdef DEBUG_HIGH_LEVEL
+              assert(finder != deleted_copy_users.end());
+#endif
+            }
+#endif
+          }
+          add_aliased_copies.push_back(AliasedCopyUser(it->second & packing_mask, finder->first, finder->second)); 
+        }
+      }
+      for (std::map<Event,FieldMask>::const_iterator it = valid_events.begin();
+            it != valid_events.end(); it++)
+      {
+        if (!(it->second * packing_mask))
+        {
+          add_aliased_events.push_back(AliasedEvent(it->first, it->second & packing_mask));
+        }
+      }
+
+      // Note we also have to do all the aliased users that we have here since 
+      // they might also be aliased from somewhere else
+      for (std::vector<AliasedUser>::const_iterator it = aliased_users.begin();
+            it != aliased_users.end(); it++)
+      {
+        if (!(it->valid_mask * packing_mask))
+        {
+          add_aliased_users.push_back(AliasedUser(it->valid_mask & packing_mask, it->task_user));
+        }
+      }
+      for (std::vector<AliasedCopyUser>::const_iterator it = aliased_copy_users.begin();
+            it != aliased_copy_users.end(); it++)
+      {
+        if (!(it->valid_mask * packing_mask))
+        {
+          add_aliased_copies.push_back(AliasedCopyUser(it->valid_mask & packing_mask, it->ready_event, it->redop));
+        }
+      }
+      for (std::vector<AliasedEvent>::const_iterator it = aliased_valid_events.begin();
+            it != aliased_valid_events.end(); it++)
+      {
+        if (!(it->second * packing_mask))
+        {
+          add_aliased_events.push_back(AliasedEvent(it->first, it->second & packing_mask));
+        }
+      }
+    }
+
+#if 0
     //--------------------------------------------------------------------------
     void InstanceView::find_required_views(std::set<InstanceManager*> &unique_managers,
             std::map<InstanceView*,FieldMask> &unique_views,
@@ -8687,6 +9251,7 @@ namespace LegionRuntime {
       }
       filtered = false;
     }
+#endif
 
     //--------------------------------------------------------------------------
     bool InstanceView::has_added_users(void) const
@@ -8830,7 +9395,7 @@ namespace LegionRuntime {
 
     //--------------------------------------------------------------------------
     size_t InstanceView::compute_return_users_size(std::map<EscapedUser,unsigned> &escaped_users,
-                std::set<EscapedCopy> &escaped_copies, bool already_returning)
+                std::set<EscapedCopy> &escaped_copies, bool already_returning, const FieldMask &returning_mask)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -8859,8 +9424,12 @@ namespace LegionRuntime {
         for (std::map<UniqueID,TaskUser>::const_iterator it = added_users.begin();
               it != added_users.end(); it++)
         {
-          if (epoch_users.find(it->first) != epoch_users.end())
+          std::map<UniqueID,FieldMask>::const_iterator finder = epoch_users.find(it->first);
+          if ((finder != epoch_users.end()) &&
+              !(finder->second * returning_mask))
+          {
             packing_sizes[5]--;
+          }
         }
       }
       result += (packing_sizes[5] * (sizeof(UniqueID) + sizeof(TaskUser)));
@@ -8869,11 +9438,16 @@ namespace LegionRuntime {
       if (already_returning)
       {
         // Find the set of added copy users not in the epoch users
+        // that are going to be send back
         for (std::map<Event,ReductionOpID>::const_iterator it = added_copy_users.begin();
               it != added_copy_users.end(); it++)
         {
-          if (epoch_copy_users.find(it->first) != epoch_copy_users.end())
+          std::map<Event,FieldMask>::const_iterator finder = epoch_copy_users.find(it->first);
+          if ((finder != epoch_copy_users.end()) &&
+              !(finder->second * returning_mask))
+          {
             packing_sizes[6]--;
+          }
         }
       }
       result += (packing_sizes[6] * (sizeof(Event) + sizeof(ReductionOpID)));
@@ -9451,6 +10025,34 @@ namespace LegionRuntime {
           parent = context->find_view(InstanceKey(mid, parent_handle));
         RegionNode *node = context->get_node(handle);
         context->create_view(manager, parent, node, true/*made local*/);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T>
+    /*static*/ void InstanceView::pack_vector(const std::vector<T> &to_pack, Serializer &rez)
+    //--------------------------------------------------------------------------
+    {
+      rez.serialize<size_t>(to_pack.size());
+      for (typename std::vector<T>::const_iterator it = to_pack.begin();
+            it != to_pack.end(); it++)
+      {
+        rez.serialize<T>(*it);
+      }
+    }
+
+    //--------------------------------------------------------------------------
+    template<typename T>
+    /*static*/ void InstanceView::unpack_vector(std::vector<T> &target, Deserializer &derez)
+    //--------------------------------------------------------------------------
+    {
+      size_t num_elems;
+      derez.deserialize<size_t>(num_elems);
+      size_t old_size = target.size();
+      target.resize(old_size + num_elems);
+      for (unsigned idx = old_size; idx < target.size(); idx++)
+      {
+        derez.deserialize<T>(target[idx]);
       }
     }
 
