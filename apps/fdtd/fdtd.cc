@@ -972,6 +972,7 @@ void source_task(const void * input_global_args, size_t input_global_arglen,
     for (int y = min[1]; y < max[1]; y++) {
       for (int z = min[2]; z < max[2]; z++) {
         ptr_t i = cell_id(vec3(x, y, z), n);
+        // TODO (Elliott): Real math here.
         f.write(i, f.read<double>(i) + 0.1);
       }
     }
@@ -1035,9 +1036,7 @@ void step_task(const void * input_global_args, size_t input_global_arglen,
       for (int z = rmin[2]; z < rmax[2]; z++) {
         vec3 v = rot3(vec3(x, y, z), -(dim + 1));
         ptr_t i = cell_id(v, n);
-        // Elliott: Debugging
-        f.write(i, 1.0);
-        //f.write(i, f.read(i) - dtdx*(g1b.read(i + s1) - g1a.read(i)) - (g2b.read(i + s2) - g2a.read(i)));
+        f.write(i, f.read<double>(i) - dtdx*(g1b.read<double>(i + s1) - g1a.read<double>(i)) - (g2b.read<double>(i + s2) - g2a.read<double>(i)));
       }
     }
   }
