@@ -140,6 +140,31 @@ def make_plots(show = True, save = True, outdir="figs/"):
     fig = plt.figure(figsize = (10,7))
     plt.loglog(basex = 2, basey = 10)
     for perfvals, label, color, marker in (
+        (dense_redfold, "Reduction Instance", tableau5, "o"),
+        (dense_localize, "Localized Instance", tableau18, "d"),
+        (any_redsingle, "Single Reductions", tableau6, "^"),
+        ):
+        print "(%s, %s, %s, %s)" % (perfvals, label, color, marker)
+        plt.plot(nodes, perfvals, "--",
+                 label = label,
+                 color = color, markerfacecolor = color,
+                 linestyle = "solid", markersize = 8, marker = marker,
+                 linewidth = 1)
+    plt.ylim(ymax=14000)
+    plt.legend(loc=2,ncol=1)
+    plt.xlabel('Number of Nodes')
+    plt.ylabel('Reductions per Second (in Millions)')
+    plt.xticks(nodes, nodes)
+    plt.gca().set_xlim([1/1.1,16*1.1])
+    #plt.axis([0,17,100,1000])
+    plt.grid(True)
+
+    if save:
+        fig.savefig(outdir+'/reduce_simple.pdf',format='pdf',bbox_inches='tight')
+
+    fig = plt.figure(figsize = (10,7))
+    plt.loglog(basex = 2, basey = 10)
+    for perfvals, label, color, marker in (
         (dense_redfold, "Fold Instance", tableau5, "o"),
         (dense_redlist, "List Instance", tableau12, "s"),
         (dense_localize, "Localized Instance", tableau18, "d"),
