@@ -127,6 +127,15 @@ def parse_log_file(file_name,items):
     finally:
         f.close()
 
+def bucket(v):
+    if v <= 1 : return v
+    minv = 2
+    maxv = 2
+    while v > maxv:
+        minv = maxv + 1
+        maxv = maxv * 2
+    return "%d-%d" % (minv, maxv)
+
 def sort_lock_items(items,lock_table):
     latest_time = 0.0
     for item in sorted(items,key=lambda i: i.time):
@@ -136,6 +145,11 @@ def sort_lock_items(items,lock_table):
         lock_table[item.idy].add_item(item)
         if item.time > latest_time:
             latest_time = item.time
+    for idy, lck in lock_table.iteritems():
+        #if lck.get_remote_grants() == 0: continue
+        #print idy, ("%x" % (idy,)), len(lck.requests), len(lck.forwards), len(lck.grants), len(lck.releases), lck.get_local_grants(), lck.get_remote_grants()
+        print bucket(len(lck.requests)), bucket((lck.get_remote_grants() if len(lck.requests) > lck.get_remote_grants() else len(lck.requests)))
+    exit(0)
     return latest_time
 
 def plot_request_message_ratios(lock_table,outdir):
