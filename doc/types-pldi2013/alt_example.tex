@@ -34,7 +34,7 @@ and {\tt all\_wires}.  The types of nodes and wires are the tuples
 shown in Listing~\ref{lst:tuples}.  The first two fields in the
 {\tt CircuitWire} tuple are pointers that specify the two end points of
 a wire.  Pointers are denoted by the @ symbol
-followed by the set of region(s) into which a pointer can point.
+followed by the region(s) into which the pointer may point.
 The {\tt CircuitWire} type is parametrized by the local region
 names {\tt rn} and {\tt rg} which contain {\tt CircuitNode} elements.
 Our type system enforces the correctness of pointer types.
@@ -47,10 +47,11 @@ type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg),float,float>
 \end{lstlisting}
 
 The most important decision in any Legion program is the choice of
-how to partition program data.  The choice of a partitioning algorithm
-can depend on a multitude of factors including the type of data structure
-and input data.  Therefore
-Legion requires applications to select their own partitioning algorithms.
+how to partition program data.  The ideal partitioning algorithm
+depends on a multitude of factors including the type of data structure,
+the input data, and the desired number of partitions (which often depends on the
+size of the machine running the application).  Therefore
+Legion permits applications to select their own partitioning algorithms.
 In this example we invoke a third-party dynamic graph partitioning library
 called METIS\cite{Metis98} as shown in Listing~\ref{lst:metis}.
 
@@ -64,15 +65,14 @@ function extern_metis[rl,rn,rw](node_list : NodeList<rl,rn>@rl,
 METIS takes as arguments lists of all the nodes and all the wires in
 the graph.  It then breaks the graph into pieces by annotating each 
 {\tt CircuitNode} with a piece ID (the last field in the tuple).
-The function {\tt extern\_metis} is parametrized on the regions it will
-access; in this case {\tt rn} the region containing nodes, {\tt rw} the region
-contining wires, and {\tt rl} the region containing the lists of pointers.  The function
-must also specify the {\em privileges} (e.g read) with which it will access
-these regions.  {\tt extern\_metis} will read all three regions and write
-the {\tt rn} region since it will be writing to the last field of each
-{\tt CircuitNode}.  Our type system enforces the Legion 
-requirement that each function can only be invoked with a subset of the 
-privileges contained in its calling context.
+The function {\tt extern\_metis} is parameterized on the regions it will
+access; in this case {\tt rn} is the region containing nodes, {\tt rw} is the region
+contining wires, and {\tt rl} is the region containing the lists of pointers.  The function
+must also specify the access {\em privileges} (e.g read, write) it requires for each of
+these regions.  All three regions will be read by {\tt extern\_metis}, but only the {\tt rn}
+region will be written to (since it will be modifying the last field of each {\tt CircuitNode}).
+A function may only be invoked if the caller possesses all the privileges needed by the function
+being called.  This is verified statically by the Legion type system.
 
 \begin{figure}[t]
 \centering
@@ -98,33 +98,57 @@ privileges contained in its calling context.
 %  \caption[My caption
 \end{figure}
 
+To efficiently support the access patterns of the circuit simulation,
+multiple partitionings of the {\tt all\_nodes} region are performed.
+The desired {\em region tree} is shown in Figure~\ref{sfig:part_fig:tree}.
+First, we need subregions that describe the set of nodes ``owned'' by
+each piece.  These will be called {\tt rn0}, {\tt rn1}, ... and since each
+node has a single owner, they form the {\em disjoint} partition (indicated with a *)
+on the left side of the tree.
 Figure~\ref{sfig:part_fig:pieces} shows one possible output from
-METIS with different colors identifing different piece IDs.  To capture
+METIS with different colors identifing different piece IDs.
+Second, each piece of the circuit will need to 
+access the nodes that border its own.  These are commonly referred as {\em ghost nodes},
+and the set of ghost nodes for the first two circuit pieces (named {\tt rg0} and {\tt rg1})
+are shown in Figures~\ref{sfig:part_fig:ghost_zero}
+and~\ref{sfig:part_fig:ghost_one}.  Because a node may neighbor more than one other circuit
+piece, this second partition is an {\em aliased} partition.
+Without the ability to have multiple partitionings of the same data, one would have two
+possible alternatives:
+\begin{enumerate}
+\item Make a single partition with $2^N$ subregions, one for each possible case of sharing, or
+\item Have all pieces use the {\tt all\_nodes} for their ghost cell region, greatly increasing the 
+amount of data movement required
+\end{enumerate}
+
+To describe
 the result of a partitioning algorithm, Legion uses {\em colorings}.
-Colorings are a mapping from pointers to {\em colors} (e.g. integers).  In
+A coloring is a mapping from pointers to {\em colors} (represented in Core Legion as integers).  In
 the circuit example, the piece IDs are the designated colors. 
 Listing~\ref{lst:coloring} shows the function {\tt create\_piece\_coloring}
 that constructs a coloring from a list of nodes which have been 
-annotated with piece IDs.
+annotated with piece IDs.  The coloring of wires is similar, with each wire
+using the color of its first endpoint.  For the ``ghost nodes'', a {\em multicoloring}
+is used, which allows each pointer to be assigned multiple colorings.  (Multicolorings are
+implemented in Core Legion with separate colorings for each color.)
 
 \begin{lstlisting}[label={lst:coloring},caption={Coloring Construction}]
 function create_piece_coloring[rl,rn](node_list: NodeList<rl,rn>@rl),
             reads(rl,rn) : coloring(rn) = 
-    if isnull(node_list) then newcolor(rn) else
-    let list_elem : NodeList<rl,rn> = read(node_list) in
-    let part_coloring : coloring(rn) = create_node_coloring(list_elem.2) in
-    let node : CircuitNode = read(list_elem.1) in
-        color(part_coloring, list_elem.1, node.5)
+    if isnull(node_list) then
+        newcolor(rn) 
+    else
+        let list_elem : NodeList<rl,rn> = read(node_list) in
+        let part_coloring : coloring(rn) = create_node_coloring(list_elem.2) in
+        let node : CircuitNode = read(list_elem.1) in
+            color(part_coloring, list_elem.1, node.5)
 \end{lstlisting}
 
 Colorings are the input for partition operations in Legion.  The partition
-statement shown in Listing~\ref{lst:partition} partitions the region
-{\tt all\_nodes} into logical subregions with a separate output region
-for each color in the coloring.  Due to space constraints we, only show
-code for {\tt rn0} and {\tt rn1} pieces for the remainder of the example.  We also
-do not show the coloring or partitioning of the {\tt all\_wires} region as
-it can be computed in a straightforward manner from the partitioning of
-nodes into pieces.
+statement shown in Listing~\ref{lst:partition} performs the ``owned nodes''
+partitioning.  The partitioning of wires is identical, while the partitioning
+of the ghost nodes is performed in Core Legion as a separate partitioning operation
+for each color.
 
 \begin{lstlisting}[label={lst:partition},caption={Partition Operation Example}]
 let piece_coloring : coloring(all_nodes) = create_piece_coloring[rl,all_nodes](node_list) in
@@ -133,36 +157,38 @@ partition all_nodes using piece_coloring as rn0,rn1... in ...
 
 Since colorings can only color each pointer at most with a single color
 (dynamically checked), the partition operation results in 
-{\em disjoint} subregions.  Furthermore, the partition operation
-introduces constraints into the static checking enviornment describing
-both the disjointness of the subregions (i.e. {\tt rn0 $*$ rn1})
+{\em disjoint} subregions, each of which contains a subset of the original region.
+The partition operation introduces constraints into the type system describing
+both the disjointness of the subregions (e.g. {\tt rn0 $*$ rn1})
 and the inclusion of each subregion in the original region
-(i.e. {\tt rn0 $\leq$ all\_nodes}).
+(e.g. {\tt rn0 $\leq$ all\_nodes}).
 
-In addition, to partitioning the graph to describe {\em owned} nodes
-for each piece, the circuit example also
-needs to be able to name the {\em ghost nodes} for each piece.  Ghost node
-regions are used for accessing the nodes of wires that span
-two different pieces. (This is also the reason {\tt CircuitWire} is parametrized on
-two regions).  Figure~\ref{sfig:part_fig:ghost_zero} and 
-Figure~\ref{sfig:part_fig:ghost_one} show colorings for the ghost regions
-corresponding to {\tt rn0} and {\tt rn1} respectively.  Note that two 
-nodes are colored in both colorings.  Since nodes can appear in multiple
-subregions, we use a {\em multicoloring} (implemented in core Legion
-by multiple single colorings) to describe {\em aliased} partitions.  Aliased
-partitions still introduce subregion constraints into the static checking
-environment, but not disjointness constraints.  Figure~\ref{sfig:part_fig:tree}
-shows the resulting logical region tree for node regions.
+%% In addition, to partitioning the graph to describe {\em owned} nodes
+%% for each piece, the circuit example also
+%% needs to be able to name the {\em ghost nodes} for each piece.  Ghost node
+%% regions are used for accessing the nodes of wires that span
+%% two different pieces. (This is also the reason {\tt CircuitWire} is parametrized on
+%% two regions).  Figure~\ref{sfig:part_fig:ghost_zero} and 
+%% Figure~\ref{sfig:part_fig:ghost_one} show colorings for the ghost regions
+%% corresponding to {\tt rn0} and {\tt rn1} respectively.  Note that two 
+%% nodes are colored in both colorings.  Since nodes can appear in multiple
+%% subregions, we use a {\em multicoloring} (implemented in core Legion
+%% by multiple single colorings) to describe {\em aliased} partitions.  Aliased
+%% partitions still introduce subregion constraints into the static checking
+%% environment, but not disjointness constraints.  Figure~\ref{sfig:part_fig:tree}
+%% shows the resulting logical region tree for node regions.
 
 The first-class nature of logical regions in Legion allows them to
-be written into the heap.  To avoid losing important static properties of
-logical regions in this scenario, we use {\em region
+be written into the heap.  To avoid losing information about these regions and pointers
+into those regions, Legion provides {\em region
 relationships}.  Region relationships are a bounded existential type
-that allows programmers to {\em pack} a group of regions together and remember
+that allows programmers to {\em pack} a group of regions and pointers together and capture
 properties about them such as disjointness and subregion relationships.
 Listing~\ref{lst:rr} shows an example region relationship for a {\tt CircuitPiece} 
 describing its region of wires {\tt rpw}, region of 
-nodes {\tt rpn}, region of ghost nodes {\tt rg}, and important constraints.
+nodes {\tt rpn}, region of ghost nodes {\tt rg}, and important constraints.  Although the
+``names'' of {\tt rpw}, {\tt rpn}, and {\tt rg} are lost when packed into the region relationship,
+the knowledge that they are subregions of the {\tt rw} and {\tt rn} regions is not.
 
 \begin{lstlisting}[label={lst:rr},caption={Region Relationship Example}]
 type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
@@ -171,13 +197,14 @@ type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
                                   rn * rw and rl * rn and rl * rw
 \end{lstlisting}
 
-The Legion type system verifies properties of region relationships when packing;
-when region relationships are unpacked the same properties are
-reintroduced into the static checking environment.
-A key feature underlying the soundness of the Legion
-type system is that privileges cannot be packed in a region
+The Legion type system verifies properties of region relationships when packing.  When
+a region relationship is unpacked later, fresh names are given to the regions that were
+captured by the region relationship, and the properties that are known to hold for these
+regions are re-introduced to the type environment.
+In constrast, region access privileges cannot be packed in a region
 relationship---privileges belong to functions. When a function unpacks
-a region relationship it must already hold privileges for the unpacked regions.
+a region relationship it must already hold privileges for the unpacked regions it wishes to access.
+
 Listing~\ref{lst:loop} shows the main time step loop run by the 
 recursive function {\em execute\_time\_steps} (line 11)
 as well the leaf task functions (lines 2-7).  
@@ -186,9 +213,7 @@ two previously packed circuit pieces, giving new names to the subregions introdu
 by each region relationship.  The {\em execute\_time\_steps} function
 will have read/write privileges for the newly named regions, such as {\tt rn0},
 because it has read/write privileges for {\tt rn} and the {\tt CircuitPiece} 
-region relationship declares {\tt rn0 $\leq$ rn}.  Note this does require
-a dynamic check that {\tt rn0} is a subregion of {\tt rn}, but the cost of the 
-check will be ammortized over all the uses of {\tt rn0}.
+region relationship ensures that {\tt rn0 $\leq$ rn}.
 
 The {\tt execute\_time\_steps} function   
 illustrates the importance of having different partitions provide 
