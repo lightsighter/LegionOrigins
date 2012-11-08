@@ -42,9 +42,9 @@ mechanism to statically partition the heap.
 % into a tree of collections of data.
 The two designs are different in many aspects, but agree that there is
 a single tree-shaped partitioning of data that must be checked statically 
-(see Section~\ref{sec:related}).  The second approach permits potential data
+(see Section~\ref{sec:related}).  The second approach permits data
 aliasing, allowing greater expressivity, but uses fully dynamic analyses of
-program execution to detect data aliasing and guarantee correct results.
+program execution to detect aliasing and guarantee correct results.
 This approach incurs significant runtime overhead and requires 
 centralized control logic that is difficult to scale to distributed 
 memory machines; examples include transactional memory \cite{Harris05} 
@@ -55,9 +55,9 @@ using the current industry standard mix of MPI, shared-memory
 threads, and CUDA has taught us that a
 single, static data partitioning is often insufficient.  In many cases, the
 best way to partition data is often a function of the data
-itself---i.e., the partitions must be dynamically computed.
+itself---i.e., the partitions must be dynamically computed and cannot be statically described.
 Furthermore, applications often need multiple, simultaneous partitions of
-the same data, each providing different views on to that data.  
+the same data, which introduces aliasing.
 
 In this work, we present the static and dynamic semantics of Legion \cite{Legion12},
 a parallel programming model that supports multiple, dynamic data partitions and is
@@ -108,7 +108,7 @@ To support additional parallelism in the presence of aliased data,
 Legion provides {\em coherence} modes at the granularity of regions,
 which allow relaxed constraints on task execution order, even
 in cases where tasks access the same region.  The programmer may
-specify that tasks conflicting on a region run: in
+specify that tasks conflicting on a region run in
 program order (the default), {\em atomically} with respect to each
 other, or even {\em simultaneously} if the application has alternative
 methods for ensuring determinism or can tolerate non-deterministic
@@ -148,8 +148,8 @@ which we present as a series of contributions:
 %  can leverage its dynamic information about region aliasing to
 %  perform dynamic privilege checks guaranteeing safety.
 
-\item We present a parallel operational semantics for Core Legion that
-  may be of independent interest.  This semantics is compositional,
+\item We present a novel parallel operational semantics for Core Legion.
+ This semantics is compositional,
   hierarchical, and asynchronous, reflecting the way such programs
   actually execute on the hardware.  The semantics also
   models conflicting memory operations between tasks in cases of relaxed
@@ -179,7 +179,7 @@ on the target class of machines.
   would be expensive, justifying checking this aspect of the type
   system statically.  We also show that the cost of region aliasing
   checks is low, showing that an expressive and dynamic
-  language with aliasing is not incompatible with both high
+  language with aliasing is compatible with both high
   performance and safety (Section~\ref{sec:evaluation}).
 
 \end{itemize}
