@@ -1,9 +1,11 @@
 
 \section{Related Work}
 \label{sec:related}
-Legion is most directly related to Sequoia \cite{Fatahalian06}.  Sequoia is array-based, with
-a limited repertoire of ways to partition arrays.  Sequoia is a static language with a single unified hierarchy
-of tasks and data; Legion is more dynamic with separate task and region hierarchies.
+Legion is most directly related to Sequoia \cite{Fatahalian06}. 
+Sequoia is a static language with a single unified hierarchy
+of tasks and data; Legion is more dynamic with separate task and region hierarchies. 
+Both Sequoia and Titanium\cite{TIT98} are array-based languages, with
+a limited repertoire of ways to partition arrays.
 
 Deterministic Parallel Java (DPJ) is the only other region-based parallel system of which we are
 aware\cite{Bocchino09}.  While there are similarities between DPJ's effects and Legion privileges, 
@@ -24,8 +26,8 @@ allows specification at the coarser granularity of tasks and not individual regi
 %is designed for distributed heterogeneous machines.
 
 Chapel \cite{Chamberlain:Chapel} and X10 \cite{X1005} also provide some Legion-like facilities.
-Chapel's domains and X10's places provide the programmer with a 
-mechanism for expressing locality, similar to regions in Legion.  However, domains
+Chapel's locales and X10's places provide the programmer with a 
+mechanism for expressing locality, similar to regions in Legion.  However, locales 
 and places are not used for independence analysis to discover parallelism.
 In contrast, Jade uses annotations to describe
 data disjointness,  and like Legion leverages the disjointness information

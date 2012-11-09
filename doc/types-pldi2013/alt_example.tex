@@ -62,7 +62,7 @@ function extern_metis[rl,rn,rw](node_list : NodeList<rl,rn>@rl,
 METIS takes as arguments lists of the nodes and wires in
 the graph.  It breaks the graph into pieces by annotating each 
 {\tt CircuitNode} with a piece ID (the last field of the tuple).
-The function {\tt extern\_metis} is parameterized on the regions it 
+The function {\tt extern\_metis} is parametrized on the regions it 
 accesses: {\tt rn} is a region of nodes, {\tt rw} is a region of wires, 
 and {\tt rl} is a region with the lists of pointers.  The function
 also specifies the access {\em privileges} (e.g read, write) it requires for each 
@@ -122,7 +122,7 @@ is attractive: the former significantly complicates programming, the
 latter greatly increases data movement required at
 runtime.
 
-Programmers exoress partitions using {\em colorings},
+Programmers express partitions using {\em colorings},
 maps from region elements to integers (``colors'').
 Listing~\ref{lst:coloring} shows the function {\tt create\_piece\_coloring}
 that constructs a coloring from the piece IDs of a list of nodes.
@@ -153,7 +153,7 @@ A partition operation introduces constraints into the static type environment de
 both the disjointness of subregions (e.g., {\tt rn0 $*$ rn1})
 and the subregion relationships
 (e.g., {\tt rn0 $\leq$ all\_nodes}).  A partition created from a multicoloring
-only introduces the subregion relationships, as the parition may be aliased.
+only introduces the subregion relationships, as the partition may be aliased.
 
 
 
@@ -205,7 +205,7 @@ The Legion type system verifies properties of region relationships when packing.
 a region relationship is unpacked later, fresh names are given to the regions that were
 captured by the region relationship, and the properties that are known to hold for these
 regions are re-introduced to the type environment.
-In constrast, region access privileges cannot be packed in a region
+In contrast, region access privileges cannot be packed in a region
 relationship---privileges belong to functions. When a function unpacks
 a region relationship it must already hold privileges for the unpacked regions it wishes to access.
 
