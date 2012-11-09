@@ -18,19 +18,16 @@
 }
 
 We begin by introducing an example program 
-that motivates many of the features in Legion programming model
-and provides an intuition for many of our design decisions.  The example program
-executes a simulation of an arbitrary graph of electrical circuit elements.  
-The simulation runs for many time steps and performs three computations 
-for each time step: calculate new currents, distribute charge, and update voltages.
-Due to space constraints we only introduce small code examples. 
-The source code for the full circuit example written in the core Legion
-language (see Section~\ref{sec:legioncore}) can be found in the
-submitted appendix.
+motivating the novel features of Legion.
+Due to space constraints we present only code fragments;
+the full example is in the submitted appendix.
 
+Consider a simulation of an electrical circuit.
+The simulation runs for many time steps, each of which performs three computations:
+ calculate new currents, distribute charges, and update voltages.
 The simulation takes as input an arbitrary graph of circuit elements
-that have been dynamically allocated into two logical regions: {\tt all\_nodes} 
-and {\tt all\_wires}.  The types of nodes and wires are the tuples
+that have been dynamically allocated in two logical regions: {\tt all\_nodes} 
+and {\tt all\_wires}.  The types of nodes and wires are 
 shown in Listing~\ref{lst:tuples}.  The first two fields in the
 {\tt CircuitWire} tuple are pointers that specify the two end points of
 a wire.  Pointers are denoted by the @ symbol
@@ -46,14 +43,14 @@ type CircuitNode        = <float,float,float,float,int>
 type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg),float,float>
 \end{lstlisting}
 
-The most important decision in any Legion program is the choice of
-how to partition program data.  The ideal partitioning algorithm
-depends on a multitude of factors including the type of data structure,
-the input data, and the desired number of partitions (which often depends on the
-size of the machine running the application).  Therefore
-Legion permits applications to select their own partitioning algorithms.
-In this example we invoke a third-party dynamic graph partitioning library
-called METIS\cite{Metis98} as shown in Listing~\ref{lst:metis}.
+The most important decision in any Legion program is how to partition
+program data.  An ideal partitioning depends on many factors,
+including the shape of data structures, the input, and the number of
+partitions, which usually varies with the target machine.  To allow
+the necessary flexibility, in Legion partitioning is simply programmed,
+rather than expressed in a more structured and restricted
+sublanguage.  In the example we invoke METIS\cite{Metis98}, a dynamic graph
+partitioning library called (see Listing~\ref{lst:metis}).
 
 \begin{lstlisting}[label={lst:metis},caption={Partition Computation}]
 type NodeList<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
@@ -62,17 +59,17 @@ function extern_metis[rl,rn,rw](node_list : NodeList<rl,rn>@rl,
           wires_list : WireList<rl,rw,rn,rn>@rl), reads(rl,rn,rw), writes(rn) : bool;
 \end{lstlisting}
 
-METIS takes as arguments lists of all the nodes and all the wires in
-the graph.  It then breaks the graph into pieces by annotating each 
-{\tt CircuitNode} with a piece ID (the last field in the tuple).
-The function {\tt extern\_metis} is parameterized on the regions it will
-access; in this case {\tt rn} is the region containing nodes, {\tt rw} is the region
-contining wires, and {\tt rl} is the region containing the lists of pointers.  The function
-must also specify the access {\em privileges} (e.g read, write) it requires for each of
-these regions.  All three regions will be read by {\tt extern\_metis}, but only the {\tt rn}
-region will be written to (since it will be modifying the last field of each {\tt CircuitNode}).
-A function may only be invoked if the caller possesses all the privileges needed by the function
-being called.  This is verified statically by the Legion type system.
+METIS takes as arguments lists of the nodes and wires in
+the graph.  It breaks the graph into pieces by annotating each 
+{\tt CircuitNode} with a piece ID (the last field of the tuple).
+The function {\tt extern\_metis} is parameterized on the regions it 
+accesses: {\tt rn} is a region of nodes, {\tt rw} is a region of wires, 
+and {\tt rl} is a region with the lists of pointers.  The function
+also specifies the access {\em privileges} (e.g read, write) it requires for each 
+region.  All three regions are read by {\tt extern\_metis}, but only the {\tt rn}
+region is written (since it writes the piece ID).  A function can only 
+have privileges that its caller also possesses; this property is verified statically. 
+% by the Legion type system.
 
 \begin{figure}[t]
 \centering
@@ -99,39 +96,42 @@ being called.  This is verified statically by the Legion type system.
 \end{figure}
 
 To efficiently support the access patterns of the circuit simulation,
-multiple partitionings of the {\tt all\_nodes} region are performed.
-The desired {\em region tree} is shown in Figure~\ref{sfig:part_fig:tree}.
-First, we need subregions that describe the set of nodes ``owned'' by
-each piece.  These will be called {\tt rn0}, {\tt rn1}, ... and since each
-node has a single owner, they form the {\em disjoint} partition (indicated with a *)
-on the left side of the tree.
-Figure~\ref{sfig:part_fig:pieces} shows one possible output from
-METIS with different colors identifing different piece IDs.
-Second, each piece of the circuit will need to 
-access the nodes that border its own.  These are commonly referred as {\em ghost nodes},
-and the set of ghost nodes for the first two circuit pieces (named {\tt rg0} and {\tt rg1})
-are shown in Figures~\ref{sfig:part_fig:ghost_zero}
-and~\ref{sfig:part_fig:ghost_one}.  Because a node may neighbor more than one other circuit
-piece, this second partition is an {\em aliased} partition.
-Without the ability to have multiple partitionings of the same data, one would have two
-possible alternatives:
-\begin{enumerate}
-\item Make a single partition with $2^N$ subregions, one for each possible case of sharing, or
-\item Have all pieces use the {\tt all\_nodes} for their ghost cell region, greatly increasing the 
-amount of data movement required
-\end{enumerate}
+the {\tt all\_nodes} region is partitioned in two different ways.  The
+desired {\em region tree} is shown in Figure~\ref{sfig:part_fig:tree}.
+First, there are {\em subregions} of {\tt all\_nodes} that describe
+the set of nodes ``owned'' by each piece, called {\tt rn0}, {\tt rn1},
+$\ldots$. Since each node is in one piece, this partition is {\em
+disjoint} (indicated by a $*$ on the left subtree).
+Figure~\ref{sfig:part_fig:pieces} shows one possible node partition;
+different colors identify different piece IDs.  Second, each piece of
+the circuit needs access to the nodes on its border, commonly referred
+to as {\em ghost nodes}.  The ghost nodes for two circuit pieces are
+shown in Figures~\ref{sfig:part_fig:ghost_zero}
+and~\ref{sfig:part_fig:ghost_one}; note two nodes are in both sets.
+Because a node may neighbor more than one other circuit piece, this
+second partition of {\tt all\_nodes} is {\em aliased}.  Thus, there
+are two sources of aliasing in the region tree: the two distinct partitions
+divide the {\tt all\_nodes} region in different ways, and the ghost
+node subregions are not disjoint.
 
-To describe
-the result of a partitioning algorithm, Legion uses {\em colorings}.
-A coloring is a mapping from pointers to {\em colors} (represented in Core Legion as integers).  In
-the circuit example, the piece IDs are the designated colors. 
+Note that there are two alternatives to using multiple partitions of the same data, both of which avoid introducing aliasing.
+We could use a single partition with $2^n$ subregions, one for each
+possible case of sharing; alternatively, all pieces could just use the
+{\tt all\_nodes} region to access their ghost nodes.  Neither option
+is attractive: the former significantly complicates programming, the
+latter greatly increases data movement required at
+runtime.
+
+Programmers exoress partitions using {\em colorings},
+maps from region elements to integers (``colors'').
 Listing~\ref{lst:coloring} shows the function {\tt create\_piece\_coloring}
-that constructs a coloring from a list of nodes which have been 
-annotated with piece IDs.  The coloring of wires is similar, with each wire
-using the color of its first endpoint.  For the ``ghost nodes'', a {\em multicoloring}
-is used, which allows each pointer to be assigned multiple colorings.  (Multicolorings are
-implemented in Core Legion with separate colorings for each color.)
-
+that constructs a coloring from the piece IDs of a list of nodes.
+%The coloring of wires is similar, with each wire
+%using the color of its first endpoint.  
+For aliased partitions such as the ghost nodes, a {\em multicoloring}
+is used, which assigns each region element (possibly) multiple colors.  
+%(Multicolorings are
+%implemented in Core Legion with separate colorings for each color.)
 \begin{lstlisting}[label={lst:coloring},caption={Coloring Construction}]
 function create_piece_coloring[rl,rn](node_list: NodeList<rl,rn>@rl),
             reads(rl,rn) : coloring(rn) = 
@@ -144,24 +144,28 @@ function create_piece_coloring[rl,rn](node_list: NodeList<rl,rn>@rl),
             color(part_coloring, list_elem.1, node.5)
 \end{lstlisting}
 
-Colorings are the input for partition operations in Legion.  The partition
+Colorings are the input to partition operations in Legion.  The partition
 statement shown in Listing~\ref{lst:partition} performs the ``owned nodes''
-partitioning.  The partitioning of wires is identical, while the partitioning
-of the ghost nodes is performed in Core Legion as a separate partitioning operation
-for each color.
+partitioning.    Since colorings assign each region element at most one color
+(dynamically checked), the partition operation results in 
+{\em disjoint} subregions, each a subset of the {\em parent} region.
+A partition operation introduces constraints into the static type environment describing
+both the disjointness of subregions (e.g., {\tt rn0 $*$ rn1})
+and the subregion relationships
+(e.g., {\tt rn0 $\leq$ all\_nodes}).  A partition created from a multicoloring
+only introduces the subregion relationships, as the parition may be aliased.
+
+
+
+%The partitioning of wires is identical, while the partitioning
+%of the ghost nodes is performed in Core Legion as a separate partitioning operation
+%for each color.
 
 \begin{lstlisting}[label={lst:partition},caption={Partition Operation Example}]
 let piece_coloring : coloring(all_nodes) = create_piece_coloring[rl,all_nodes](node_list) in
 partition all_nodes using piece_coloring as rn0,rn1... in ...
 \end{lstlisting}
 
-Since colorings can only color each pointer at most with a single color
-(dynamically checked), the partition operation results in 
-{\em disjoint} subregions, each of which contains a subset of the original region.
-The partition operation introduces constraints into the type system describing
-both the disjointness of the subregions (e.g. {\tt rn0 $*$ rn1})
-and the inclusion of each subregion in the original region
-(e.g. {\tt rn0 $\leq$ all\_nodes}).
 
 %% In addition, to partitioning the graph to describe {\em owned} nodes
 %% for each piece, the circuit example also
