@@ -416,7 +416,7 @@ $};
 \label{sec:legioncore}
 
 Figure~\ref{fig:langdef} defines Core Legion, a subset of the full Legion language
-that still illustrates all of the important issues.  
+that illustrates the important issues.  
 %Types include booleans, integers, tuples, and pointers.  
 Pointers are annotated with a list of logical regions---a non-null pointer must point to a 
 location that is contained in at least one of the regions. There is a special
@@ -438,7 +438,7 @@ To achieve high performance in the presence of aliasing, the Legion type system
 leverages both static and dynamic checks, resulting in interesting extensions beyond
 a basic expression language to both the type system and the operational semantics.
 The following two subsections illustrate these decisions and how they have been
-chosen to preserve a straightforward proof of type soundness.
+chosen to allow a straightforward proof of type soundness.
 
 \subsection{Core Type System}
 \label{subsec:coretypes}
@@ -1412,7 +1412,7 @@ as if all writes and reductions were applied from each trace in order.
 \item atomic locations ($l \in L_{atomic}$) are those which have at least one access in atomic mode in the traces and
 are in neither $L_{excl}$ nor the clobber set.  For these locations, we allow permutations of the original
 subexpression trace order.
-\item for locations that have only access in {\em simult} mode or are in the clobber set, no constraints are
+\item for locations with only access in {\em simult} mode or in the clobber set, no constraints are
 enforced.  The validity of the interleaving of these accesses is performed by some enclosing expression.
 \end{itemize}
 
