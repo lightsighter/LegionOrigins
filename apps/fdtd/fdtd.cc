@@ -143,21 +143,35 @@ static inline int sign(dir_t dir) {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// 3D vector class. Makes certain code easier to write (e.g. some code
-// can be made invariant with respect to dimension by rotating the
-// coordinate system around the origin).
+// Vector classes. Template below is instantiated once for int and
+// once for double. Generally int vectors represent discrete points in
+// the grid of cells, and double vectors represent continuous points
+// in space.
 ////////////////////////////////////////////////////////////////////////
-class vec3 {
+
+template<typename T>
+class vec {
 public:
-  vec3(int a, int b, int c) { x[0] = a; x[1] = b; x[2] = c; }
-  int operator[] (int i) { return x[i]; }
+  vec() { x[0] = x[1] = x[2] = 0; }
+  vec(T a, T b, T c) { x[0] = a; x[1] = b; x[2] = c; }
+  T & operator[] (int i) { return x[i]; }
+  const T & operator[] (int i) const { return x[i]; }
+  vec operator+ (const vec &a) const { return vec(x[0] + a[0], x[1] + a[1], x[2] + a[2]); }
+  vec operator- (const vec &a) const { return vec(x[0] - a[0], x[1] - a[1], x[2] - a[2]); }
 private:
-  int x[3];
+  T x[3];
 };
 
-const vec3 zero3(0, 0, 0);
+typedef vec<double> point3;
+typedef vec<int> vec3;
 
-////////////////////////////////////////////////////////////////////////
+static inline int mod3(int dim) {
+  return dim % NDIMS;
+  if (dim < 0) {
+    dim += NDIMS;
+  }
+}
+
 // Rotates the vector around the origin such that:
 //
 //  rot3(vec3(x, y, z), 0) => vec3(x, y, z)
@@ -169,13 +183,95 @@ const vec3 zero3(0, 0, 0);
 //
 // Useful for transforming coordinate systems such that the code to
 // handle all cases is effectively the same.
-////////////////////////////////////////////////////////////////////////
+//
 static inline vec3 rot3(vec3 v, int dim) {
-  dim = dim % NDIMS;
-  if (dim < 0) {
-    dim += NDIMS;
+  dim = mod3(dim);
+  return vec3(v[dim], v[mod3(dim + 1)], v[mod3(dim + 2)]);
+}
+
+////////////////////////////////////////////////////////////////////////
+// Math for point sources.
+////////////////////////////////////////////////////////////////////////
+
+// Calculates the Yee grid offset for the given dimension. For the
+// most part, we don't care, but for compatilibility with Meep certain
+// operations (especially interpolation over the grid) needs to know
+// about the Yee grid structure.
+//
+vec3 vec3_yee_shift(dim_t d, double a) {
+  vec3 v;
+  v[mod3(d + 1)] = 1;
+  v[mod3(d + 2)] = 1;
+  return v;
+}
+
+point3 point3_yee_shift(dim_t d, double a) {
+  point3 p;
+  vec3 v = vec3_yee_shift(d, a);
+  for (int d = 0; d < NDIMS; d++) {
+    p[d] = v[d]*(0.5/a);
   }
-  return vec3(v[dim], v[(dim + 1)%NDIMS], v[(dim + 2)%NDIMS]);
+  return p;
+}
+
+// Calculates floor and ceiling according to odd-coordinate dielectric
+// grid, as described in Meep's src/loop_in_chunks.cpp .
+//
+static inline vec3 point3_floor(point3 p, double a) {
+  vec3 i;
+  for (int d = 0; d < NDIMS; d++) {
+    i[d] = 1 + 2*int(floor(p[d]*a - 0.5));
+  }
+  return i;
+}
+
+static inline vec3 point3_ceil(point3 p, double a) {
+  vec3 i;
+  for (int d = 0; d < NDIMS; d++) {
+    i[d] = 1 + 2*int(ceil(p[d]*a - 0.5));
+  }
+  return i;
+}
+
+struct SourceVolume {
+  SourceVolume(point3 p, dim_t d, double a) {
+    point3 p_center(p + point3_yee_shift(d, a));
+    // These points are shifted by Yee grid.
+    vec3 is = point3_floor(p_center, a);
+    vec3 ie = point3_ceil(p_center, a);
+    printf("Elliott: is %d %d %d ie %d %d %d\n",
+           is[0], is[1], is[2], ie[0], ie[1], ie[2]);
+    for (int d = 0; d < NDIMS; d++) {
+      double w0 = 1.0 - p_center[d]*a + 0.5*is[d];
+      double w1 = 1.0 + p_center[d]*a - 0.5*ie[d];
+      printf("Elliott: w0 %f w1 %f\n", w0, w1);
+      double s0 = w0;
+      double s1 = w1;
+      double e0 = w1;
+      double e1 = w0;
+    }
+    // Now unshift to get actual coordinates.
+    vec3 shift = vec3_yee_shift(d, a);
+    min = is - shift;
+    max = ie - shift;
+    printf("Elliott: min %d %d %d max %d %d %d\n",
+           min[0], min[1], min[2], max[0], max[1], max[2]);
+  }
+  vec3 min /* inclusive */, max /* exclusive */;
+};
+
+struct SourceWave {
+  SourceWave(double freq, double width, double cutoff, double amp)
+    : freq(freq), width(width), cutoff(cutoff), amp(amp) {}
+  double freq;
+  double width;
+  double cutoff;
+  double amp;
+};
+
+static inline double integration_factor(point3 p) {
+  // TODO (Elliott):
+  return 0;
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -218,14 +314,18 @@ struct InitGlobalArgs {
 // Arguments to source_task.
 ////////////////////////////////////////////////////////////////////////
 struct SourceGlobalArgs {
-  SourceGlobalArgs(int nx, int ny, int nz, dim_t dim, FieldID field)
-    : n(nx, ny, nz), dim(dim), field(field) {}
+  SourceGlobalArgs(int nx, int ny, int nz, dim_t dim, FieldID field,
+                   const SourceVolume &vol, const SourceWave &wave)
+    : n(nx, ny, nz), dim(dim), field(field), vol(vol), wave(wave) {}
   // Number of cells.
   vec3 n;
-  // Dimension to source.
+  // Dimension to apply source.
   dim_t dim;
   // Field to update.
   FieldID field;
+  // Source specifications.
+  SourceVolume vol;
+  SourceWave wave;
 };
 
 struct PositionLocalArgs {
@@ -293,7 +393,7 @@ static inline int cell_id(vec3 v, vec3 n) {
 }
 
 static inline int cell_stride(vec3 v, vec3 n) {
-  return cell_id(v, n) - cell_id(zero3, n);
+  return cell_id(v, n) - cell_id(vec3(), n);
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -796,7 +896,9 @@ void main_task(const void *input_args, size_t input_arglen,
                                           as_set<FieldID>(write_fields), write_fields,
                                           READ_WRITE, EXCLUSIVE, cells));
 
-      SourceGlobalArgs global_args(nx, ny, nz, DIM_Z, field_e[DIM_Z]);
+      SourceGlobalArgs global_args(nx, ny, nz, DIM_Z, field_e[DIM_Z],
+                                   SourceVolume(point3(0.5*sx, 0.5*sy, 0.5*sz), DIM_Z, a),
+                                   SourceWave(0.8, 0.6, 4.0, 1.0));
 
       runtime->execute_index_space(ctx, SOURCE_TASK, colors, indexes, fields, regions,
                                    TaskArgument(&global_args, sizeof(global_args)), position_arg_map,
@@ -807,10 +909,10 @@ void main_task(const void *input_args, size_t input_arglen,
     for (int dim = 0; dim < NDIMS; dim++) {
       std::vector<FieldID> write_fields, read_fields, ghost1_fields, ghost2_fields;
       write_fields.push_back(field_e[dim]);
-      read_fields.push_back(field_h[(dim + 1)%NDIMS]);
-      read_fields.push_back(field_h[(dim + 2)%NDIMS]);
-      ghost1_fields.push_back(field_h[(dim + 1)%NDIMS]);
-      ghost2_fields.push_back(field_h[(dim + 2)%NDIMS]);
+      read_fields.push_back(field_h[mod3(dim + 1)]);
+      read_fields.push_back(field_h[mod3(dim + 2)]);
+      ghost1_fields.push_back(field_h[mod3(dim + 1)]);
+      ghost2_fields.push_back(field_h[mod3(dim + 2)]);
 
       std::vector<RegionRequirement> regions;
       regions.push_back(RegionRequirement(owned_partition, 0 /* default projection */,
@@ -819,15 +921,15 @@ void main_task(const void *input_args, size_t input_arglen,
       regions.push_back(RegionRequirement(owned_partition, 0 /* default projection */,
                                           as_set<FieldID>(read_fields), read_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
-      regions.push_back(RegionRequirement(ghost_partition[(dim + 1)%NDIMS][DIR_POS], 0 /* default projection */,
+      regions.push_back(RegionRequirement(ghost_partition[mod3(dim + 1)][DIR_POS], 0 /* default projection */,
                                           as_set<FieldID>(ghost1_fields), ghost1_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
-      regions.push_back(RegionRequirement(ghost_partition[(dim + 2)%NDIMS][DIR_POS], 0 /* default projection */,
+      regions.push_back(RegionRequirement(ghost_partition[mod3(dim + 2)][DIR_POS], 0 /* default projection */,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
       StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_POS, dtdx,
-                                 field_e[dim], field_h[(dim + 1)%NDIMS], field_h[(dim + 2)%NDIMS]);
+                                 field_e[dim], field_h[mod3(dim + 1)], field_h[mod3(dim + 2)]);
 
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
@@ -839,10 +941,10 @@ void main_task(const void *input_args, size_t input_arglen,
     for (int dim = 0; dim < NDIMS; dim++) {
       std::vector<FieldID> write_fields, read_fields, ghost1_fields, ghost2_fields;
       write_fields.push_back(field_h[dim]);
-      read_fields.push_back(field_e[(dim + 1)%NDIMS]);
-      read_fields.push_back(field_e[(dim + 2)%NDIMS]);
-      ghost1_fields.push_back(field_e[(dim + 1)%NDIMS]);
-      ghost2_fields.push_back(field_e[(dim + 2)%NDIMS]);
+      read_fields.push_back(field_e[mod3(dim + 1)]);
+      read_fields.push_back(field_e[mod3(dim + 2)]);
+      ghost1_fields.push_back(field_e[mod3(dim + 1)]);
+      ghost2_fields.push_back(field_e[mod3(dim + 2)]);
 
       std::vector<RegionRequirement> regions;
       regions.push_back(RegionRequirement(owned_partition, 0 /* default projection */,
@@ -851,15 +953,15 @@ void main_task(const void *input_args, size_t input_arglen,
       regions.push_back(RegionRequirement(owned_partition, 0 /* default projection */,
                                           as_set<FieldID>(read_fields), read_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
-      regions.push_back(RegionRequirement(ghost_partition[(dim + 1)%NDIMS][DIR_NEG], 0 /* default projection */,
+      regions.push_back(RegionRequirement(ghost_partition[mod3(dim + 1)][DIR_NEG], 0 /* default projection */,
                                           as_set<FieldID>(ghost1_fields), ghost1_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
-      regions.push_back(RegionRequirement(ghost_partition[(dim + 2)%NDIMS][DIR_NEG], 0 /* default projection */,
+      regions.push_back(RegionRequirement(ghost_partition[mod3(dim + 2)][DIR_NEG], 0 /* default projection */,
                                           as_set<FieldID>(ghost2_fields), ghost2_fields,
                                           READ_ONLY, EXCLUSIVE, cells));
 
       StepGlobalArgs global_args(nx, ny, nz, (dim_t)dim, DIR_NEG, dtdx,
-                                 field_h[dim], field_e[(dim + 1)%NDIMS], field_e[(dim + 2)%NDIMS]);
+                                 field_h[dim], field_e[mod3(dim + 1)], field_e[mod3(dim + 2)]);
 
       fs.push_back(
         runtime->execute_index_space(ctx, STEP_TASK, colors, indexes, fields, regions,
@@ -955,6 +1057,7 @@ void source_task(const void * input_global_args, size_t input_global_arglen,
   SourceGlobalArgs &global_args = *(SourceGlobalArgs *)input_global_args;
   vec3 &n = global_args.n;
   FieldID &field = global_args.field;
+  SourceVolume &vol = global_args.vol;
 
   assert(input_local_args && input_local_arglen == sizeof(PositionLocalArgs));
   PositionLocalArgs &local_args = *(PositionLocalArgs *)input_local_args;
@@ -1062,7 +1165,7 @@ void dump_task(const void *input_args, size_t input_arglen,
   }
 
   for (int f = 0; f < NDIMS*2; f++) {
-    printf("Field %s%s:\n", (f < NDIMS ? "E" : "H"), dim_name((dim_t)(f % NDIMS)));
+    printf("Field %s%s:\n", (f < NDIMS ? "E" : "H"), dim_name((dim_t)mod3(f)));
     for (int z = 1; z < nz + 1; z++) {
       printf("z = %d", z);
 
