@@ -72,6 +72,7 @@ block of cubes in +z direction for Ey, and in the +y direction for Ez.
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <complex>
 
 #include "legion.h"
 #include "lowlevel.h"
@@ -81,6 +82,8 @@ using namespace LegionRuntime::HighLevel;
 typedef LegionRuntime::LowLevel::RegionAccessor<LegionRuntime::LowLevel::AccessorGeneric> Accessor;
 
 LegionRuntime::Logger::Category log_app("app");
+
+const double pi = 3.141592653589793238462643383276;
 
 ////////////////////////////////////////////////////////////////////////
 // Global task ID list. Each of these tasks will be registered with
@@ -119,6 +122,13 @@ static inline const char * dim_name(dim_t dim) {
   }
 }
 
+static inline int mod3(int dim) {
+  return dim % NDIMS;
+  if (dim < 0) {
+    dim += NDIMS;
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////
 // During the computation, each block will only require access to
 // ghost cells in one direction. Thus each block will partitioned six
@@ -154,10 +164,17 @@ class vec {
 public:
   vec() { x[0] = x[1] = x[2] = 0; }
   vec(T a, T b, T c) { x[0] = a; x[1] = b; x[2] = c; }
+  vec(const vec &a) { x[0] = a[0]; x[1] = a[1]; x[2] = a[2]; }
+  template<typename U>
+  vec(const vec<U> &a) { x[0] = (T)a[0]; x[1] = (T)a[1]; x[2] = (T)a[2]; }
   T & operator[] (int i) { return x[i]; }
   const T & operator[] (int i) const { return x[i]; }
   vec operator+ (const vec &a) const { return vec(x[0] + a[0], x[1] + a[1], x[2] + a[2]); }
   vec operator- (const vec &a) const { return vec(x[0] - a[0], x[1] - a[1], x[2] - a[2]); }
+  vec operator+ (T a) const { return vec(x[0] + a, x[1] + a, x[2] + a); }
+  vec operator- (T a) const { return vec(x[0] - a, x[1] - a, x[2] - a); }
+  vec operator* (T a) const { return vec(x[0] * a, x[1] * a, x[2] * a); }
+  vec operator/ (T a) const { return vec(x[0] / a, x[1] / a, x[2] / a); }
 private:
   T x[3];
 };
@@ -165,11 +182,18 @@ private:
 typedef vec<double> point3;
 typedef vec<int> vec3;
 
-static inline int mod3(int dim) {
-  return dim % NDIMS;
-  if (dim < 0) {
-    dim += NDIMS;
-  }
+template<typename T>
+static inline vec<T> min3(vec<T> a, vec<T> b) {
+  return vec<T>(a[0] < b[0] ? a[0] : b[0],
+                a[1] < b[1] ? a[1] : b[1],
+                a[2] < b[2] ? a[2] : b[2]);
+}
+
+template<typename T>
+static inline vec<T> max3(vec<T> a, vec<T> b) {
+  return vec<T>(a[0] > b[0] ? a[0] : b[0],
+                a[1] > b[1] ? a[1] : b[1],
+                a[2] > b[2] ? a[2] : b[2]);
 }
 
 // Rotates the vector around the origin such that:
@@ -190,7 +214,12 @@ static inline vec3 rot3(vec3 v, int dim) {
 }
 
 ////////////////////////////////////////////////////////////////////////
-// Math for point sources.
+// Math for sources. This gets a little complicated because in order
+// to match Meep's functionality, we have to interpolate across the
+// grid. E.g. a point source located inside a cell doesn't dump its
+// entire contribution in that single cell, but actually smudges its
+// contribution across the six cells up, down, left, right, front and
+// back.
 ////////////////////////////////////////////////////////////////////////
 
 // Calculates the Yee grid offset for the given dimension. For the
@@ -206,12 +235,7 @@ vec3 vec3_yee_shift(dim_t d, double a) {
 }
 
 point3 point3_yee_shift(dim_t d, double a) {
-  point3 p;
-  vec3 v = vec3_yee_shift(d, a);
-  for (int d = 0; d < NDIMS; d++) {
-    p[d] = v[d]*(0.5/a);
-  }
-  return p;
+  return ((point3)vec3_yee_shift(d, a))*(0.5/a);
 }
 
 // Calculates floor and ceiling according to odd-coordinate dielectric
@@ -235,44 +259,84 @@ static inline vec3 point3_ceil(point3 p, double a) {
 
 struct SourceVolume {
   SourceVolume(point3 p, dim_t d, double a) {
+    // Shift initially according to Yee lattice to get positions of
+    // each vector in space.
     point3 p_center(p + point3_yee_shift(d, a));
-    // These points are shifted by Yee grid.
     vec3 is = point3_floor(p_center, a);
     vec3 ie = point3_ceil(p_center, a);
-    printf("Elliott: is %d %d %d ie %d %d %d\n",
-           is[0], is[1], is[2], ie[0], ie[1], ie[2]);
-    for (int d = 0; d < NDIMS; d++) {
-      double w0 = 1.0 - p_center[d]*a + 0.5*is[d];
-      double w1 = 1.0 + p_center[d]*a - 0.5*ie[d];
-      printf("Elliott: w0 %f w1 %f\n", w0, w1);
-      double s0 = w0;
-      double s1 = w1;
-      double e0 = w1;
-      double e1 = w0;
+    for (int i = 0; i < NDIMS; i++) {
+      s[i] = 1.0 - p_center[i]*a + 0.5*is[i];
+      e[i] = 1.0 + p_center[i]*a - 0.5*ie[i];
     }
-    // Now unshift to get actual coordinates.
+    // Now unshift the Yee lattice and account for ghost borders to
+    // get array indices again.
     vec3 shift = vec3_yee_shift(d, a);
-    min = is - shift;
-    max = ie - shift;
-    printf("Elliott: min %d %d %d max %d %d %d\n",
-           min[0], min[1], min[2], max[0], max[1], max[2]);
+    min = (is - shift)/2 + 1;
+    max = (ie - shift)/2 + 2;
   }
+
+  double interpolation_weight(vec3 x) const {
+    double w = 1.0;
+    for (int d = 0; d < NDIMS; d++) {
+      if (x[d] == min[d]) {
+        w *= s[d];
+      }
+      else if (x[d] == max[d] - 1) {
+        w *= e[d];
+      }
+    }
+    return w;
+  }
+
+  // Bounding box for the source volume.
   vec3 min /* inclusive */, max /* exclusive */;
+  // Interpolation coefficients for the cells at the start and end
+  // boundaries.
+  point3 s, e;
 };
 
-struct SourceWave {
-  SourceWave(double freq, double width, double cutoff, double amp)
-    : freq(freq), width(width), cutoff(cutoff), amp(amp) {}
+struct SourceCurrent {
+  SourceCurrent(double f, double w, double c, double amp, double dt, double a)
+    : freq(f), width(w/f), amp(amp) {
+    peak_time = cutoff = 1.0/a + c*width;
+    peak_time += dt;
+    while (exp(-cutoff*cutoff / (2*width*width)) < 1e-100) {
+      cutoff *= 0.9;
+    }
+    // Note (Elliott): I don't think this does what the Meep people
+    // think it does, but I'm leaving it in for compatibility.
+    cutoff = float(cutoff); // don't make cutoff sensitive to roundoff error
+  }
+
+  std::complex<double> dipole(double time) const {
+    double tt = time - peak_time;
+    printf("In dipole: time %f tt %f\n", time, tt);
+    if (float(fabs(tt)) > cutoff)
+      return 0.0;
+
+    // correction factor so that current amplitude (= d(dipole)/dt) is
+    // ~ 1 near the peak of the Gaussian.
+    std::complex<double> amp = 1.0 / std::complex<double>(0,-2*pi*freq);
+
+    return exp(-tt*tt / (2*width*width)) * std::polar(1.0, -2*pi*freq*tt) * amp;
+  }
+
+  std::complex<double> current(double time, double dt) const {
+    return (dipole(time + dt) - dipole(time))/dt;
+  }
+
+  double last_time() const {
+    // Note (Elliott): I don't think this does what the Meep people
+    // think it does, but I'm leaving it in for compatibility.
+    return float(peak_time + cutoff);
+  }
+
   double freq;
   double width;
+  double peak_time;
   double cutoff;
   double amp;
 };
-
-static inline double integration_factor(point3 p) {
-  // TODO (Elliott):
-  return 0;
-}
 
 ////////////////////////////////////////////////////////////////////////
 // Arguments to main_task.
@@ -315,8 +379,10 @@ struct InitGlobalArgs {
 ////////////////////////////////////////////////////////////////////////
 struct SourceGlobalArgs {
   SourceGlobalArgs(int nx, int ny, int nz, dim_t dim, FieldID field,
-                   const SourceVolume &vol, const SourceWave &wave)
-    : n(nx, ny, nz), dim(dim), field(field), vol(vol), wave(wave) {}
+                   const SourceVolume &vol, const SourceCurrent &current,
+                   double time, double dt)
+    : n(nx, ny, nz), dim(dim), field(field), vol(vol),
+      current(current), time(time), dt(dt) {}
   // Number of cells.
   vec3 n;
   // Dimension to apply source.
@@ -325,7 +391,10 @@ struct SourceGlobalArgs {
   FieldID field;
   // Source specifications.
   SourceVolume vol;
-  SourceWave wave;
+  SourceCurrent current;
+  // Current simulation time and timestep.
+  double time;
+  double dt;
 };
 
 struct PositionLocalArgs {
@@ -876,6 +945,9 @@ void main_task(const void *input_args, size_t input_arglen,
   clock_gettime(CLOCK_MONOTONIC, &clock_start);
   LegionRuntime::DetailedTimer::clear_timers();
 
+  SourceCurrent source_wave(0.8, 0.6, 4.0, 1.0, dt,  a);
+  double last_source_time = source_wave.last_time();
+
   std::vector<FutureMap> fs;
   for (double t = 0.0; t < t_sim; t += dt) {
     fs.clear(); // Only wait on futures from last iteration of loop.
@@ -887,7 +959,8 @@ void main_task(const void *input_args, size_t input_arglen,
     fields.push_back(FieldSpaceRequirement(fspace, NO_MEMORY));
 
     // Update sources.
-    {
+    // FIXME (Elliott): Shouldn't technically be part of the main loop.
+    if (t < last_source_time) {
       std::vector<FieldID> write_fields;
       write_fields.push_back(field_e[DIM_Z]);
 
@@ -898,7 +971,8 @@ void main_task(const void *input_args, size_t input_arglen,
 
       SourceGlobalArgs global_args(nx, ny, nz, DIM_Z, field_e[DIM_Z],
                                    SourceVolume(point3(0.5*sx, 0.5*sy, 0.5*sz), DIM_Z, a),
-                                   SourceWave(0.8, 0.6, 4.0, 1.0));
+                                   source_wave,
+                                   t, dt);
 
       runtime->execute_index_space(ctx, SOURCE_TASK, colors, indexes, fields, regions,
                                    TaskArgument(&global_args, sizeof(global_args)), position_arg_map,
@@ -1056,27 +1130,42 @@ void source_task(const void * input_global_args, size_t input_global_arglen,
   assert(input_global_args && input_global_arglen == sizeof(SourceGlobalArgs));
   SourceGlobalArgs &global_args = *(SourceGlobalArgs *)input_global_args;
   vec3 &n = global_args.n;
+  double &time = global_args.time, &dt = global_args.dt;
   FieldID &field = global_args.field;
   SourceVolume &vol = global_args.vol;
+  vec3 &src_min = vol.min, &src_max = vol.max;
+  SourceCurrent &cur = global_args.current;
 
   assert(input_local_args && input_local_arglen == sizeof(PositionLocalArgs));
   PositionLocalArgs &local_args = *(PositionLocalArgs *)input_local_args;
-  vec3 &min = local_args.min, &max = local_args.max;
+  vec3 &local_min = local_args.min, &local_max = local_args.max;
 
   log_app.info("In source_task cells %d..%d x %d..%d x %d..%d for field %d ...",
-               min[0], max[0], min[1], max[1], min[2], max[2],
+               local_min[0], local_max[0], local_min[1],
+               local_max[1], local_min[2], local_max[2],
                field);
 
   PhysicalRegion cells = regions[0];
 
   Accessor f = cells.get_accessor<AccessorGeneric>(field);
 
+  vec3 min = max3(src_min, local_min);
+  vec3 max = min3(src_max, local_max);
+  std::complex<double> current = cur.current(time, dt);
+  log_app.info("At time %f applying current %f + %fi to cells %d..%d x %d..%d x %d..%d",
+               time,
+               current.real(), current.imag(),
+               min[0], max[0], min[1], max[1], min[2], max[2]);
   for (int x = min[0]; x < max[0]; x++) {
     for (int y = min[1]; y < max[1]; y++) {
       for (int z = min[2]; z < max[2]; z++) {
-        ptr_t i = cell_id(vec3(x, y, z), n);
+        vec3 c = vec3(x, y, z);
+        ptr_t i = cell_id(c, n);
+        double w = vol.interpolation_weight(c);
+        log_app.info("Cell %d %d %d has interpolation weight %f",
+                     x, y, z, w);
         // TODO (Elliott): Real math here.
-        f.write(i, f.read<double>(i) + 0.1);
+        f.write(i, f.read<double>(i) + w);
       }
     }
   }
