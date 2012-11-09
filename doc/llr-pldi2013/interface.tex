@@ -12,16 +12,17 @@ automatically be performed without being directed by the client.
 Our goal in the design of this interface is to provide a set of low-level,
 high-performance primitives that are asynchronous and composable.
 
-Our interface organizes functionality into objects.  We describe
-these objects in five parts: {\em events} for composing operations 
+Our interface is shown in Figure~\ref{fig:runtimeapi} and organizes functionality into objects.  We describe
+these objects in six parts: {\em events} for composing operations 
 (Section~\ref{subsec:events}), {\em processors} for parallel computation 
-(\ref{subsec:procs}), {\em deferred locks} for synchronization
+(\ref{subsec:procs}), {\em barriers} for producer/consumer coordination (\ref{subsec:barriers}),
+{\em deferred locks} for more general synchronization
 (\ref{subsec:locks}), {\em physical regions} for data layout and movement
 (\ref{subsec:phyreg}), and a {\em machine} object for introspection of the underlying
 hardware (\ref{subsec:machmodel}).  In all cases (except for the
 machine object which is a static singleton), instances of the objects
 are light-weight {\em handles} that provide a unique name for an underlying
-implementation.
+implementation object.
 Every handle is valid everywhere in the system, allowing handles to be freely copied,
 passed as arguments to other tasks, or stored in the heap
 without having to reason about the distributed nature of the system.
@@ -51,44 +52,23 @@ without having to reason about the distributed nature of the system.
 \subsection{Events}
 \label{subsec:events}
 Events are the primary mechanism for describing dependences between operations in our system.
-Listing~\ref{lst:eventapi} shows the interface for events.  An instance of the {\tt Event} type 
-names a unique event in the system.  {\tt NO\_EVENT} (line 5) is a special instance
+Lines 1-13 of Figure~\ref{fig:runtimeapi} show the interface for events.  An instance of the {\tt Event} type 
+names a unique event in the system.  {\tt NO\_EVENT} (line 3)
+is a special instance
 of an event that by definition has always triggered.  The event interface
-supports testing whether an event has triggered (line 7) and waiting on
-an event to trigger (line 9).  While these methods can be useful, the encouraged
+supports testing whether an event has triggered (line 5) and waiting on
+an event to trigger (line 6).  While these methods can be useful, the preferred
 use of events is passing them as preconditions for other operations.  The client can use the
-{\tt merge\_events} call (lines 11-12) to create an event that triggers only when every
-event in a given set of events has triggered.  An example using events follows in
+{\tt merge\_events} call (line 7) to create an event that triggers only when every
+event in a given set of events has triggered.  A code example using events follows in
 Section~\ref{subsec:procs}.
 %corresponding to the conjunction of a set of events.
 
 In most cases events are created as the result of other
 operations and the implementation is responsible for triggering these events.  Clients
-can also create a {\tt UserEvent} (line 15) that is triggered explicitly by the client.
+can also create a {\tt UserEvent} (line 10) that is triggered explicitly by the client,
+and may be used as precondition like any other event.
 
-The common synchronization pattern in which multiple consumers are dependent on
-a set of producers is supported by a {\tt Barrier} object, which is similar
-to a user event, but does not trigger until the expected number of {\tt arrive}
-operations have occurred.  To better support
-composability and asynchronous operation, our interface differs from barriers in other programming
-models\cite{MPI} in three fundamental ways:
-%The common synchronization pattern in which multiple consumers are dependent on a 
-%(potentially different) set of producers is supported by a {\tt Barrier} object,
-%which is similar to a {\tt UserEvent}, but does not trigger until the expected
-%number of {\tt arrive} operations have occurred.  Barrier constructs exist in other
-%programming models\cite{MPI}, but in addition to the decoupling of the waiters from
-%the arrivers, our barrier interface has two further improvements to better support
-%composability and asynchronous operation:
-\begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
-\item The set of producers of arrival calls can be different from the set of consumers waiting on the barrier.
-\item An arrival operation can be made dependent on another event, allowing a client to
-express that an operation should be completed before the barrier can trigger.
-\item The expected arrival count of a barrier can be dynamically modified, allowing
-barrier creation before needing to know the exact number of arrivals.
-\end{itemize}
-
-Both user events and barriers are a sub-type of events and can therefore
-be used transparently to express dependences wherever events are used.
 %Although user events and barriers are created and triggered differently,
 %operations that express dependences on Events can transparently use
 %UserEvents or Barriers as well.
@@ -103,17 +83,15 @@ be used transparently to express dependences wherever events are used.
 %% asynchronously.  Lastly, since user events and barriers are sub-types of 
 %% an event they can be used wherever an event is required.
 
-\begin{lstlisting}[float={t},label={lst:eventapi},caption={Event Interface.}]
+\begin{figure}
+\begin{lrbox}{\mylistingbox}
+\begin{lstlisting}
 class Event {
-  const unsigned id;
-  const unsigned gen;
+  const unsigned id, gen;
   static const Event NO_EVENT;
-  // check if an event has triggered
+
   bool has_triggered() const;
-  // wait on the event
   void wait() const;
-  // Merge events together to create a new event
-  static Event merge_events(Event ev1, Event ev2);
   static Event merge_events(const set<Event> &to_merge);
 };
 
@@ -121,54 +99,125 @@ class UserEvent : public Event {
   static UserEvent create_user_event();
   void trigger() const;
 };
-
-class Barrier : public Event {
-  static Barrier create_barrier(unsigned expected_arrivals);
-  void alter_arrival_count(int delta) const;
-  void arrive(unsigned count = 1,
-                  Event wait_for = Event::NO_EVENT) const;
-};
 \end{lstlisting}
+\end{lrbox}
+\subfigure{\usebox{\mylistingbox}} \\
 
-\subsection{Processors}
-\label{subsec:procs}
-Listing~\ref{lst:procapi} shows the interface for {\tt Processor} objects which allow for
-the creation of parallel computations.  Processors provide a way of naming 
-every computational unit in the machine.  We describe how to discover processor handles
-in Section~\ref{subsec:machmodel}.  In the case of our current interface 
-processors are either individual cores or discrete GPUs, but this is easily modified 
-to include new processor types (line 10).   Processors support a single {\tt spawn}
-method (lines 14-15) that launches a new {\em task} on that processor.
-Note that because the spawn operation
-is invoked on a processor handle, it is possible to launch a task on any
-processor from anywhere in the system.  
-The spawn call takes an optional event that must trigger before the task can begin.  
-The spawn call returns an event that will trigger when the task completes.
-
-Lines 18-24 of Listing~\ref{lst:procapi} show a simple example using 
-the processor and event interface.  The {\tt diamond\_task} launches four
-sub-tasks with a diamond dependence pattern, as shown in Figure~\ref{fig:procevents}.
-The {\tt merge\_events} call
-merges the events {\tt eb} and {\tt ec} to create the shared dependence
-for the last sub-task.
-
-\begin{lstlisting}[float={t},label={lst:procapi},caption={Processor Interface.},belowskip=0pt]
+\begin{lrbox}{\mylistingbox}
+\begin{lstlisting}[firstnumber=14]
 class Processor {
   const unsigned id;
   typedef unsigned TaskFuncID;
-  typedef void (*TaskFuncPtr)
-            (const void *args,size_t arglen,Processor p);
+  typedef void (*TaskFuncPtr)(void *args,size_t arglen,Processor p);
   typedef map<TaskFuncID, TaskFuncPtr> TaskIDTable;
 
-  enum Kind {
-    CPU_PROC,GPU_PROC,// ... future processor types
-  };
+  enum Kind { CPU_PROC,GPU_PROC /* ... */ };
   Kind kind() const;
 
-  Event spawn(TaskFuncID func_id,const void *args,size_t arglen,
-              Event wait_on = Event::NO_EVENT) const;
+  Event spawn(TaskFuncID func_id,const void *args,size_t arglen, Event wait_on) const;
 };
 \end{lstlisting}
+\end{lrbox}
+\subfigure{\usebox{\mylistingbox}} \\
+
+\begin{lrbox}{\mylistingbox}
+\begin{lstlisting}[firstnumber=25]
+class Barrier : public Event {
+  static Barrier create_barrier(unsigned expected_arrivals);
+  void alter_arrival_count(int delta) const;
+  void arrive(unsigned count = 1, Event wait_for = NO_EVENT) const;
+};
+\end{lstlisting}
+\end{lrbox}
+\subfigure{\usebox{\mylistingbox}} \\
+
+\begin{lrbox}{\mylistingbox}
+\begin{lstlisting}[firstnumber=30]
+class Lock {
+  const unsigned id;
+  Event lock(Event wait_on = NO_EVENT) const;
+  void unlock(Event wait_on = NO_EVENT) const;
+
+  static Lock create_lock(size_t payload_size = 0);
+  void *payload_ptr();
+  void destroy_lock();
+};
+\end{lstlisting}
+\end{lrbox}
+\subfigure{\usebox{\mylistingbox}} \\
+
+\begin{lrbox}{\mylistingbox}
+\begin{lstlisting}[firstnumber=39]
+class Memory {
+  const unsigned id;
+  size_t size() const;
+};
+
+class RegionMetaData {
+  const unsigned id;
+  static const RegionMetaData NO_REGION;
+
+  static RegionMetaData create_region(size_t num_elmts, size_t elmt_size);
+  void destroy_region() const;
+
+  RegionInstance create_instance(Memory memory) const;
+  RegionInstance create_instance(Memory memory, ReductionOpID redopid) const;
+  void destroy_instance(RegionInstance instance) const;
+};
+
+class RegionInstance {
+  const unsigned id;
+
+  Event copy_to(RegionInstance target, Event wait_on = NO_EVENT);
+  Event reduce_to(RegionInstance target, ReductionOpID redopid, Event wait_on = NO_EVENT);
+};
+\end{lstlisting}
+\end{lrbox}
+\subfigure{\usebox{\mylistingbox}} \\
+
+\begin{lrbox}{\mylistingbox}
+\begin{lstlisting}[firstnumber=62]
+class Machine {
+  Machine(int *argc, char ***argv, const Processor::TaskIDTable &task_table);
+
+  void run(Processor::TaskFuncID task_id, const void *args, size_t arglen);
+
+  static Machine* get_machine(void);
+  const set<Memory>& get_all_memories(void) const;
+  const set<Processor>& get_all_processors(void) const;
+
+  int get_proc_mem_affinity(vector<ProcMemAffinity> &result, ...);
+  int get_mem_mem_affinity(vector<MemMemAffinity> &result, ...);
+};
+\end{lstlisting}
+\end{lrbox}
+\subfigure{\usebox{\mylistingbox}} \\
+
+\caption{Runtime Interface.\label{fig:runtimeapi}}
+\vspace{-4mm}
+\end{figure}
+
+\subsection{Processors}
+\label{subsec:procs}
+Lines 14-24 of Figure~\ref{fig:runtimeapi} show the interface for {\tt Processor} objects which allow for
+the creation of parallel computations.  Processors provide a way of naming 
+every computational unit in the machine.  We describe how to discover processor handles
+in Section~\ref{subsec:machmodel}.  In the case of our current interface 
+processors are either individual CPU cores or discrete GPUs, but this is easily modified 
+to include new processor types (line 20).   Processors support a single {\tt spawn}
+method (line 23) that launches a new {\em task} on that processor.
+Note that because the spawn operation
+is invoked on a processor handle, it is possible to launch a task on any
+processor from anywhere in the system.  
+The spawn call takes an optional event that must trigger before the task can begin, and
+always returns an event that will trigger when the task completes.
+
+Figure~\ref{fig:procevents} shows a simple example using 
+the processor and event interface.  The {\tt diamond\_task} launches four
+sub-tasks with a diamond dependence pattern.
+The {\tt merge\_events} call
+merges the events {\tt eb} and {\tt ec} to create the shared dependence
+for the last sub-task.
 
 \begin{figure}
 \begin{lrbox}{\mylistingbox}
@@ -215,6 +264,32 @@ void diamond_task(const void *args,size_t arglen,Processor p){
 \vspace{-4mm}
 \end{figure}
 
+\subsection{Barriers}
+\label{subsec:barriers}
+The common synchronization pattern in which multiple consumers are dependent on
+a set of producers is supported by a {\tt Barrier} object (lines 25-29 of Figure~\ref{fig:runtimeapi}), which is similar
+to a user event, but does not trigger until the expected number of {\tt arrive}
+operations have occurred.  To better support
+composability and asynchronous operation, our interface differs from barriers in other programming
+models\cite{MPI} in three fundamental ways:
+%The common synchronization pattern in which multiple consumers are dependent on a 
+%(potentially different) set of producers is supported by a {\tt Barrier} object,
+%which is similar to a {\tt UserEvent}, but does not trigger until the expected
+%number of {\tt arrive} operations have occurred.  Barrier constructs exist in other
+%programming models\cite{MPI}, but in addition to the decoupling of the waiters from
+%the arrivers, our barrier interface has two further improvements to better support
+%composability and asynchronous operation:
+\begin{itemize} \itemsep1pt \parskip0pt \parsep0pt
+\item The set of producers arriving at the barrier can be different from the set of consumers waiting on the barrier.
+\item An arrival operation can be made dependent on another event, allowing a client to
+express that an operation should be completed before the barrier can trigger.
+\item The expected arrival count of a barrier can be dynamically modified, allowing
+producer tasks to be subdivided as necessary, even after the barrier has been created.
+\end{itemize}
+
+Like user events, barriers are a sub-type of events and can therefore
+be used transparently to express dependences wherever events are used.
+
 \subsection{Deferred Locks}
 \label{subsec:locks}
 
@@ -227,31 +302,19 @@ or spinning, neither of which composes well with asynchronous operations.
 {\em Deferred locks} are a new synchronization mechanism that allows for synchronization
 in an completely asynchronous environment.  
 
-\begin{lstlisting}[float={t},label={lst:lockapi},caption={Deferred Lock Interface.}]
-class Lock {
-  const unsigned id;
-  Event lock(Event wait_on = Event::NO_EVENT) const;
-  void unlock(Event wait_on = Event::NO_EVENT) const;
-  // Create a new lock, destroy an existing lock
-  static Lock create_lock(size_t payload_size = 0);
-  void *payload_ptr();
-  void destroy_lock();
-};
-\end{lstlisting}
-
 \begin{figure}
 \begin{lrbox}{\mylistingbox}
 \begin{lstlisting}
-void launcher_task(const void *args, size_t arglen, Processor p) {
-  // Unpack lock, input events from arguments
+void lock_example(const void *args, size_t arglen, Processor p) {
+  // Unpack lock, input events, target processors from arguments
   Lock needed = ...
   // Acquire lock, launch first subtask, release lock
   Event lock_event_1 = needed.lock(prev_event_1);
-  Event task_event_1 = p.spawn(SUB, args_1, sizeof(args_1), lock_event_1);
+  Event task_event_1 = proc1.spawn(SUB, args_1, sizeof(args_1), lock_event_1);
   needed.unlock(task_event_1);
   // same for second subtask
   Event lock_event_2 = needed.lock(prev_event_2);
-  Event task_event_2 = p.spawn(SUB, NULL, 0, lock_event_2);
+  Event task_event_2 = proc2.spawn(SUB, args_2, sizeof(args_2), lock_event_2);
   needed.unlock(task_event_2);
 }
 \end{lstlisting}
@@ -261,35 +324,56 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
 \centering
 \scalebox{0.8}{
 \begin{tikzpicture}
-  \draw (1.0,1.5) rectangle (6.2,2.4);
-  \node (l1) at (3.6,1.95) {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
+  \node (l1) at (2,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
+  \node (t1) at (4.5,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\SUB(args\_1)\end{tabular}};
+  \node (u1) at (7,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
 
-  \draw (6.7,1.5) rectangle (8.6,2.4);
-  \node (t1) at (7.65,1.95) {\begin{tabular}{c}{\bf run}\\SUB(args\_1)\end{tabular}};
+  \draw [->] (0,1.95) to (l1.west);
+  \draw [->] (l1.east) to (t1.west);
+  \draw [->] (t1.east) to (u1.west);
 
-  \draw (9.1,1.5) rectangle (10.5,2.4);
-  \node (u1) at (9.8,1.95) {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
+  \node (l2) at (2,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
+  \node (t2) at (4.5,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\SUB(args\_2)\end{tabular}};
+  \node (u2) at (7,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
 
-  \draw [->] (0.0,1.95) to (1.0,1.95);
-  \draw [->] (6.2,1.95) to (6.7,1.95);
-  \draw [->] (8.6,1.95) to (9.1,1.95);
+  \draw [->] (0,0.25) to (l2.west);
+  \draw [->] (l2.east) to (t2.west);
+  \draw [->] (t2.east) to (u2.west);
 
-  \draw (0.3,0.1) rectangle (1.7,1.0);
-  \node (l2) at (1.0,0.55) {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
+  \draw [->,dotted,thick] (0.5,2.5) to (l2.140);
+  \draw [->,dotted,thick] (u2.40) to (l1.220);
+  \draw [->,dotted,thick] (u1.320) to (8.5,-0.5);
 
-  \draw (2.2,0.1) rectangle (4.1,1.0);
-  \node (t2) at (3.15,0.55) {\begin{tabular}{c}{\bf run}\\SUB(args\_2)\end{tabular}};
+  %% \draw (1.0,1.5) rectangle (6.2,2.4);
+  %% \node (l1) at (3.6,1.95) {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
 
-  \draw (4.6,0.1) rectangle (6.0,1.0);
-  \node (u2) at (5.3,0.55) {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
+  %% \draw (6.7,1.5) rectangle (8.6,2.4);
+  %% \node (t1) at (7.65,1.95) {\begin{tabular}{c}{\bf run}\\SUB(args\_1)\end{tabular}};
 
-  \draw [->] (0.0,0.55) to (0.3,0.55);
-  \draw [->] (1.7,0.55) to (2.2,0.55);
-  \draw [->] (4.1,0.55) to (4.6,0.55);
+  %% \draw (9.1,1.5) rectangle (10.5,2.4);
+  %% \node (u1) at (9.8,1.95) {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
 
-  \draw [->,dotted,thick] (0.2,2.5) to (0.5,1.0);
-  \draw [->,dotted,thick] (5.8,1.0) to (6.0,1.5);
-  \draw [->,dotted,thick] (10.3,1.5) to (10.6,0.0);
+  %% \draw [->] (0.0,1.95) to (1.0,1.95);
+  %% \draw [->] (6.2,1.95) to (6.7,1.95);
+  %% \draw [->] (8.6,1.95) to (9.1,1.95);
+
+  %% \draw (0.3,0.1) rectangle (1.7,1.0);
+  %% \node (l2) at (1.0,0.55) {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
+
+  %% \draw (2.2,0.1) rectangle (4.1,1.0);
+  %% \node (t2) at (3.15,0.55) {\begin{tabular}{c}{\bf run}\\SUB(args\_2)\end{tabular}};
+
+  %% \draw (4.6,0.1) rectangle (6.0,1.0);
+  %% \node (u2) at (5.3,0.55) {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
+
+  %% \draw [->] (0.0,0.55) to (0.3,0.55);
+  %% \draw [->] (1.7,0.55) to (2.2,0.55);
+  %% \draw [->] (4.1,0.55) to (4.6,0.55);
+
+  %% \draw [->,dotted,thick] (0.2,2.5) to (0.5,1.0);
+  %% \draw [->,dotted,thick] (5.8,1.0) to (6.0,1.5);
+  %% \draw [->,dotted,thick] (10.3,1.5) to (10.6,0.0);
+
 
   %\path (1,3) node (t1) [shape=rectangle,draw] {run TASK\_A} -- node [right=1pt] {ea} +(0,-0.5) node[auto] {eax};
   %% \node (t1) at (0,0) [shape=rectangle,draw] {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
@@ -311,38 +395,32 @@ void launcher_task(const void *args, size_t arglen, Processor p) {
 \vspace{-4mm}
 \end{figure}
 
-Listing~\ref{lst:lockapi} shows the 
-interface for locks.  Unlike blocking locks, the {\tt lock} method (line 4) doesn't
-block but instead always returns immediately with an event that will be triggered
-when the lock has been acquired.  Just like the spawn method, the lock method also 
+The interface for deferred locks is shown in lines 30-38 of Figure~\ref{fig:runtimeapi}.
+Unlike traditional blocking locks, the {\tt lock} method (line 32) doesn't
+wait if the lock is in use but instead always returns immediately with an event that will be triggered
+when the lock has been acquired.  Like a processor's spawn method, the lock method also 
 takes an optional event parameter as a precondition.  Similarly, the {\tt unlock} 
-method (line 5) takes an optional event precondition parameter.
+method (line 33) takes an optional event precondition parameter.
 
 An important difference between deferred locks and blocking locks is that the processor
 that requests the lock doesn't have to be the one that uses it.  A common
 convention in writing code with deferred locks is to acquire locks on behalf of a task being
-launched.  Listing~\ref{lst:lockapi} illustrates this with a simple example.  The
-{\tt launcher\_task} is calling a sub-task that is going to require the {\tt needed}
-lock.  A lock request is issued and the resulting {\tt lock\_event} is used as
-a precondition for launching the {\tt SUB} task.  The unlock operation is then
-made dependent
-%precondition
-on the event corresponding to {\tt SUB} task's completion.  The
-{\tt SUB} task can run safely while holding the lock and the lock is released when the
-{\tt SUB} task completes.  Figure~\ref{fig:lockevents} shows the event dependence graph, with
-dotted lines representing a lock operation's dependence on a previous unlock.
-Using deferred locks in this style prevents 
-compute resources from waiting on locks by ensuring tasks only run when their needed
-locks have already been acquired.
+launched.  Figure~\ref{fig:lockevents} illustrates this with a simple example.  The {\tt lock\_example}
+function needs to launch two subtasks on two othe processors, each with exclusive access to some resource protected by a
+lock named {\tt mutex}.  For each subtask, it first requests the lock on the subtaks behalf, making the
+subtask wait until the lock has been acquired.  The parent task also requests that the runtime automatically
+release the lock after each subtask has completed.  In the event dependency graph, solid arrows represent
+the explicit events used in the code, while the dotted line represents the dynamic ordering that results
+from the mutual exclusion guarantee of the lock.  (In this example, the second subtask is granted the lock first.)
 
 When a lock is used to mediate access to a piece of data, the first thing a task will usually
 do after being granted the lock is access the data.  To be able to hide the latency of that
 access as well, an additional feature of locks in our interface is the association of a lock with a
 {\em payload}, a small (i.e. less than 4KB) 
 piece of data that is moved around with the lock and guaranteed to be coherent while 
-the lock is held.  The size of the payload is specified when the lock is created (line 7) and
+the lock is held.  The size of the payload is specified when the lock is created (line 35 of Figure~\ref{fig:runtimeapi}) and
 the pointer to the local copy of the payload can be obtained from the {\tt payload\_ptr} method
-(line 8).
+(line 36).
 
 Between deferred locks and barriers (described in Section~\ref{subsec:events}) clients 
 have access to the same set of synchronization primitives that they have
@@ -385,38 +463,6 @@ the same class (or between super- and sub-classes).
 %of bits via the processor {\tt spawn} call.
 
 % Say something about dynamically modifying the number of elements in a class
-
-\begin{lstlisting}[float={t},label={lst:regionapi},caption={Physical Region Interface and Example.}]
-class Memory {
-  const unsigned id;
-  size_t size() const;
-};
-
-class RegionMetaData {
-  const unsigned id;
-  static const RegionMetaData NO_REGION;
-  // Create and destroy metadatas
-  static RegionMetaData create_region(size_t num_elmts, 
-                                      size_t elmt_size);
-  void destroy_region() const;
-  // Create and destroy instances
-  RegionInstance create_instance(Memory memory) const;
-  void destroy_instance(RegionInstance instance) const;
-  // Create a reduction-only instance
-  RegionInstance create_instance(Memory memory, 
-                        ReductionOpID redopid) const;
-};
-
-class RegionInstance {
-  const unsigned id;
-  static const RegionInstance NO_INST;
-  // Copy between instances
-  Event copy_to(RegionInstance target, 
-                Event wait_on = Event::NO_EVENT);
-  Event reduce_to(RegionInstance target, ReductionOpID redopid,
-                Event wait_on = Event::NO_EVENT);
-};
-\end{lstlisting}
 
 \begin{figure}
 \begin{lrbox}{\mylistingbox}
@@ -476,23 +522,23 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
   \vspace{-4mm}
 \end{figure}
 
-Listing~\ref{lst:regionapi} shows a subset of the interface for physical regions.  
-Each memory in the machine's memory hierarchy is named by a {\tt Memory} object (line 1).
-The next object is a {\tt RegionMetaData} object (line 7), which defines a class of
+Lines 39-61 of Figure~\ref{fig:runtimeapi} show a subset of the interface for physical regions.  
+Each memory in the machine's memory hierarchy is named by a {\tt Memory} object (line 39).
+The next object is a {\tt RegionMetaData} object (line 44), which defines a class of
 regions.  Physical regions that belong to that class are created with the {\tt create\_instance}
-method (line 16) and represented by {\tt RegionInstance} objects (line 23).  When creating a physical
+method (line 51) and represented by {\tt RegionInstance} objects (line 56).  When creating a physical
 region the client specifies the memory in which the physical region is going
 to be allocated.  To maintain performance transparency, a new physical region can only be allocated
 if the memory has sufficient capacity.
 There is no automatic coherence of data between physical regions in the
 same class.  It is the client's responsibility to manage data coherence using copies
-between physical regions (line 28-29).  Like other operations copies can be
+between physical regions (line 59).  Like other operations copies can be
 predicated on an event and return an event corresponding to completion.
 
 If the only operations a task will perform on a region are reductions, a special reduction-only
-instance can be created.  Rather than applying each reduction separately to the target instance,
+instance can be created (line 52).  Rather than applying each reduction separately to the target instance,
 the reduction operations can be accumulated in the reduction instance, and applied in bulk to 
-the target using the {\em reduce\_to} operation.  This has several benefits.  First, it results
+the target using the {\em reduce\_to} operation (line 60).  This has several benefits.  First, it results
 in much better performance, as we will show in section~\ref{subsec:reducmicro}), by reducing both
 the total inter-node traffic and the overhead of that traffic while still allowing parallelism.
 Second, a reduction-only instance is often smaller that the target instance, potentially improving
@@ -535,19 +581,18 @@ the necessary information to understand the structure of the data.
 %% or to regular physical regions of the same class.
 
 
-An example using reduction-only regions is shown on lines 41-55 of Listing~\ref{lst:regionapi}.
+An example using reduction-only regions is given in Figure~\ref{fig:reducevents} along with the resulting event graph.
 Two reduction-only regions, {\tt inst1} and {\tt inst2}, are created in different memories to
-be used with a reduction operation (lines 46-47).  (Reduction operations are registered at startup with integer IDs
+be used with a reduction operation (lines 7-8).  (Reduction operations are registered at startup with integer IDs
 as function pointers may not be portable across nodes.)  A physical region of the same class {\tt inst3}
-is also created in a different memory (line 48).  Two tasks are launched that will apply
-reductions locally into their respective reduction buffers (lines 49-50).  The resulting
-events are then used to chain reduction copies back to {\tt inst3} after the tasks complete (lines 51-52).
+is also created in a different memory (line 9).  Two tasks are launched that will apply
+reductions locally into their respective reduction buffers (lines 10-11).  The resulting
+events are then used to chain reduction copies back to {\tt inst3} after the tasks complete (lines 12-13).
 The reduction operations accumulated in each of {\tt inst1} and {\tt inst2} are applied atomically
 to {\tt inst3}.  The order in which the reduction operations are performed will be different from
 the original order, but the requirement that reduction operations be commutative ensures the final
 result is correct.  Finally, a merge on the events from the two reduction copies is 
-performed and a final task using the results in {\tt inst3} is launched (lines 53-54).  This event
-graph is shown in Figure~\ref{fig:reducevents}.
+performed and a final task using the results in {\tt inst3} is launched (lines 14-15).
 
 %% SJT - redundant with first paragraph in this subsection?
 %% Reductions and reduction instances illustrate only a single case where physical regions provide 
@@ -622,15 +667,15 @@ graph is shown in Figure~\ref{fig:reducevents}.
 
 \subsection{Machine}
 \label{subsec:machmodel}
-The last component of the interface is shown in Listing~\ref{lst:machineapi} and allows the
-initialization and run-time introspection
+The last component of the interface is the {\tt Machine} object, shown in lines 62-73 of Figure~\ref{fig:runtimeapi},
+which provides initialization and run-time introspection
 of the current machine.
 The {\tt Machine} object is a singleton object that the client creates at the start of a
 program, providing a task table that maps task IDs to function pointers,
-and then invoking the {\tt run} method (lines 9-10).
+and then invoking the {\tt run} method (lines 65).
 Any running task can get a pointer to the machine object with the
-{\tt get\_machine} method (line 12) and use it to obtain lists of all the {\tt Memory} (line 13) or 
-{\tt Processor} (line 14) handles in the system.  Using the affinity methods (lines 16-19),
+{\tt get\_machine} method (line 67) and use it to obtain lists of all the {\tt Memory} (line 68) or 
+{\tt Processor} (line 69) handles in the system.  Using the affinity methods (lines 71-72),
 the application can also determine which memories are accessible by each
 processor and with what performance, as well as which pairs of memories support copy operations.
 %are able to efficiently copy data between themselves.
@@ -677,26 +722,5 @@ processor and with what performance, as well as which pairs of memories support 
 %by specifying a specific processor or memory, otherwise information is returned
 %about all processors and memories in the system.  
 
-\begin{lstlisting}[float={t},label={lst:machineapi},caption={Machine Interface.}]
-class Machine {
-  Machine(int *argc, char ***argv,
-          const Processor::TaskIDTable &task_table);
-  enum RunStyle {
-    ONE_TASK_ONLY,ONE_TASK_PER_NODE,
-    ONE_TASK_PER_PROCESSOR,
-  };
-  void run(Processor::TaskFuncID task_id = 0, 
-        RunStyle = ONE_TASK_ONLY, const void *args, size_t arglen);
-
-  static Machine* get_machine(void);
-  const set<Memory>& get_all_memories(void) const;
-  const set<Processor>& get_all_processors(void) const;
-
-  int get_proc_mem_affinity(vector<ProcMemAffinity> &result,
-          Processor restrict_proc = 0, Memory restrict_mem = 0);
-  int get_mem_mem_affinity(vector<MemMemAffinity> &result,
-          Memory restrict_mem1 = 0, Memory restrict_mem2 = 0);
-};
-\end{lstlisting}
 
 
