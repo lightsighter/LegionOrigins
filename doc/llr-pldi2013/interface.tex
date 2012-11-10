@@ -283,8 +283,10 @@ models\cite{MPI} in three fundamental ways:
 \item The set of producers arriving at the barrier can be different from the set of consumers waiting on the barrier.
 \item An arrival operation can be made dependent on another event, allowing a client to
 express that an operation should be completed before the barrier can trigger.
-\item The expected arrival count of a barrier can be dynamically modified, allowing
-producer tasks to be subdivided as necessary, even after the barrier has been created.
+\item The expected arrival count of a barrier can be dynamically modified, which we
+have found useful in supporting nested parallelism in higher-level languages.
+%allowing
+%producer tasks to be subdivided as necessary, even after the barrier has been created.
 \end{itemize}
 
 Like user events, barriers are a sub-type of events and can therefore
@@ -300,7 +302,8 @@ not necessarily ordered.  Traditionally locks have been used to serialize access
 data.  However, all lock implementations that we are aware of require either blocking
 or spinning, neither of which composes well with asynchronous operations.
 {\em Deferred locks} are a new synchronization mechanism that allows for synchronization
-in an completely asynchronous environment.  
+without blocking or spinning.
+%in an completely non-blocking environment.  
 
 \begin{figure}
 \begin{lrbox}{\mylistingbox}
@@ -398,9 +401,8 @@ void lock_example(const void *args, size_t arglen, Processor p) {
 The interface for deferred locks is shown in lines 30-38 of Figure~\ref{fig:runtimeapi}.
 Unlike traditional blocking locks, the {\tt lock} method (line 32) doesn't
 wait if the lock is in use but instead always returns immediately with an event that will be triggered
-when the lock has been acquired.  Like a processor's spawn method, the lock method also 
-takes an optional event parameter as a precondition.  Similarly, the {\tt unlock} 
-method (line 33) takes an optional event precondition parameter.
+when the lock has been acquired.  Like a processor's spawn method, both the {\tt lock} 
+and {\tt unlock} methods take an optional event paramenter as a precondition (lines 32-33).
 
 An important difference between deferred locks and blocking locks is that the processor
 that requests the lock doesn't have to be the one that uses it.  A common
@@ -414,7 +416,7 @@ the explicit events used in the code, while the dotted line represents the dynam
 from the mutual exclusion guarantee of the lock.  (In this example, the second subtask is granted the lock first.)
 
 When a lock is used to mediate access to a piece of data, the first thing a task will usually
-do after being granted the lock is access the data.  To be able to hide the latency of that
+do after being granted the lock is access the data.  To hide the latency of that
 access as well, an additional feature of locks in our interface is the association of a lock with a
 {\em payload}, a small (i.e. less than 4KB) 
 piece of data that is moved around with the lock and guaranteed to be coherent while 
@@ -441,14 +443,20 @@ of which we are aware.
 
 \subsection{Physical Regions}
 \label{subsec:phyreg}
-In distributed machines with discrete memories, data movement often consists of more
-than a simple copy operation.  Many applications perform operations and transformations on
-their data in conjunction with data movement for higher performance.  One common example is 
-that applications accumulate reduction operations in a buffer and then, as part of a copy operation,
-the reduction operations are applied to a destination buffer on the receiving side of the copy.  
-To support these kinds of conjoined operations in an asynchronous environment, our interface 
-must be aware of the structure of data so it can perform accompanying operations with 
-data movement operations.  To describe the structure of data our interface uses {\em physical regions.}
+%In distributed machines with discrete memories, data movement often consists of more
+%than a simple copy operation.  Many applications perform operations and transformations on
+%their data in conjunction with data movement for higher performance.  One common example is 
+%that applications accumulate reduction operations in a buffer and then, as part of a copy operation,
+%the reduction operations are applied to a destination buffer on the receiving side of the copy.  
+%To support these kinds of conjoined operations in an asynchronous environment, our interface 
+%must be aware of the structure of data so it can perform accompanying operations with 
+%data movement operations.  To describe the structure of data our interface uses {\em physical regions.}
+Current APIs for moving data in machines with discrete memories only support untyped
+copies of a buffer of data.  This restriction requires programmers to manage both the layout of
+data and the marshalling of data for communication.  {\em Physical regions} are a
+mechanism for decoupling the placement of data from its layout.  Physical regions make
+the runtime aware of the structure of elements in the allocation and thereby enable multiple data
+layouts, such as specialized layouts for buffering individual reduction operations.
 
 A physical region is an allocation of data in a single memory in the memory hierarchy.  Physical
 regions are grouped into {\em classes} which are sets of physical regions that share the

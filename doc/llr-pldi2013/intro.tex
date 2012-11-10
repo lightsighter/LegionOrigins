@@ -40,7 +40,7 @@ communication, or synchronization.  At any given point in time all processors
 are engaged in the same kind of phase.  Bulk-synchrony
 makes it easy to reason about parallel execution but
 hinders attempts to hide the increasingly long-latency communication
-or memory movement phases.  
+or synchronization phases.  
 %In older machines this was not a problem because slower
 %processors and smaller machines meant computation phases were much larger than
 %communication or synchronization phases.  However, today's machines are much
@@ -88,7 +88,7 @@ can use an event as a precondition.
 events clients can compose arbitrary chains of dependent
 operations, which the runtime is free to execute in any way that
 respects the event dependences.  With this freedom the runtime can
-schedule operations to optimize throughput while hiding the long
+schedule operations to optimize throughput while hiding long
 latency operations.
 
 The following sections describe our contributions:
@@ -99,24 +99,28 @@ parallel computation, data movement, and synchronization using events (Section~\
 \item To support synchronization in our event system we introduce {\em deferred locks}, 
 a novel synchronization primitive that operates in an asynchronous environment (Section~\ref{subsec:locks}).
 
-\item We describe a physical region system that provides structural information about
-data layout.  The structural information provided by physical regions enables an extensible
-interface for conjoining operations on data (e.g. reductions) with asynchronous data movement for 
-further latency hiding (Section~\ref{subsec:phyreg}).
+%\item We describe a physical region system that provides structural information about
+%data layout.  The structural information provided by physical regions enables an extensible
+%interface for conjoining operations on data (e.g. reductions) with asynchronous data movement for 
+%further latency hiding (Section~\ref{subsec:phyreg}).
+\item We describe a physical region system that encourages efficient movement of data
+via bulk transfers.  The structural information provided by physical regions also enables
+special reduction instances that buffer individual reduction operations for bulk
+transfer and application (Section~\ref{subsec:phyreg}).
 
 \item Our approach depends on the efficient handling of very large numbers of events.
 We describe a distributed implementation of our interface that requires no global coordination
-and has modest local storage costs.  We describe optimizations for the implementation of events, 
+and has modest local storage costs.  We describe an optimized implementation of events, 
 deferred locks, and reductions (Section~\ref{sec:impl}).
 
-\item We report on micro-benchmarks that are designed to stress
+\item We report on micro-benchmarks that stress
 our implementation.  The results indicate that our implementation approaches the performance of
 the underlying hardware (Section~\ref{sec:micro}).
 
 \item We demonstrate that our interface is powerful enough to support Legion \cite{Legion12}, a higher-level
 programming system, and that real Legion applications programmed to our interface
 are capable of achieving high-performance (Section~\ref{sec:apps}).  Furthermore, we demonstrate
-that the same applications written in a bulk-synchronous model incur performance penalties between 22-135\%.
+that the same applications written in a bulk-synchronous model incur slowdowns between 22-135\%.
 \end{itemize}
 
 Section~\ref{sec:related} describes related work and Section~\ref{sec:conclusion}

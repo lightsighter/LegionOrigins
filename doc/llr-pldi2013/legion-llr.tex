@@ -62,11 +62,11 @@
 %\end{tabular}
 We present a low-level runtime interface for current highly distributed, heterogeneous
 parallel machines that provides a fully asynchronous 
-programming model, allowing all types of runtime actions, including synchronization,
+programming model, allowing all runtime actions, including synchronization,
 to be non-blocking.  Our interface includes mechanisms for the creation and movement
 of data through the memory hierarchy as well as {\em deferred locks}, a novel synchronization primitive.
-Asynchrony is exposed by the interface using a distributed event system.  All
-operations return an event to be triggered when the operation completes.  Events
+Asynchrony is exposed by the interface via a distributed event system.  All
+operations return an event that will be triggered when the operation completes.  Events
 can be chained together and used to capture dependences between operations.
 
 We describe an implementation of our interface capable of running on
