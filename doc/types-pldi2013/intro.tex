@@ -59,10 +59,10 @@ itself---i.e., the partitions must be dynamically computed and cannot be statica
 Furthermore, applications often need multiple, simultaneous partitions of
 the same data, which introduces aliasing.
 
-In this work, we present the static and dynamic semantics of Legion \cite{Legion12},
+In this work, we present the static and dynamic semantics for Legion \cite{Legion12},
 a parallel programming model that supports multiple, dynamic data partitions and is
 able to efficiently reason about potential aliasing.
-Legion's {\em logical regions} are an abstraction capturing {\em locality} 
+Legion's {\em logical regions} are an abstraction that captures {\em locality} 
 (data that will be used together, and therefore should be colocated) 
 and {\em independence} (disjoint data that may be operated on in parallel).  
 Logical regions have properties that allow programmers to communicate information
@@ -104,14 +104,13 @@ a task (or any of its subtasks) may perform on each logical region argument.
 %Through multiple partitions of a logical region, a given datum may
 %belong to multiple different regions.  
 
-To support additional parallelism in the presence of aliased data,
-Legion provides {\em coherence} modes at the granularity of regions,
-which allow relaxed constraints on task execution order, even
-in cases where tasks access the same region.  The programmer may
-specify that tasks conflicting on a region run in
+To support additional parallelism when tasks access aliased regions,
+Legion provides {\em coherence} modes at the granularity of regions, 
+which allow relaxed constraints on task execution order.  The programmer may
+specify that tasks accessing aliased regions run in
 program order (the default), {\em atomically} with respect to each
 other, or even {\em simultaneously} if the application has alternative
-methods for ensuring determinism or can tolerate non-deterministic
+methods for managing non-deterministic
 behavior in that region.
 
 %To guarantee the safety and correctness of programs, Legion relies on

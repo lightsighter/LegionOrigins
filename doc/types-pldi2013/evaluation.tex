@@ -134,20 +134,20 @@ dynamic region access checks could be safely elided.
 
 \begin{figure}
 \begin{center}
-\includegraphics[scale=0.33]{figs/circuit_96_popl.pdf}
+\includegraphics[scale=0.30]{figs/circuit_96_popl.pdf}
 \end{center}
 \vspace{-2mm}
 \caption{Overhead for the Circuit simulation with 96 total pieces.\label{fig:ckt_overhead}}
-\vspace{-6mm}
+\vspace{-5mm}
 \end{figure}
 
 \begin{figure}
 \begin{center}
-\includegraphics[scale=0.33]{figs/fluid_19200_popl.pdf}
+\includegraphics[scale=0.30]{figs/fluid_19200_popl.pdf}
 \end{center}
 \vspace{-2mm}
 \caption{Overhead for the Fluid simulation with 19200 cells.\label{fig:fluid_overhead}}
-\vspace{-6mm}
+\vspace{-5mm}
 \end{figure}
 
 Figures~\ref{fig:ckt_overhead}, \ref{fig:fluid_overhead}, and \ref{fig:amr_overhead} show 
@@ -166,23 +166,23 @@ performance relative to the baseline implementations is discussed in \cite{Legio
 \begin{center}
 \subfigure[4096 cells per dimension]
 {
-\includegraphics[scale=0.33]{figs/amr_4096_popl.pdf}
+\includegraphics[scale=0.30]{figs/amr_4096_popl.pdf}
 \label{fig:amr4096}
 }
 \subfigure[8192 cells per dimension]
 {
-\includegraphics[scale=0.33]{figs/amr_8192_popl.pdf}
+\includegraphics[scale=0.30]{figs/amr_8192_popl.pdf}
 \label{fig:amr8192}
 }
 \subfigure[16384 cells per dimension]
 {
-\includegraphics[scale=0.33]{figs/amr_16384_popl.pdf}
+\includegraphics[scale=0.30]{figs/amr_16384_popl.pdf}
 \label{fig:amr16384}
 }
 \end{center}
 \vspace{-2mm}
 \caption{Overhead for the AMR application.\label{fig:amr_overhead}}
-\vspace{-6mm}
+\vspace{-8mm}
 \end{figure}
 
 In addition to total processor overhead, we also measured performance gain from eliding checks in 
@@ -218,12 +218,29 @@ runtime is able to achieve a 62.5X speedup on 96 GPUs over a hand-coded single G
 
 \begin{figure}
 \begin{center}
-\includegraphics[scale=0.33]{figs/circuit_coherence.pdf}
+\subfigure[48 Piece Problem Size]
+{
+\includegraphics[scale=0.18]{figs/circuit_coherence_48.pdf}
+\label{fig:circuit_excl_48}
+}
+\subfigure[96 Piece Problem Size]
+{
+\includegraphics[scale=0.18]{figs/circuit_coherence_96.pdf}
+\label{fig:circuit_excl_96}
+}
 \end{center}
-\vspace{-2mm}
-\caption{Performance gains from relaxed coherence modes.\label{fig:circuit_excl}}
+\vspace{-4mm}
+\caption{Performance of relaxed coherence modes.\label{fig:circuit_excl}}
 \vspace{-6mm}
 \end{figure}
+%\begin{figure}
+%\begin{center}
+%\includegraphics[scale=0.33]{figs/circuit_coherence.pdf}
+%\end{center}
+%\vspace{-2mm}
+%\caption{Performance gains from relaxed coherence modes.\label{fig:circuit_excl}}
+%\vspace{-6mm}
+%\end{figure}
 
 \subsection{Performance}
 \label{subsec:relaxedperf}
