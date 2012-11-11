@@ -17,7 +17,7 @@ MPI however, none of these languages allow for general composition
 of asynchronous tasks, communication, and synchronization.
 
 Both POSIX threads and OpenMP\cite{OPENMP98} are used for intra-node parallel
-programming in large machines, but neither support any asynchronous
+programming on large machines, but neither support asynchronous
 operations.  CUDA\cite{CUDA} and OpenCL\cite{Khronos:OpenCL} support
 the composition of asynchronous kernel launches and asynchronous copies
 between a host node and a single GPU.  However, the only synchronization
@@ -25,8 +25,8 @@ options available in both interfaces are blocking operations on either
 a stream or a work queue.  OpenCL has events similar to our interface for
 expressing ordering, but has no synchronization primitive for expressing
 more relaxed properties such as atomicity that can be described by a
-deferred lock.  OpenCL events are not valid globally, but can only be
-used within a single GPU context.
+deferred lock.  OpenCL events are not valid globally in distributed memory
+spaces, and can only be used within a single GPU context.
 
 Cilk is a parallel programming model that has demonstrated the power of
 asynchronous function calls\cite{CILK95}.  The Cilk {\em work-first}
@@ -42,6 +42,16 @@ However, the implementation of TAM is designed for a class of much smaller machi
 and therefore is based on heavier communication and threading mechanisms.
 While TAM supports composable asynchronous computation and communication, its
 synchronization mechanisms still require blocking operations.
+
+The design of coarse-grained dataflow languages such as Lucid \cite{Lucid95}
+and CGD \cite{CGD09} are orthogonal to the design of this work.  We view
+the interface presented here as a potential implementation target for any
+number of higher-level programming systems, including coarse-grained
+dataflow programming models.  The implementation of many dataflow languages
+have features that are related to our interface, but are not implemented
+for distributed memory machines.  I-structures from the Id language \cite{Arvind89}
+have similar semantics to events in our interface, but have a much simpler implementation
+because they are limited to use in a shared address space.
 
 Chapel\cite{Chamberlain:Chapel} and X10\cite{X1005} are high-level parallel
 programming languages that support asynchronous operations.  The constructs

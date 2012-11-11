@@ -23,14 +23,14 @@ runs ahead of the actual execution using a scheduler called a {\em Software Out-
 operations, and synchronization operations with the dependencies between them expressed
 as events.  For details the interested reader is referred to the work of \cite{Legion12}.
 
-The fully asynchronous design of the interface proposed in
-this paper is crucial to Legion's SOOP implementation.  Without a fully
-asynchronous interface, the SOOP would have to periodically invoke
+The composable design of the interface proposed in
+this paper is crucial to Legion's SOOP implementation.  If all
+operations in the interface could not be composed via events, 
+the SOOP would have to periodically invoke
 blocking operations that would cause processors to stall and severely
 limit Legion's ability to run ahead and keep the machine fully
-occupied.  With a fully asynchronous interface the SOOP can hide latencies by 
-running
-far ahead of the actual execution, limited only by the physical resources
+occupied.  With a fully asynchronous, composable interface the SOOP can hide latencies by 
+running far ahead of the actual execution, limited only by the physical resources
 available in the machine, exactly like a hardware out-of-order processor.
 
 In this section we demonstrate the performance properties of three
@@ -43,7 +43,7 @@ synchronization between phases.
 {\em Circuit} is a simulation of an integrated circuit that is described as an
 irregular graph of components connected by wires.  The graph is partitioned
 and distributed across the machine.  The computation for each time step consists
-of three phases that calculate currents on the wires, distribute charge between
+of three phases: calculate currents on the wires, distribute charge between
 components, and update the voltages of all components.  In the distribute charge
 phase, a single component may be updated by wires from multiple partitions.  Reduction instances 
 are used to allow each partition to perform reductions in parallel and to do so locally in GPU
@@ -52,9 +52,9 @@ residing in GASNet memory.  Without reduction instances this phase
 couldn't be performed using GPUs.
 
 {\em Fluid} is an incompressible fluid flow simulation from the PARSEC
-benchmark suite\cite{bienia11benchmarking}.  The reference implementation can 
-only be run on a single shared memory machine, but when written in Legion, Fluid can
-be run on large distributed machines as well.  The Fluid simulation
+benchmark suite\cite{bienia11benchmarking}.  The reference implementation 
+only runs on shared memory machines, but when written in Legion, Fluid
+runs on large distributed machines as well.  The Fluid simulation
 models particles that flow through cells.  Each time step requires multiple phases
 that update different properties of the particles contingent upon neighboring
 particles in the same cell.  The space of cells is partitioned and neighboring
@@ -72,7 +72,10 @@ events.
 
 In Section~\ref{subsec:eventlife} we study the lifetime of events in
 the Fluid application.  Section~\ref{subsec:lockmig} examines
-the migration of locks in the Circuit and AMR applications.  Finally, we demonstrate
+the performance of deferred locks in the Circuit and AMR applications.  
+%We describe how the Circuit application leverages reduction instances
+%to operate on GPUs in Section~\ref{subsec:reduccase}.  
+Finally, we demonstrate
 that the asynchronous nature of our interface is essential to the
 performance of Legion by comparing to bulk-synchronous
 implementations of these applications in Section~\ref{subsec:bulkcomp}.
@@ -96,7 +99,7 @@ be able to recover the storage associated with the event.  The live events line
 is therefore equivalent to the number of needed events in a reference counting
 scheme.  In this example 
 a reference counting algorithm would reduce the storage needed for dynamic events
-by over 10X, but could only do so at the cost of
+by over 10X, but only at the cost of
 computation and communication for performing the reference counting.  
 
 As discussed in Section~\ref{subsec:eventimpl}, our implementation
@@ -160,24 +163,37 @@ occur during the start-up of the application.
 %Figure~\ref{fig:eventlife} shows the event lifetimes in a run of the fluid application.  The total number
 %of events created during the application is over 260,000.
 
-\subsection{Deferred Lock Migration}
+%\subsection{Deferred Lock Migration}
+\subsection{Deferred Lock Performance}
 \label{subsec:lockmig}
+We also instrumented our heterogeneous implementation to profile
+the usage of deferred locks in real applications.  The Circuit and AMR 
+applications both made use of deferred locks, creating 3336 and 1393 
+deferred locks respectively.  Of all created locks in both applications, 
+14\% were migrated at least once during their lifetime.  We measured the 
+lock grant rates for both applications and found them to be many orders of magnitude smaller
+than the maximum lock grant rates achieved by our locking micro-benchmarks
+in Section~\ref{subsec:lockmicro}.  This demonstrates that real applications need deferred
+locks to compose synchronization in a non-blocking environment, and that the
+ability of deferred locks to migrate is necessary for implementing real applications
+on distributed machines.
 
-We also instrumented our heterogeneous implementation to profile the usage of 
-deferred locks in real applications.  We measured how many locks were used in the application.  For
-each lock we measured the number of lock requests and the number of times that the lock
-had to be transferred from one node to another.  Figure~\ref{fig:lockcount} shows the results 
-for the Circuit and AMR application, both running on 16 nodes.  The Circuit application uses
-a larger number of locks (3336 vs. 1393), but most of them (86\%) are only used on the node on 
-which they were created.  The AMR application exhibits more varied locking behavior, and in 
-particular has locks that are requested more often than they are transferred.  In addition
-to allowing synchronization in an asynchronous environment, deferred locks must be able to 
-migrate to implement real applications on distributed machines.
+%We also instrumented our heterogeneous implementation to profile the usage of 
+%deferred locks in real applications.  We measured how many locks were used in the application.  For
+%each lock we measured the number of lock requests and the number of times that the lock
+%had to be transferred from one node to another.  Figure~\ref{fig:lockcount} shows the results 
+%for the Circuit and AMR application, both running on 16 nodes.  The Circuit application uses
+%a larger number of locks (3336 vs. 1393), but most of them (86\%) are only used on the node on 
+%which they were created.  The AMR application exhibits more varied locking behavior, and in 
+%particular has locks that are requested more often than they are transferred.  In addition
+%to allowing synchronization in an asynchronous environment, deferred locks must be able to 
+%migrate to implement real applications on distributed machines.
 
 %Without the
 %ability for locks to migrate, these applications couldn't have made use of asynchronous
 %locks.
 
+\texcomment{
 \begin{figure}
 \centering
 
@@ -231,8 +247,9 @@ migrate to implement real applications on distributed machines.
 \caption{Locks by Request and Transfer Counts.\label{fig:lockcount}}
 \vspace{-4mm}
 \end{figure}
+}
 
-%\subsection{Reduction Case Study}
+%\subsection{Reduction Instances}
 %\label{subsec:reduccase}
 
 %In this section we give a brief case study of how reductions make it possible
@@ -242,15 +259,17 @@ migrate to implement real applications on distributed machines.
 \subsection{Bulk-Synchronous Comparison}
 \label{subsec:bulkcomp}
 
-Our last set of experiments demonstrates that the asynchronous nature of our interface
-is essential to the high performance of the Legion runtime system.  The Legion
-implementations of the three applications have already been shown to outperform 
-pre-existing implementations\cite{Legion12}.  To quantify the benefit of the asynchronous
-nature of our interface, we re-implemented the applications in
-a bulk-synchronous style to compare against the existing Legion implementations.  
-These bulk-synchronous versions still run on top of 
+Our last set of experiments demonstrates that the composable, asynchronous nature of our interface
+is essential to the high performance of the Legion runtime system.  The work
+of \cite{Legion12} has already shown that Legion implementations perform well compared
+to hand-coded reference implementations.  Rather than compare directly to hand-coded
+reference implementations, we control for any performance advantages gained by using
+the Legion runtime by re-implementing the applications in a bulk-synchronous
+style within the Legion framework.  These bulk-synchronous versions still run on top of 
 the Legion runtime, but invoke blocking operations between computational phases,
-communication phases, and synchronization.
+communication phases, and synchronization.  By controlling for any advantages derived
+from the Legion programming system, we can directly quantify the benefits
+reaped by the asynchronous and composable nature of our interface.
 
 Figure~\ref{fig:bulksync} compares
 the performance of the bulk-synchronous implementations versus the original
@@ -276,8 +295,8 @@ In all cases, the overhead of the bulk-synchronous
 implementations grew with the node count.  As we continue to scale
 applications to larger and larger machines, the ability of runtimes like Legion to run ahead
 will be essential to hiding the large latencies inherent in such machine architectures.
-The fully asynchronous nature of the interface presented in this paper
-will be crucial for supporting this ability.
+The composable and asynchronous nature of the interface presented in this paper
+will be crucial for supporting this ability in future high-level runtimes.
 
 
 \begin{figure}[!ht]
