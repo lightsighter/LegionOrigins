@@ -1,0 +1,271 @@
+
+\section{Circuit Example}
+\label{sec:examplefull}
+
+Listing~\ref{lst:circuit_ex_full} shows a circuit simulation written (with
+one exception) in the core Legion language (see
+Section~\ref{sec:legioncorefull}).  The input is a graph of circuit
+elements and connecting wires.  To perform parallel
+simulation the graph is partitioned into pieces, after which the
+simulation is run for a number of time steps.  Each time step has
+three phases: calculation of each wire's current, distribution of charge to
+the nodes connected to each wire, and updating of node voltages.
+
+The entry function is {\tt simulate\_circuit} (line 15), which is
+parameterized on regions {\tt rl}, {\tt rw}, and {\tt rn}.
+The wires and nodes are contained in regions {\tt rw} and {\tt rn},
+respectively.  The {\tt rl} region holds lists of pointers to the nodes and wires.
+When {\tt simulate\_circuit} is invoked it must have both read and
+write privileges for the regions {\tt rl}, {\tt rw}, and {\tt rn}
+(line 17); the type system enforces that
+{\tt simulate\_circuit} only accesses these regions and their
+subregions at compile-time.
+
+Partitioning of the graph is done using {\em colorings} built in the
+{\tt color\_circuit} function (line 18-19).  A coloring maps region
+elements to colors (i.e. integers), with each color corresponding
+ to a new subregion
+to be created.  Note that it is impossible to pick a single static
+partitioning scheme that would do well for all graphs.  Dynamic
+partitioning using colorings provides the programmer the flexibility
+to make partitioning decisions based on input data.
+
+The {\tt color\_circuit} function returns three colorings.  The first
+maps each node to the graph piece that owns it.
+The third maps each wire to a graph piece that
+owns one of its nodes.  The second coloring captures, for each piece $p$,
+the nodes in other pieces on the boundary of $p$, often referred to as
+{\em ghost nodes}.  
+%We describe how ghost node regions are used in
+%conjunction with the owned nodes shortly.  
+Note that 
+ghost nodes may be on the boundary of multiple pieces and therefore colored
+multiple ways.  The second coloring is a {\em multicoloring} because
+it may map the same element to multiple colors.
+
+After creating the colorings, the application partitions the node and wire
+regions into {\em subregions} according to the colorings (lines 21-25).  For
+simplicity, our example only partitions the circuit into two pieces.
+Line 21 uses coloring {\tt pc.1} to partition {\tt rn} into {\tt rn0}, and {\tt rn1}.
+Subregion {\tt rn0} will contain all locations with a color of 1 in {\tt pc.1},
+while {\tt rn1} will contain all locations with a color of 2.  This
+partitioning uses a coloring and results in {\em disjoint} subpartitions.
+Constraints are introduced into the static environment describing both the
+disjointness of the subregions (i.e. {\tt rn0 $*$ rn1}) and the inclusion of
+each subregion in the original region (e.g. {\tt rn0 $\leq$ rn}).  Line
+23 is similar, but uses a multicoloring, so the subregions may be {\em aliased},
+and only the inclusion constraints are introduced into the static environment.
+Although multicolorings are not part of the Core Legion described in 
+Section~\ref{sec:legioncorefull}, they can be easily implemented using a separate 
+coloring for each color in the multicoloring.
+
+The circuit simulation uses an {\em allocate-then-partition} style of
+computation, where a large data structure is first allocated and then
+partitioned.  Legion also supports a {\em partition-then-allocate} style,
+where empty regions are first partitioned and later populated with
+data.  Both are useful; e.g., Sequoia \cite{Fatahalian06} and DPJ
+\cite{Bocchino09} support static forms of allocate-then-partition and
+partition-then-allocate, respectively.  Legion supports both
+approaches dynamically.
+
+After partitioning the circuit into pieces, the application creates
+instances of {\tt CircuitPiece} (defined on lines 9-12) for each piece
+(lines 28-33).  {\tt CircuitPiece} is a {\em region relationship}, a
+bounded existential type.  Region relationships allow the programmer
+to {\em pack} a group of regions together and remember properties
+about them such as disjointness and subregion relationships (lines 29
+and 33).  The type system verifies the properties hold statically when
+packing; when region relationships are {\em unpacked} the same
+properties are reintroduced into the static checking environment
+(lines 40-41).  A key feature underlying the soundness of the Legion
+type system is that privileges cannot be packed in a region
+relationship---privileges belong to functions. When a function unpacks
+a region relationship it must already hold privileges for the new
+regions it finds in the packed value.  For example, on line 40
+function {\tt execute\_time\_steps} has read/write privileges for
+region {\tt rn0} because it has read/write privileges for {\tt rn} and
+the {\tt CircuitPiece} region relationship constraints ensure $\tt rn0
+\leq rn$ (line 12).
+
+\begin{lstlisting}[float={t},label={lst:circuit_ex_full},caption={Circuit Simulation}]
+--                        <voltage,current,charge,capacitance>
+type CircuitNode        = <float,float,float,float>
+--                     < owned node, owned or ghost node, resistance, current>
+type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg),float,float>
+
+type node_list<rl,rn>       = < CircuitNode@rn, node_list<rl,rn>@rl >
+type wire_list<rl,rw,rn,rg>= < CircuitWire<rn,rg>@rw, wire_list<rl,rw,rn,rg>@rl >
+
+type CircuitPiece<rl,rw,rn> = rr[rpw,rpn,rg]
+                            < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl >         
+                            where rpn #$\le$# rn and rg #$\le$# rn and rpw #$\le$# rw and
+                                  rn * rw and rl * rn and rl * rw
+
+-- Simulation initialization and invocation
+function simulate_circuit[rl,rw,rn] ( all_nodes : node_list<rl,rn>@rl, 
+                            all_wires : wire_list<rl,rw,rn,rn>@rl, steps : int ), 
+      reads(rn,rw,rl), writes(rn,rw,rl) : bool = 
+  let pc : <coloring(rn),multicoloring(rn),coloring(rw)> 
+            = color_circuit[rn,rw,rl](all_nodes,all_wires) in
+  -- Disjoint partition for the owned nodes of each piece
+  partition rn using pc.1 as rn0,rn1 in
+  -- Aliased partition for ghost nodes of each piece
+  partition rn using pc.2 as rg0,rg1 in
+  -- Disjoint partition for the owned wires of each piece
+  partition rw using pc.3 as rw0,rw1 in
+  let lists0 : <wire_list<rl,rw0,rn0,rg0>@rl,node_list<rl,rn0>@rl> = 
+        build_lists[rl,rw,rn,rw0,rn0,rg0](all_nodes,all_wires,pc.1,pc.2,pc.3,0) in
+  let piece0 : CircuitPiece<rl,rw,rn> = 
+        pack lists0 as CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in
+  let lists1 : <wire_list<rl,rw1,rn1,rg1>@rl,node_list<rl,rn1>@rl> =
+        build_lists[rl,rw,rn,rw1,rn1,rg1](all_nodes,all_wires,pc.1,pc.2,pc.3,1) in
+  let piece1 : CircuitPiece<rl,rw,rn> = 
+        pack lists1 as CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
+      execute_time_steps[rl,rw,rn](piece0,piece1,steps)
+
+-- Time Step Loop
+function execute_time_steps[rl,rw,rn] ( p0 : CircuitPiece<rl,rw,rn>, 
+      p1 : CircuitPiece<rl,rw,rn>, steps : int ) , reads(rn,rw,rl), writes(rn,rw) : bool = 
+  if steps #$<$# 1 then true else
+  unpack p0 as piece0 : CircuitPiece<rl,rw,rn>[rw0,rn0,rg0] in 
+  unpack p1 as piece1 : CircuitPiece<rl,rw,rn>[rw1,rn1,rg1] in
+  let _ : bool = calc_new_currents[rl,rw0,rn0,rg0](piece0.1) in
+  let _ : bool = calc_new_currents[rl,rw1,rn1,rg1](piece1.1) in
+  let _ : bool = distribute_charge[rl,rw0,rn0,rg0](piece0.1) in
+  let _ : bool = distribute_charge[rl,rw1,rn1,rg1](piece1.1) in
+  let _ : bool = update_voltage[rl,rn0](piece0.2) in
+  let _ : bool = update_voltage[rl,rn1](piece1.2) in
+      execute_time_steps[rl,rw,rn](p0,p1,steps-1)
+
+function color_circuit[rn,rw,rl] ( all_nodes : node_list<rl,rn>@rl, 
+                               all_wires : wire_list<rl,rw,rn>@rl ), 
+        reads(rn,rw,rl) : <coloring(rn), multicoloring(rn), coloring(rw)> =  
+  -- Invoke programmer chosen coloring algorithm (e.g. METIS)
+  -- return owned, ghost, wire colorings
+
+-- Helper method
+function build_lists[rl,rw,rn,rpw,rpn,rg] ( nodes : node_list<rl,rn>@rl, 
+       wires : wire_list<rl,rw,rn>@rl, oc : coloring(rn), gc : multicoloring(rn), 
+       wc : coloring(rw), c : int), reads(rn,rw,rl), writes(rl) 
+       : < wire_list<rl,rpw,rpn,rg>@rl, node_list<rl,rpn>@rl > = 
+  -- Construct lists of node and wire pointers for the given colorings
+\end{lstlisting}
+
+The {\tt execute\_time\_steps} function (lines 37-48)  
+also illustrates the importance of using different partitions to give
+multiple views onto the same logical region.  Both {\tt
+  calc\_new\_currents} and {\tt distribute\_charge} 
+use the owned and ghost regions of a piece, which are from different partitions. In
+{\tt calc\_new\_currents} these regions only need read
+privileges, allowing both instances of {\tt calc\_new\_currents} to be
+run in parallel.  In {\tt distribute\_charge} the
+privilege is for a reduction which can also be done in parallel
+because of the atomic and commutative nature of reductions.  Finally,
+the {\tt update\_voltage} function modifies only the owned regions, permitting
+each piece to be updated in parallel.  No
+single partition of the nodes
+describes these data sharing patterns.
+
+%This function also demonstrates the benefit of being able to dynamically
+%(re-)discover disjointness.  Safely running both instances of 
+%{\tt calc\_new\_currents} in parallel depends on knowing that {\tt rw0} and
+%{\tt rw1} in {\tt execute\_time\_steps} are disjoint.  Similarly, parallel
+%execution of the instances of {\tt update\_voltage} requires knowing that
+%{\tt rn0} is disjoint from {\tt rn1}.  In both cases, this knowledge was
+%statically available in {\tt simulate\_circuit} and could have been captured
+%in a region relationship, but it would have resulted in much more complicated
+%code.
+%Instead, an inexpensive dynamic disjointness check is performed by the Legion
+%runtime, and the safety of parallel execution follows from the soundness of
+%the type system.
+The {\tt execute\_time\_steps} function also demonstrates the benefit of dynamically
+being able to discover disjointness.  To run the two instances of 
+{\tt calc\_new\_currents} in parallel requires knowing that {\tt rw0}
+and {\tt rw1} are disjoint.  There is a similar requirement for parallel
+execution of the two {\tt update\_voltage} calls with {\tt rn0} and {\tt rn1}.  In
+both cases, this knowledge was statically available in {\tt simulate\_circuit}
+and could have been captured in a region relationship at the cost
+of much more complicated code.  Instead, an inexpensive dynamic disjointness
+check by the Legion runtime will discover the parallelism.
+
+Listing~\ref{lst:circuit_leaf_full} shows the leaf functions for each phase.
+Each function iterates over the list of wires or
+nodes for its piece.  Each function specifies the region privileges it
+requires (lines 2,14,23).  
+%These privileges
+%are statically checked to match the operations performed inside of
+%each function (e.g. read and write).  
+In the case of {\em reduce} the
+privilege must also specify which reduction function is used
+(line 14).
+
+In addition to privileges, functions can also specify {\em coherence}
+on regions.  Coherence specifies what updates the function may
+see from other functions using the same region.  If not otherwise
+specified, coherence defaults to {\em exclusive}, meaning the
+function must appear to execute in program order.  Line 14 shows
+an example of {\tt atomic}, a relaxed coherence mode requiring
+that operations to {\tt rn} and {\tt rg} appear atomic relative
+to other functions using those regions.  The most relaxed coherence
+mode is {\tt simult}; simultaneous coherence allows concurrent access 
+to the region by all functions that are using the region
+in a simultaneous mode.  The interaction between {\em tasks} (which are functions chosen by the runtime to execute in parallel) using the same
+region with different coherence
+modes is formalized in Section~\ref{sec:coherencefull}.
+
+% This is a description of how the listings should be formatted.
+% It can go anywhere before the listings.
+\lstset{
+  captionpos=b,
+  language=Haskell,
+  basicstyle=\scriptsize,
+  numbers=left,
+  numberstyle=\tiny,
+  columns=fullflexible,
+  stepnumber=1,
+  escapechar=\#,
+  keepspaces=true,
+  literate={<}{{$\langle$}}1 {>}{{$\rangle$}}1,
+  morekeywords={function,rr,int,float,bool,isnull,partition,as,downregion,upregion,reads,writes,rdwrs,reduces,read,write,reduce,using,unpack,pack,coloring,multicoloring,color,newcolor,atomic,simultaneous},
+  deletekeywords={float,head,min,max}
+}
+
+\begin{lstlisting}[float={t},label={lst:circuit_leaf_full},caption={Circuit Leaf Functions}]
+function calc_new_currents[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), 
+      reads(rl,rw,rn,rg), writes(rw) : bool =
+  if isnull(ptr_list) then true else
+  let wire_node : wire_list<rl,rw,rn,rg> = read(ptr_list) in
+  let wire : CircuitWire<rn,rg> = read(wire_node.1) in
+  let in_node : CircuitNode = read(wire.1) in
+  let out_node : CircuitNode = read(wire.2) in
+  let current : float = (in_node.1 - out_node.1) /  wire.3 in 
+  let new_wire : CircuitWire<rn,rg> = <wire.1,wire.2,wire.3,current> in
+  let _ : CircuitWire<rn,rg>@rw = write(wire_node.1, new_wire) in
+      calc_new_currents[rl,rw,rn,rg](wire_node.2)
+
+function distribute_charge[rl,rw,rn,rg] ( ptr_list : wire_list<rl,rw,rn,rg>@rl ), 
+      reads(rl,rw,rn), reduces(reduce_charge,rn,rg), atomic(rn,rg) : bool =
+  if isnull(ptr_list) then true else
+  let wire_node : wire_list<rl,rw,rn,rg> = read(ptr_list) in
+  let wire : CircuitWire<rn,rg> = read(wire_node.1) in
+  let _ : CircuitNode@rn = reduce(reduce_charge, wire.1, wire.4) in
+  let _ : CircuitNode@(rn,rg) = reduce(reduce_charge, wire.2, wire.4) in
+      distribute_charge[rl,rw,rn,rg](wire_node.2)
+
+function update_voltage[rl,rn] ( ptr_list : node_list<rl,rn>@rl ), 
+      reads(rl,rn), writes(rn) : bool = 
+  if isnull(ptr_list) then true else
+  let node_node : node_list<rl,rn> = read(ptr_list) in
+  let node : CircuitNode = read(node_node.1) in
+  let voltage : float = (node.3/node.4) in
+  let new_node : CircuitNode = <voltage,node.2,node.3,node.4> in
+  let _ : CircuitNode@rn = write(node_node.1, new_node) in
+      update_voltage[rl,rn](node_node.2)
+
+-- Reduction function for distribute charge
+function reduce_charge ( node : CircuitNode, current : float ) : CircuitNode =
+    let new_charge : float = node.3 + current in
+        < node.1,new_charge,node.3,node.4>
+\end{lstlisting}
+
+

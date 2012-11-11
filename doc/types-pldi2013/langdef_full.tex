@@ -1,0 +1,2208 @@
+\setcounter{thm}{0}
+\setcounter{lem}{0}
+\texcomment{
+\newtheorem{thm}{Theorem}
+\newtheorem{lem}{Lemma}
+
+\newcommand{\oton}[1]{{#1}_1,\ldots,{#1}_n}
+\newcommand{\otok}[2]{{#2}_1,\ldots,{#2}_{#1}}
+\newcommand{\dplus}{\text{+\!+}}
+\newcommand{\llbracket}{[\![}
+\newcommand{\rrbracket}{]\!]}
+\newcommand{\tuple}[2]{\langle #1, #2 \rangle}
+\makeatletter
+% macros for consistency flavors
+\newcommand{\simH}{\sim_{\!H}}
+% usually: \mapconsist{\Omega}
+\newcommand{\mapconsist}[2][M]{#1 \sim #2}
+% usually: \localconsist{L}{\Gamma}
+\newcommand{\localconsist}[3][M]{#2 \simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
+% usually: \storeconsist{S}{H}
+\newcommand{\storeconsist}[2]{#1 \sim #2}
+% usually: \valueconsist{v}{T}
+\newcommand{\valueconsist}[3][M]{#2 \simH \@ifmtarg{#1}{#3}{#1 \llbracket #3 \rrbracket}}
+% usually: \traceconsist{E}
+\newcommand{\traceconsist}[2][H]{#2 \sim #1}
+% usually: \privconsist{E}{\Phi}
+\newcommand{\privconsist}[3][M]{#2 \@ifmtarg{#1}{:}{:_{\!#1}} #3}
+
+\newcommand{\nonint}[1][]{\#\@ifmtarg{#1}{}{_{\!\!#1}}}
+\makeatother
+
+% override BCP's typesetrule function to left-justify multiple lines of hypotheses
+\renewcommand{\typesetrule}[2]{%
+   \setrulebody{%
+      \frac{\begin{array}{@{}l@{}}#1\end{array}}%
+           {\begin{array}{@{}l@{}}#2\end{array}}}}
+
+% fun latex tricks to make typeenv and opsenv more friendly
+\makeatletter
+\define@key{typeenv}{G}{\def\typeenv@G{#1}}
+\define@key{typeenv}{P}{\def\typeenv@P{#1}}
+\define@key{typeenv}{O}{\def\typeenv@O{#1}}
+\newcommand{\typeenvx}[1][]{
+{
+% default values
+\def\typeenv@G{\Gamma}
+\def\typeenv@P{\Phi}
+\def\typeenv@O{\Omega}
+\setkeys{typeenv}{#1}
+\typeenv@G, \typeenv@P, \typeenv@O \vdash \,
+}}
+\newcommand{\typeenv}[3][]{\typeenvx[#1] {#2} : {#3}}
+\define@key{opsenv}{M}{\def\opsenv@M{#1}}
+\define@key{opsenv}{L}{\def\opsenv@L{#1}}
+\define@key{opsenv}{H}{\def\opsenv@H{#1}}
+\define@key{opsenv}{S}{\def\opsenv@S{#1}}
+\define@key{opsenv}{C}{\def\opsenv@C{#1}}
+\newcommand{\opsenvx}[1][]{
+{
+% default values
+\def\opsenv@M{M}
+\def\opsenv@L{L}
+\def\opsenv@H{H}
+\def\opsenv@S{S}
+\def\opsenv@C{C}
+\setkeys{opsenv}{#1}
+\opsenv@M, \opsenv@L, \opsenv@H, \opsenv@S, \opsenv@C \vdash \,
+}}
+\newcommand{\opsenv}[4][]{\opsenvx[#1] {#2} \mapsto {#3}, {#4}}
+\makeatother
+}
+
+\texcomment{
+\begin{figure*}
+\centering
+{\small
+\begin{tabular}{cclr|cclr}
+
+$T$ & ::= &  & types & $bv$ & ::= & false $\;\;\;\mid\;\;\;$ true & \\
+  &$\mid$& bool $\;\;\;\mid\;\;\;$ int & base types & & & & \\
+  &$\mid$& $\langle T_1, T_2 \rangle$ & tuple & $iv$ & ::= & 0 $\;\;\;\mid\;\;\;$ 1 $\ldots$ & \\
+  &$\mid$& $T@(\oton{r})$ & pointer & & & & \\
+  &$\mid$& $\text{coloring}(r)$ & region coloring & $e$ & ::= & & expressions \\
+  &$\mid$& $\exists \oton{r}. T\text{ where }\Omega$ & region relationship &   &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & constants \\
+  &$\mid$& $\forall \oton{r}. (\oton{T}), \Phi, Q \rightarrow T_r$ & functions &   &$\mid$& $\langle e_1, e_2 \rangle$ $\;\;\;\mid\;\;\;$ $e$.1 $\;\;\;\mid\;\;\;$ $e$.2 & tuple \\
+& & & &   &$\mid$& $id$ &  \\
+$\Omega$ & ::= & $\{ \oton{\omega} \}$ & region constraints &   &$\mid$& $\text{new}\ T@r$ $\;\;\;\mid\;\;\;$ $\text{null }T@r$ $\;\;\;\mid\;\;\;$ $\text{isnull}(e)$ & \\
+$\omega$ & ::= & $r_1 \leq r_2$ & subregion   &   
+  &$\mid$& $\text{upregion}(e, r_1,\ldots,r_n)$ & \\
+  &$\mid$& $r_1 * r_2$ & disjointness &   
+  &$\mid$ & $\text{downregion}(e, r_1,\ldots,r_n)$ & \\  
+& & &  & 
+  &$\mid$& $\text{read}(e_1)$ $\;\mid\;$ $\text{write}(e_1, e_2)$ & memory access \\
+$\Phi$ & ::= & $\{ \oton{\phi} \}$ & privileges & 
+  & $\mid$ & $\text{reduce}(id, e_1, e_2)$ & \\
+$\phi$ & ::= & reads$(r)$ $\;\mid\;$ writes$(r)$ $\;\mid\;$ $\text{reduces}_{id}(r)$ &  &  
+  &$\mid$& $\text{newcolor}\ r$ $\;\mid\;$ $\text{color}(e_1, e_2, e_3)$ & coloring \\
+& & & &  
+  &   $\mid$& $e_1 + e_2$ & integer ops \\
+$Q$ & ::= & $\{ \oton{q} \}$ & coherence modes  &   
+       & $\mid$& $e_1 < e_2$ & comparisons \\
+$q$ & ::= & atomic$(r)$ $\;\;\;\mid\;\;\;$ simult$(r)$ & &   
+  &$\mid$& $\text{let}\ id : T = e_1 \text{in}\ e_2$ &  \\
+& & & &   
+       & $\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
+$v$ & ::= & & values &   
+       & $\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & function calls \\
+  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & base values &   
+       & $\mid$ & $\text{partition}\ r_p\text{ using }e_1\text{ as }\oton{r}\text{ in }\ e_2$ &  \\
+  &$\mid$& $\langle v_1, v_2 \rangle$ & tuple & 
+       & $\mid$& $\text{pack}\ e_1\ \text{as}\ T[r_1,\ldots,r_n]$ &  \\
+  &$\mid$& null $\;\;\;\mid\;\;\;$ $a$ & address & 
+       & $\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
+  &$\mid$& $\{ (a_i, iv), \ldots \}$ & coloring & 
+    & & & \\
+  &$\mid$& $\langle \langle \oton{\rho}, v\rangle \rangle$ & reg. relation instance & 
+   & & & \\
+%$bv$ & ::= & false $\;\;\;\mid\;\;\;$ true \\
+%\\
+%$iv$ & ::= & 0 $\;\;\;\mid\;\;\;$ 1 $\ldots$ \\
+%\\
+%$e$ & ::= & & expressions \\
+%  &$\mid$& $bv$ $\;\;\;\mid\;\;\;$ $iv$ & constants \\
+%  &$\mid$& $\langle e_1, e_2 \rangle$ $\;\;\;\mid\;\;\;$ $e$.1 $\;\;\;\mid\;\;\;$ $e$.2 & tuple \\
+%  &$\mid$& $id$ &  \\
+%  &$\mid$& $\text{new}\ T@r$ $\;\;\;\mid\;\;\;$ $\text{null }T@r$ $\;\;\;\mid\;\;\;$ $\text{isnull}(e)$ & \\
+%  &$\mid$& $\text{upregion}(e, r_1,\ldots,r_n)$ $\;\;\;\mid\;\;\;$ $\text{downregion}(e, r_1,\ldots,r_n)$ & \\
+%  &$\mid$& $\text{read}(e_1)$ $\;\;\;\mid\;\;\;$ $\text{write}(e_1, e_2)$ $\;\;\;\mid\;\;\;$ $\text{reduce}(id, e_1, e_2)$ & memory access \\
+%  &$\mid$& $\text{newcolor}\ r$ $\;\;\;\mid\;\;\;$ $\text{color}(e_1, e_2, e_3)$ & coloring operations \\
+%  &$\mid$& $e_1 + e_2$ & integer operations \\
+%  &$\mid$& $e_1 < e_2$ & comparison operations \\
+%  &$\mid$& $\text{let}\ id : T = e_1 \text{in}\ e_2$ &  \\
+%  &$\mid$& $\text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3$ &  \\
+%  &$\mid$& $id[r_1, \ldots, r_n](e_1,\ldots,e_n)$ & function calls \\
+%  &$\mid$& $\text{partition}\ r_p\text{ using }e_1\text{ as }\oton{r}\text{ in }\ e_2$ &  \\
+%  &$\mid$& $\text{pack}\ e_1\ \text{as}\ T[r_1,\ldots,r_n]$ &  \\
+%  &$\mid$& $\text{unpack}\ e_1\ \text{as}\ id : T[r_1,\ldots,r_n]\ \text{in}\ e_2$ &  \\
+\end{tabular}
+}
+\caption{Core Legion}
+\label{fig:langdeffull}
+\vspace{-5mm}
+\end{figure*}
+}
+
+%\newcommand{\infrule}[2]{\displaystyle\frac{\displaystyle\strut{#1}}{\displaystyle\strut {#2}}}
+%\newcommand{\cinfrule}[3]{\parbox{14cm}{\hfil$\infrule{#1}{#2}$\hfil}\parbox{4cm}{$\,#3$\hfil}}
+%\newcommand{\finfrule}[2]{\framebox{$\infrule{#1}{#2}$}}
+%\newcommand{\oldfinfrule}[2]{\vspace{10pt}\framebox{$\infrule{#1}{#2}$}\vspace{10pt}}
+
+%\newcommand{\infx}[2]{\infrule{\begin{array}{l}{#1}\end{array}}{#2}}
+
+\section{Core Legion}
+\label{sec:legioncorefull}
+
+Figure~\ref{fig:langdef} defines Core Legion, a subset of the full Legion language
+that still illustrates all of the important issues.  Types
+include booleans, integers, tuples, and pointers.  Pointers
+are annotated with a list of regions---a non-null pointer must point to a 
+location that is contained in at least one of the regions. There is a special
+type for {\em colorings}, which
+are used to specify partitions of regions into subregions.
+Functions in Legion are named, accept one or more arguments and
+return a value of some type.  A function also declares the region
+access privileges and coherence it requires.  A function may be executed
+within the current task or run in parallel as a separate subtask---this decision is made
+by the Legion task scheduler.  Function types are
+universally quantified over all region names appearing in the type.
+The final type is a region relationship, an instance of which captures a value and
+one or more regions satisfying associated constraints.  A region relation instance
+can be written into the heap and later read and
+unpacked, giving new local names to the regions contained in
+the instance.
+
+\subsection{Core Type System}
+\label{subsec:coretypesfull}
+
+Core Legion is explicitly typed using judgments of the form
+$$\typeenv{e}{T}$$
+where:
+\begin{itemize}
+\item $\Gamma$ is the type environment, mapping the names of local variables and global functions
+to their types,
+\item $\Phi$ is the region access privileges under which the expression is evaluated, and
+\item $\Omega$ is the set of constraints that must hold between regions
+\end{itemize}
+As regions are hierarchical, privileges and/or constraints on a region often imply similar
+privileges or constraints on subregions.  Figure~\ref{fig:closure} defines closure
+operations for $\Phi^*$ and $\Omega^*$ that explicitly add these implied constraints.
+The type checking rules are in Figure~\ref{fig:typesfull}.  Many of the rules are 
+straightforward, but several deserve more explanation.
+
+Core Legion has no subtyping. A pointer's region is changed only via explicit
+{\em upregion} and {\em downregion} operations.  {\em Upregion} calls can be inferred,
+but {\em downregion} must be accompanied by a run-time check that the pointer really does
+point into the subregion(s), so {\em upregion} is made explicit as well for simplicity.
+
+Accesses to heap memory are performed via the {\em read}, {\em write}, and {\em reduce}
+operations, which are only legal if the regions in a pointer's type are ones for which the
+enclosing function has privileges.
+Similarly, a call to another function is permitted only if the privileges required by the 
+callee are a subset of those held by the caller.  There is no way to create privileges within
+a Legion function - it is limited to privileges given to it by its caller.  (The
+top-level task of a Core Legion program begins with a single, empty region from which other
+regions can be partitioned and full read and
+write privileges.)
+
+The {\em partition} operation uses a {\em coloring} to split a region into 
+disjoint subregions.  The subregions are given names within the body of the partition,
+as well as constraints asserting subregions are pairwise disjoint and contained within the parent region.
+%These constraints can be used locally, or packed into region relation instances that can be unpacked and used later.
+
+The {\em pack} expression packs together a value and the corresponding logical regions,
+provided the region relation's constraints hold.  The
+corresponding {\em unpack} expression gives (new) names to those regions.  For simplicity, in Core Legion neither the 
+{\em partition} nor the {\em unpack} expression allows shadowing of region names.
+
+\begin{comment}
+\begin{figure*}
+\centering{
+\framebox{$\typeenv{bv}{bool}$}
+\framebox{$\typeenv{iv}{int}$}
+\finfrule
+{\begin{array}{l}
+\typeenvx e_1 : T_1 \\
+\typeenvx e_2 : T_2
+\end{array}}
+{\typeenvx \langle e_1, e_2 \rangle : \langle T_1, T_2 \rangle}
+\finfrule{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.1}\ : T_1}
+\finfrule{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.2}\ : T_2}
+\finfrule{\Gamma(id) = T}{\typeenvx id : T}
+\framebox{$\typeenvx \text{null }T@r : T@r$}
+\framebox{$\typeenvx \text{new }T@r : T@r$}
+\finfrule{\typeenvx e : T@(\oton{r})}{\typeenvx \text{isnull}(e) : bool}
+\finfrule
+{\begin{array}{l}
+\typeenvx e : T@(r'_1, \ldots r'_k) \\
+\forall i. \exists j, r'_i \leq r_j \in \Omega^* \\
+\end{array}}
+{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})}
+\finfrule
+{\begin{array}{l}
+\typeenvx e : T@(r'_1, \ldots r'_k) \\
+\forall j. \exists i, r_j \leq r'_i \in \Omega^* \\
+\end{array}}
+{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
+\finfrule
+{\begin{array}{l}
+\typeenvx e_1 : T@(\oton{r}) \\
+\forall i, reads(r_i) \in \Phi^*\end{array}}
+{\typeenvx \text{read}(e_1) : T}
+\finfrule
+{\begin{array}{l}
+\typeenvx e_1 : T@(\oton{r}) \\
+\typeenvx e_2 : T \\
+\forall i, writes(r_i) \in \Phi^*
+\end{array}}
+{\typeenvx \text{write}(e_1, e_2) : T@(\oton{r})}
+\finfrule
+{\begin{array}{l}
+\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \\
+\typeenvx e_1 : T_1@(\oton{r}) \\
+\typeenvx e_2 : T_2 \\
+\forall i, reduces_{id}(r_i) \in \Phi^*
+\end{array}}
+{\typeenvx \text{reduce}(id, e_1, e_2) : T_1@(\oton{r})}
+\framebox{$\typeenvx \text{newcolor }r : \text{coloring}(r)$}
+\finfrule{\begin{array}{l}
+\typeenvx e_1 : \text{coloring}(r) \\
+\typeenvx e_2 : T@r \\
+\typeenvx e_3 : int
+\end{array}}
+{\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)}
+\finfrule{\begin{array}{l}\typeenvx e_1 : int \\ \typeenvx e_2 : int\end{array}}{\typeenvx e_1 + e_2 : int}
+\finfrule{\begin{array}{l}\typeenvx e_1 : int \\ \typeenvx e_2 : int\end{array}}{\typeenvx e_1 < e_2 : bool}
+\finfrule{\begin{array}{l}
+\typeenvx e_1 : T_1 \\
+\typeenvx[G={\Gamma[T_1/id]}] e_2 : T_2
+\end{array}}
+{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2}
+\finfrule{\begin{array}{l}\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T\end{array}}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T}
+\finfrule{
+\begin{array}{l}
+\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\
+\typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\
+\Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*
+\end{array}}
+{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
+\finfrule{
+\begin{array}{l}
+\typeenvx e_1 : \text{coloring}(r_p) \\
+\Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\
+\typeenvx[O=\Omega'] e_2 : T \\
+\{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset
+\end{array}}
+{\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
+\finfrule{
+\begin{array}{l}
+T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\
+\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\
+\typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]
+\end{array}}
+{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1}
+\finfrule{
+\begin{array}{l}
+T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
+\typeenvx e_1 : T_1 \\
+\Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \\
+\Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
+\typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \\
+\{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset
+\end{array}}
+{\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3}
+\finfrule{
+\begin{array}{l}
+\text{for }1 \leq i \leq p, \\
+\Gamma(id_i) = \forall r_{i1}, \ldots r_{ik_i}. (T_{i1}, \ldots, T_{in_i}), \Phi_i, Q_i \rightarrow T_{ir} \\
+\Gamma_i = \Gamma[a_{i1}/T_{i1}, \ldots, a_{in_i}/T_{in_i}] \\
+\typeenv[G={\Gamma_i},P={\Phi_i},O=\emptyset]{e_i}{T_{ir}}
+\end{array}}
+{ 
+\begin{array}{l@{ }l}
+\vdash \{ & \text{function }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, \\
+          & \ldots \\
+          & \text{function }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet
+\end{array} }
+}
+\caption{Legion Core Type System}
+\label{fig:typesfull}
+\end{figure*}
+\end{comment}
+
+\begin{figure*}
+\begin{adjustwidth}{-4em}{-4em}
+\begin{center}
+% Row 1: bool, int, tuple1, tuple2
+\begin{minipage}{\linewidth}
+%\centering
+\begin{tabular}{m{4cm}m{3.5cm}m{5cm}m{5cm}}
+\infax[T-Bool]{\typeenv{bv}{bool}} & 
+\infax[T-Int]{\typeenv{iv}{int}} & 
+\infrule[T-Tuple1]{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.1}\ : T_1} & 
+\infrule[T-Tuple2]{\typeenvx e : \langle T_1,T_2 \rangle}{\typeenvx e\text{.2}\ : T_2} 
+\end{tabular}
+\end{minipage}
+% Row 2:  var, null, isnull, maketuple
+\begin{minipage}{\linewidth}
+\vspace{-0.4cm}
+%\centering
+\begin{tabular}{m{3cm}m{3cm}m{5cm}m{6cm}}
+\infrule[T-Var]{\Gamma(id) = T}{\typeenvx id : T} &
+\infax[T-Null]{\typeenvx \text{null }T@r : T@r} &
+\infrule[T-IsNull]{\typeenvx e : T@(\oton{r})}{\typeenvx \text{isnull}(e) : bool} &
+\infrule[T-MakeTuple]{\typeenvx e_1 : T_1 \andalso \typeenvx e_2 : T_2}{\typeenvx \langle e_1, e_2 \rangle : \langle T_1, T_2 \rangle}
+\end{tabular}
+\end{minipage}
+% Row 3: new, newcolor, coloring
+\begin{minipage}{\linewidth}
+\vspace{-0.6cm}
+%\centering
+\begin{tabular}{m{4cm}m{5cm}m{9cm}}
+\infax[T-New]{\typeenvx \text{new }T@r : T@r} &
+\infax[T-Newcolor]{\typeenvx \text{newcolor }r : \text{coloring}(r)} &
+\infrule[T-Color]{\typeenvx e_1 : \text{coloring}(r) \andalso \typeenvx e_2 : T@r \andalso \typeenvx e_3 : int}{\typeenvx \text{color}(e_1, e_2, e_3) : \text{coloring}(r)}
+\end{tabular}
+\end{minipage}
+% Row 4: let, add, compare
+\begin{minipage}{\linewidth}
+\vspace{-0.7cm}
+%\centering
+\begin{tabular}{m{6cm}m{5cm}m{6cm}}
+\infrule[T-Let]{\typeenvx e_1 : T_1 \\ \typeenvx[G={\Gamma[T_1/id]}] e_2 : T_2}{\typeenvx : \text{let}\ id : T_1 \text{in}\ e_2 : T_2} &
+\infrule[T-Add]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 + e_2 : int} &
+\infrule[T-Compare]{\typeenvx e_1 : int \\ \typeenvx e_2 : int}{\typeenvx e_1 < e_2 : bool}
+\end{tabular}
+\end{minipage}
+% Row 5: upregion, downregion
+\begin{minipage}{\linewidth}
+\vspace{-0.4cm}
+\begin{tabular}{m{9cm}m{10cm}}
+\infrule[T-UpRgn]{\typeenvx e : T@(r'_1, \ldots r'_k) \andalso \forall i. \exists j, r'_i \leq r_j \in \Omega^*}{\typeenvx upregion(e,\oton{r}) : T@(\oton{r})} &
+\infrule[T-DownRgn]{\typeenvx e : T@(r'_1, \ldots r'_k)
+% \andalso \forall j. \exists i, r_j \leq r'_i \in \Omega^*
+}{\typeenvx downregion(e,\oton{r}) : T@(\oton{r})}
+\end{tabular}
+\end{minipage}
+% Row 6: read, write, reduce
+\begin{minipage}{\linewidth}
+\vspace{-0.3cm}
+\begin{tabular}{m{5cm}m{5cm}m{8cm}}
+\infrule[T-Read]{\typeenvx e_1 : T@(\oton{r}) \\ \forall i, reads(r_i) \in \Phi^*}{\typeenvx \text{read}(e_1) : T} &
+\infrule[T-Write]{\typeenvx e_1 : T@(\oton{r}) \\ \typeenvx e_2 : T \\ \forall i, writes(r_i) \in \Phi^*}{\typeenvx \text{write}(e_1, e_2) : T@(\oton{r})} &
+\infrule[T-Reduce]{\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1 \andalso \typeenvx e_2 : T_2 \\
+ \typeenvx e_1 : T_1@(\oton{r}) \andalso \forall i, reduces_{id}(r_i) \in \Phi^*}{\typeenvx \text{reduce}(id, e_1, e_2) : T_1@(\oton{r})}
+\end{tabular}
+\end{minipage}
+% Row 7: pack, if-else, task call
+\begin{minipage}{\linewidth}
+\vspace{-0.6cm}
+\begin{tabular}{m{5cm}m{5cm}m{8cm}}
+\infrule[T-Pack]{T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\ \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\ \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]}{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} &
+\infrule[T-IfElse]{\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T} &
+\infrule[T-Call]{\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\ \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\ \Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*}{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
+\end{tabular}
+\end{minipage}
+% Row 8: unpack, partition
+\begin{minipage}{\linewidth}
+\vspace{-0.7cm}
+\begin{tabular}{m{10cm}m{8cm}}
+\infrule[T-Unpack]{T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \andalso \typeenvx e_1 : T_1 \\
+  \Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \andalso \Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
+  \typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \andalso \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset}
+  {\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3} &
+\infrule[T-Part]{\typeenvx e_1 : \text{coloring}(r_p) \\ \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\ \typeenvx[O=\Omega'] e_2 : T \\ \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset}
+  {\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
+\end{tabular}
+\end{minipage}
+% Row 9: program
+\begin{minipage}{\linewidth}
+\vspace{-0.5cm}
+\infrule[T-Program]{\text{for }1 \leq i \leq p, \\
+  \Gamma(id_i) = \forall r_{i1}, \ldots r_{ik_i}. (T_{i1}, \ldots, T_{in_i}), \Phi_i, Q_i \rightarrow T_{ir} \andalso
+  \Gamma_i = \Gamma[a_{i1}/T_{i1}, \ldots, a_{in_i}/T_{in_i}] \andalso
+  \typeenv[G={\Gamma_i},P={\Phi_i},O=\emptyset]{e_i}{T_{ir}}}
+  {\begin{array}{@{}l@{}l@{}}
+   \vdash \{ & \text{function }id_1[r_{11}, \ldots, r_{1k_1}]( a_{11} : T_{11}, \ldots a_{1n_1} : T_{1n_1} ), \Phi_1, Q_1 : T_{1r} : e_1, \\
+           & \ldots \\
+           & \text{function }id_p[r_{p1}, \ldots, r_{pk_1}]( a_{p1} : T_{p1}, \ldots a_{pn_p} : T_{pn_p} ), \Phi_p, Q_p : T_{pr} : e_p \} : \bullet
+   \end{array}
+  }
+\end{minipage}
+\end{center}
+\end{adjustwidth}
+\caption{Legion Core Type System}
+\vspace{-5mm}
+\label{fig:typesfull}
+\end{figure*}
+
+\texcomment{
+\begin{figure}
+\centering{
+$\begin{array}{l}
+\Omega \subseteq \Omega^* \\
+r_i \leq r_j \in \Omega^*  \Rightarrow r_i \leq r_i \in \Omega^*\wedge r_j \leq r_j \in \Omega^* \\
+r_i \leq r_j \in \Omega^* \wedge r_j \leq r_k \in \Omega^* \Rightarrow r_i \leq r_k \in \Omega^* \\
+r_i \leq r_j \in \Omega^* \wedge r_j * r_k \in \Omega^* \Rightarrow r_i * r_k \in \Omega^* \\
+r_i * r_j \in \Omega^* \Rightarrow r_j * r_i \in \Omega^* \\
+\\
+\Phi \subseteq \Phi^* \\
+r_i \leq r_j \in \Omega^* \wedge reads(r_j) \in \Phi^* \Rightarrow reads(r_i) \in \Phi^* \\
+r_i \leq r_j \in \Omega^* \wedge writes(r_j) \in \Phi^* \Rightarrow writes(r_i) \in \Phi^* \\
+r_i \leq r_j \in \Omega^* \wedge reduces_{id}(r_j) \in \Phi^* \Rightarrow reduces_{id}(r_i) \in \Phi^* \\
+reads(r) \in \Phi^* \wedge writes(r) \in \Phi^* \Rightarrow reduces_{id}(r) \in \Phi^* \\
+\ \ \ \mbox{for every function identifier $id$}
+\end{array}$
+}
+\caption{Privilege and Constraint Closure}
+\vspace{-5mm}
+\label{fig:closure}
+\end{figure}
+}
+
+\subsection{Operational Semantics}
+\label{subsec:opsemanticsfull}
+
+Core Legion's operational semantics rules have the following form:
+$$\opsenv{e}{v}{E}$$
+where: 
+\begin{itemize}
+\item $M$ is a mapping from logical regions $r_i$ to {\em physical regions} $\rho_i$, which are sets of concrete memory locations.
+We write $\hat x = M \llbracket x \rrbracket$ for the application of $M$ to other objects (e.g., types), 
+replacing all free logical region names $r_i$ in $x$ with corresponding physical regions $\rho_i$.  
+(Note $M \llbracket x \rrbracket$ is ill-formed if $x$ contains a free logical region name $r_j \not\in dom(M)$.)
+
+\item $L$ is a mapping of local variables to (immutable) values.  
+
+\item $H$ is a {\em heap typing}, assigning an invariant type to every memory location.  The heap typing
+serves two important roles.  First, it is used to bound the values that can be used for reads when 
+concurrent operation may make the exact value uncertain.  Second, it greatly simplifies the consistency
+check of pointer values, allowing a simple test against the heap typing for a location in lieu of a
+potentially unbounded walk through the store for complicated pointer data structures.
+
+\item $S$ is a store, mapping memory locations $l_i$ to values.
+
+\item $C$ is a {\em clobber set}, memory locations that may be accessed by concurrently executing operations.
+
+\item $e$ is an expression.
+
+\item $v$ is the result of evaluating $e$.
+
+\item $E$ is a {\em memory trace} of the execution, a list of {\em memory operations}
+in the order performed.  A memory operation $\epsilon$ is either
+$read(l, c, v)$ (a read of location $l$ with coherence mode $c$, returning value $v$),
+$write(l, c, v)$ (a write to location $l$ with coherence mode $c$, storing value $v$),
+or $reduce_{id}(l, c, v)$ (a reduction into location $l$ with coherence mode $c$ using an
+associative function $id$ with value $v$).  Coherence modes are one of ({\em excl}, {\em atomic}, {\em simult}).
+\end{itemize}
+
+Helper functions are used in some rules:
+\begin{itemize}
+\item $apply(S, E)$ computes the store that results from applying memory trace $E$ to initial store $S$.
+
+\item $mark\_coh(E, \hat Q)$ records the coherence of operations in trace $E$ according to coherence annotations $\hat Q$. 
+
+\item $valid\_interleave(S, C, E', \oton{E})$ is true if $E'$ is a valid interleaving
+of the memory traces $\oton{E}$.
+\end{itemize}
+Figure~\ref{fig:langdef} defines {\em apply} and {\em mark\_coherence}.  The precise definition of
+{\em valid\_interleave} is given in Section~\ref{sec:coherencefull}.  For now, we need only that a valid interleaving
+is at least an interleaving, containing each constituent trace as a subsequence and no other operations.
+
+Some rules modeling concurrent execution are locally
+non-deterministic, guessing values that result from
+concurrent tasks.  For example, the rule for {\tt read(e)} returns an
+arbitrary value $v'$ of the correct type if the location being read is
+in the clobber set $C$, the set of locations concurrent tasks may
+clobber (i.e., update).  The guess is eventually checked for
+consistency by the $valid\_interleave$ predicate of some enclosing
+expression, at a point where the task that wrote $v'$ is also local to
+the expression being evaluated.
+
+Another prescient operation is {\tt newcolor r}, which guesses initial
+memory locations and their colors for a partition.  These locations
+support partition-then-allocate, ensuring the memory mapping $M$ has
+locations for the new subregions that can be allocated by {\tt new}.
+As is usual, memory allocation is also non-deterministic, choosing any
+location of the correct type in the region.  For simplicity we do not
+require locations to be ``fresh''; our soundness results hold even if
+{\tt new T@r} returns locations already in use, provided the heap
+typing of the location is correct.
+
+The most involved rule in Core Legion's semantics is for function calls.
+The only regions accessible to the callee (through $M'$) are the region arguments.
+Also, if any regions are used with relaxed coherence (either {\em atomic} or {\em simult} instead of
+{\em excl}), those locations are added to the clobber set, allowing the
+impact of concurrent modifications of the store to be handled by the caller.  
+%This is done by
+%annotating the called function's memory trace with the relaxed coherence on a per-location basis
+%and using the {\em valid\_interleave} predicate to control what parallel execution is allowed.
+
+\texcomment{
+\begin{figure*}
+\centering{
+$
+\begin{array}{@{}l@{}}
+\begin{array}{@{}l@{\hspace{-0.25in}}l@{}} 
+\begin{array}{@{}lll}
+apply(S, []) & = & S \\
+apply(S, E \dplus [ read(l, c, v) ]) & = & apply(S, E) \\
+apply(S, E \dplus [ write(l, c, v) ]) & = & apply(S, E)[v/l] \\
+apply(S, E \dplus [ reduce_{id}(l, c, v) ]) & = & S'[id(S'(l), v)/l], \\
+& & \text{ where } S' = apply(S, E)
+\end{array} &
+\begin{array}{@{}ll}
+mark\_coh([], \hat Q) & = [] \\
+mark\_coh([ op(l, c, v) ] \dplus E, \hat Q) & = [ op(l, c', v) ] \dplus mark\_coh(E, \hat Q), \\
+\multicolumn{2}{@{}l}{ \hspace{1.0in} \text{ where } c' =
+\begin{cases}
+simult, & \text{if }\exists \rho. l \in \rho \wedge simult(\rho) \in \hat Q \\
+atomic, & \text{if }\exists \rho. l \in \rho \wedge atomic(\rho) \in \hat Q \\
+excl, & \text{otherwise}
+\end{cases}}
+\end{array}
+\end{array} \\
+\begin{array}{@{}lll}
+any\_interleave([], [], \ldots, []) & = & true \\
+any\_interleave([ \epsilon ] \dplus E', E_1, \ldots, [ \epsilon ] \dplus E_i, \ldots, E_n) & = & any\_interleave(E', E_1, \ldots, E_i, \ldots, E_n) \\
+valid\_interleave(S, C, E', \oton{E}) & \Rightarrow & any\_interleave(E', \oton{E}) \\
+\end{array}
+\end{array}
+$}
+\caption{Operational Semantics Helper Functions}
+\label{fig:opsemfnsfull}
+\vspace{-5mm}
+\end{figure*}
+}
+
+\begin{comment}
+\begin{figure*}
+\centering{\small
+\framebox{$\opsenvx bv \mapsto bv, []$}
+\framebox{$\opsenvx iv \mapsto iv, []$}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto v_1, E_1 \\
+S' = apply(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx \langle e_1, e_2 \rangle \mapsto \langle v_1, v_2 \rangle, E'}
+\finfrule
+{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}
+{\opsenvx e\text{.1} \mapsto v_1, E} \hspace{1cm}
+\finfrule
+{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}
+{\opsenvx e\text{.2} \mapsto v_2, E}
+\finfrule
+{L(id) = v}
+{\opsenvx id \mapsto v, []}
+\framebox{$\opsenvx \text{null }T@r \mapsto null, []$}
+\finfrule
+{\begin{array}{l}
+l \in M(r) \\
+H(l) = M \llbracket T \rrbracket
+\end{array}}
+{\opsenvx \text{new }T@r \mapsto l, []}
+\finfrule
+{\opsenvx e \mapsto l, E}
+{\opsenvx \text{isnull}(e) \mapsto \textit{false}, E}
+\finfrule
+{\opsenvx e \mapsto null, E}
+{\opsenvx \text{isnull}(e) \mapsto true, E}
+\finfrule
+{\opsenvx e \mapsto v, E}
+{\opsenvx \text{upregion}(e, \oton{r}) \mapsto v, E}
+\finfrule
+{\begin{array}{l}
+\opsenvx e \mapsto l, E \\
+v = \begin{cases}
+l, & \text{if $\exists i, l \in M(r_i)$}. \\
+null, & \text{otherwise}.
+\end{cases}
+\end{array}}
+{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E}
+\finfrule
+{\begin{array}{l}
+\opsenvx e \mapsto l, E \\
+S' = \text{apply}(S, E) \\
+v = \begin{cases}
+S'(l), & \text{if } l \not\in C \\
+v' : H(l), & \text{otherwise}
+\end{cases}
+\end{array}}
+{\opsenvx \text{read}(e) \mapsto v, E \dplus [ read(l, excl, v) ]}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto l, E_1 \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx \text{write}(e_1, e_2) \mapsto l, E' \dplus [ write(l, excl, v) ]}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto l, E_1 \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx \text{reduce}(id, e_1, e_2) \mapsto l, E' \dplus [ reduce_{id}(l, excl, v) ]}
+\finfrule{
+\begin{array}{l@{}l}
+K = \{ (l_1, iv_1), & \ldots, (l_p, v_p) \}, \text{ where } \\
+& (\forall i \in [1,p]. l_i \in M(r)) \wedge \\
+& (\forall i,j \in [1,p]. l_i \not= l_j)
+\end{array}
+}
+{\opsenvx \text{newcolor }r \mapsto K, []}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto K, E_1 \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto l, E_2 \\
+S'' = \text{apply}(S', E_2) \\
+\opsenvx[S=S''] e_3 \mapsto v, E_3 \\
+K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \} \\
+valid\_interleave(S, C, E', E_1, E_2, E_3)
+\end{array}}
+{\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E'}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto v_1, E_1 \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\
+v' = v_1 + v_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx e_1 + e_2 \mapsto v', E'}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto v_1, E_1 \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\
+v' = \begin{cases}
+true, & \text{if $v_1 < v_2$}. \\
+\textit{false}, & \text{otherwise}.
+\end{cases} \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx e_1 < e_2 \mapsto v', E'}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto v_1, E_1 \\
+L' = L[v_1/id] \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E'}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto true, E_1 \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_2 \mapsto v_2, E_2
+\end{array}}
+{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto \textit{false}, E_1 \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[S=S'] e_3 \mapsto v_3, E_3
+\end{array}}
+{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3}
+\finfrule
+{\begin{array}{l}
+\opsenvx e_1 \mapsto v_1, E_1 \\
+S_1 = \text{apply}(S, E_1) \\
+\opsenvx e_2 \mapsto v_2, E_2 \\
+\ldots \\
+S_n = \text{apply}(S_{n-1}, E_n) \\
+valid\_interleave(S, C, E', \oton{E})
+\vspace{1.5mm} \\
+\text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
+M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \\
+L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \\
+S' = \text{apply}(S, E') \\
+C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \vee simult(\rho) \in M' \llbracket Q' \rrbracket \} \\
+\opsenvx[M=M',L=L',S=S'] e_{n+1} \mapsto v_{n+1}, E_{n+1}
+\vspace{1.5mm} \\
+E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \\
+valid\_interleave(S, C, E'', E', E_{n+1})
+\end{array}}
+{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
+\finfrule{
+\begin{array}{l}
+\opsenv{e_1}{K}{E_1} \\
+\rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
+M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'}
+\finfrule{
+\begin{array}{l}
+\opsenvx e_1 \mapsto v, E \\
+\rho_i = M[r_i], \text{ for } 1 \leq i \leq k \\
+v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle
+\end{array}}
+{\opsenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] \mapsto v', E}
+\finfrule{
+\begin{array}{l}
+\opsenvx e_1 \mapsto \langle \langle \otok{k}{\rho} , v_1 \rangle \rangle, E_1 \\
+M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
+L' = L[v_1/id] \\
+S' = \text{apply}(S, E_1) \\
+\opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2 \\
+valid\_interleave(S, C, E', E_1, E_2)
+\end{array}}
+{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E' }
+}
+\caption{Legion Core Operational Semantics}
+\label{fig:semanticsfull}
+\end{figure*}
+\end{comment}
+
+\begin{figure*}
+\begin{adjustwidth}{-4em}{-4em}
+\begin{center}
+% Row 1: bool, int, val
+\begin{minipage}{\linewidth}
+\begin{tabular}{m{6cm}m{6cm}m{6cm}}
+\infax[E-Bool]{\opsenvx bv \mapsto bv, []} &
+\infax[E-Int]{\opsenvx iv \mapsto iv, []} &
+\infax[E-Null]{\opsenvx \text{null }T@r \mapsto null, []} 
+\end{tabular}
+\end{minipage}
+% Row 2: tuple1, tuple2, make tuple
+\begin{minipage}{\linewidth}
+\vspace{-0.6cm}
+\begin{tabular}{m{9cm}m{4.5cm}m{4.5cm}}
+\infrule[E-MakeTuple]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S' = apply(S, E_1) \\
+  \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
+  {\opsenvx \langle e_1, e_2 \rangle \mapsto \langle v_1, v_2 \rangle, E'} &
+\infrule[E-Tuple1]{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}{\opsenvx e\text{.1} \mapsto v_1, E} &
+\infrule[E-Tuple2]{\opsenvx e \mapsto \langle v_1, v_2 \rangle, E}{\opsenvx e\text{.2} \mapsto v_2, E}
+\end{tabular}
+\end{minipage}
+% Row 3: new, null, isnull, isnull
+\begin{minipage}{\linewidth}
+\vspace{-0.6cm}
+\begin{tabular}{m{4cm}m{4.5cm}m{5cm}m{5cm}}
+\infrule[E-New]{l \in M(r) \\ H(l) = M \llbracket T \rrbracket}{\opsenvx \text{new }T@r \mapsto l, []} &
+\infrule[E-Var]{L(id) = v}{\opsenvx id \mapsto v, []} &
+\infrule[E-IsNull-F]{\opsenvx e \mapsto l, E}{\opsenvx \text{isnull}(e) \mapsto \textit{false}, E} &
+\infrule[E-IsNull-T]{\opsenvx e \mapsto null, E}{\opsenvx \text{isnull}(e) \mapsto true, E}
+\end{tabular}
+\end{minipage}
+% Row 4: let, add, compare
+\begin{minipage}{\linewidth}
+\vspace{-0.7cm}
+\begin{tabular}{m{6cm}m{6cm}m{6cm}}
+\infrule[E-Let]{\opsenvx e_1 \mapsto v_1, E_1 \\ L' = L[v_1/id] \\ S' = \text{apply}(S, E_1) \\ \opsenvx[L=L',S=S'] e_2 \mapsto v_2, E_2 \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx \text{let }id : T = e_1\text{ in }e_2 \mapsto v_2, E'} &
+\infrule[E-Add]{\opsenvx e_1 \mapsto v_1, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\ v' = v_1 + v_2 \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx e_1 + e_2 \mapsto v', E'} &
+\infrule[E-Compare]{\opsenvx e_1 \mapsto v_1, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2 \\ v' = \begin{cases} true, & \text{if $v_1 < v_2$}. \\ \textit{false}, & \text{otherwise}. \end{cases} \\ valid\_interleave(S, C, E', E_1, E_2)}{\opsenvx e_1 < e_2 \mapsto v', E'}
+\end{tabular}
+\end{minipage}
+% Row 5: if-else, if-else, new color
+\begin{minipage}{\linewidth}
+\vspace{-0.7cm}
+\begin{tabular}{m{6.5cm}m{6.5cm}m{6cm}}
+\infrule[E-IfElse-T]{\opsenvx e_1 \mapsto true, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_2 \mapsto v_2, E_2}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_2, E_1 \dplus E_2} &
+\infrule[E-IfElse-F]{\opsenvx e_1 \mapsto \textit{false}, E_1 \\ S' = \text{apply}(S, E_1) \\ \opsenvx[S=S'] e_3 \mapsto v_3, E_3}{\opsenvx \text{if }e_1\text{ then }e_2\text{ else }e_3 \mapsto v_3, E_1 \dplus E_3} &
+\infrule[E-Newcolor]{K = \{ (l_1, iv_1), \ldots, (l_p, iv_p) \}, \text{ where } \\ (\forall i \in [1,p]. l_i \in M(r)) \wedge (\forall i,j \in [1,p]. l_i \not= l_j)}{\opsenvx \text{newcolor }r \mapsto K, []}
+\end{tabular}
+\end{minipage}
+% Row 6: partition, color
+\begin{minipage}{\linewidth}
+\vspace{-0.6cm}
+\begin{tabular}{m{8.5cm}m{10.5cm}}
+\infrule[E-Part]{\opsenv{e_1}{K}{E_1} \andalso \rho_i = \{ l : (l, i) \in K \}, \text{ for } 1 \leq i \leq k \\
+  M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \andalso S' = \text{apply}(S, E_1) \\
+  \opsenvx[M=M',S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
+  {\opsenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 \mapsto v, E'} &
+\infrule[E-Color]{\opsenvx e_1 \mapsto K, E_1 \andalso S' = \text{apply}(S, E_1) \\
+  \opsenvx[S=S'] e_2 \mapsto l, E_2 \andalso S'' = \text{apply}(S', E_2) \\
+  \opsenvx[S=S''] e_3 \mapsto v, E_3 \\
+  K' = \{ (l,v) \} \cup \{ (l_i,v_i) : (l_i,v_i) \in K \wedge l \not= l_i \} \\
+  valid\_interleave(S, C, E', E_1, E_2, E_3)}
+  {\opsenvx \text{color}(e_1, e_2, e_3) \mapsto K', E'} 
+\end{tabular}
+\end{minipage}
+% Row 7: upregion, downregion, read
+\begin{minipage}{\linewidth}
+\vspace{-0.2cm}
+\begin{tabular}{m{6cm}m{6.5cm}m{6.5cm}}
+\infrule[E-UpRgn]{\opsenvx e \mapsto v, E}{\opsenvx \text{upregion}(e, \oton{r}) \mapsto v, E} &
+\infrule[E-DownRgn]{\opsenvx e \mapsto l, E \\ v = \begin{cases} l, & \text{if $\exists i, l \in M(r_i)$}. \\ null, & \text{otherwise}. \end{cases}}{\opsenvx \text{downregion}(e, \oton{r}) \mapsto v, E} &
+\infrule[E-Read]{\opsenvx e \mapsto l, E \andalso S' = \text{apply}(S, E) \\ v = \begin{cases} S'(l), & \text{if } l \not\in C \\ v' : H(l), & \text{otherwise} \end{cases}}{\opsenvx \text{read}(e) \mapsto v, E \dplus [ read(l, excl, v) ]}
+\end{tabular}
+\end{minipage}
+% Row 8: write, reduce
+\begin{minipage}{\linewidth}
+\vspace{-0.5cm}
+\begin{tabular}{m{9cm}m{9cm}}
+\infrule[E-Write]{\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
+  \opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
+  {\opsenvx \text{write}(e_1, e_2) \mapsto l, E' \dplus [ write(l, excl, v) ]} &
+\infrule[E-Reduce]{\opsenvx e_1 \mapsto l, E_1 \andalso S' = \text{apply}(S, E_1) \\
+  \opsenvx[S=S'] e_2 \mapsto v, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
+  {\opsenvx \text{reduce}(id, e_1, e_2) \mapsto l, E' \dplus [ reduce_{id}(l, excl, v) ]}
+\end{tabular}
+\end{minipage}
+% Row 9: pack, unpack
+\begin{minipage}{\linewidth}
+\vspace{-0.5cm}
+\begin{tabular}{m{8cm}m{10cm}}
+\infrule[E-Pack]{\opsenvx e_1 \mapsto v, E \andalso \rho_i = M[r_i], \text{ for } 1 \leq i \leq k \\
+  v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle}
+  {\opsenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] \mapsto v', E} &
+\infrule[E-Unpack]{\opsenvx e_1 \mapsto \langle \langle \otok{k}{\rho} , v_1 \rangle \rangle, E_1 \andalso M' = M[\rho_1/r_1, \ldots, \rho_k/r_k] \\
+  L' = L[v_1/id] \andalso S' = \text{apply}(S, E_1) \\
+  \opsenvx[M=M',L=L',S=S'] e_2 \mapsto v_2, E_2 \andalso valid\_interleave(S, C, E', E_1, E_2)}
+  {\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E'}
+\end{tabular}
+\end{minipage}
+% Row 10: task call
+\begin{minipage}{\linewidth}
+%\vspace{-0.5cm}
+\infrule[E-Call]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
+  valid\_interleave(S, C, E', \oton{E}) \andalso \text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
+  M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \andalso L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \andalso S' = \text{apply}(S, E') \\
+  C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \vee simult(\rho) \in M' \llbracket Q' \rrbracket \} \\
+  \opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})}
+  {\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
+\end{minipage}
+\end{center}
+\end{adjustwidth}
+\caption{Legion Core Operational Semantics}
+\label{fig:semanticfull}
+\end{figure*}
+
+\section{Soundness of Privileges}
+\label{sec:soundnessfull}
+
+A key property of the Legion type system is that any expression that is well-typed is
+guaranteed to access the heap only in ways permitted by the privileges under which it was typed.
+A judgment $\privconsist{E}{\Phi}$ holds if all the memory operations in memory trace $E$ are of the types and
+to locations covered by the privileges in $\Phi$:
+\[ 
+\begin{array}{l}
+\privconsist{E}{\Phi} \Leftrightarrow \forall \epsilon \in E. \\
+\quad\quad (\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reads(r) \in \Phi)\ \wedge \\
+\quad\quad (\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge writes(r) \in \Phi)\ \wedge \\
+\quad\quad (\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge reduces_{id}(r) \in \Phi)
+\end{array}
+\]
+
+Our goal is to show $\privconsist{E}{\Phi}$ holds for any execution of an expression $e$ with static privileges $\Phi$.
+As usual, even stating such a claim requires that corresponding parts of the initial static and dynamic environments be consistent.
+For our results, three consistency properties are needed:
+\begin{itemize}
+\item $\mapconsist{\Omega}$, a region mapping satisfies the region constraints under which the expression was typed
+\item $\localconsist{L}{\Gamma}$, local values have types consistent with the environment under which the expression was typed
+\item $\storeconsist{S}{H}$, the initial state of the store contains values whose types are consistent with the heap typing
+\end{itemize}
+
+\noindent Two additional properties are proven for each subexpression:
+\begin{itemize}
+\item $\valueconsist{v}{T}$, the expression yields a value of the right type
+\item $\traceconsist{E}$, values written to the store match the heap types of their locations
+\end{itemize}
+Figure~\ref{fig:constprop} gives the precise definition of these
+properties.\footnote{Note that in the definition of
+$\mapconsist{\Omega}$, the quantified variables $r_i$ and $r_j$
+range over both logical and physical regions.  Since $M$'s domain is
+logical regions, we extend $M$ to constraints with mixed logical and
+physical regions in the standard way by defining
+$M \llbracket \rho \rrbracket = \rho$.  And although the definition of
+$\traceconsist{E}$ refers to $M$ and $\Gamma$, the restriction that reduction
+functions must be monomorphic and visible in all functions means that 
+$\traceconsist{E}$ will be insensistive to the particular $M$ and $\Gamma$.}
+
+\texcomment{
+\begin{figure*}
+\centering{\footnotesize
+$
+\begin{array}{l}
+\begin{array}{ll}
+\begin{array}{lll}
+\mapconsist{\Omega} & \Leftrightarrow & (\forall r_i, r_j. r_i \leq r_j \in \Omega \Rightarrow M(r_i) \subseteq M(r_j))\ \wedge \\
+              &                 & (\forall r_i, r_j. r_i * r_j \in \Omega \Rightarrow M(r_i) \cap M(r_j) = \emptyset) \\
+\localconsist{L}{\Gamma} & \Leftrightarrow & \forall (id,v) \in L. \valueconsist[]{v}{M \llbracket \Gamma \rrbracket (id)} \\
+\storeconsist{S}{H} & \Leftrightarrow & \forall (l,v) \in S. \valueconsist[]{v}{H(l)} \\
+\end{array} & 
+\begin{array}{lll}
+\traceconsist{E} & \Leftrightarrow & (\forall l, c, v. write(l,c, v) \in E \Rightarrow \valueconsist[]{v}{H(l)})\ \wedge \\
+& & (\forall id, l, v. reduce_{id}(l, v) \in E \Rightarrow \\
+& & (M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \rightarrow \hat T_1) \wedge H(l) = \hat T_1 \wedge \valueconsist[]{v}{\hat T_2}) \\
+\end{array}
+\end{array} \vspace{3mm} \\
+\begin{array}{l@{\hspace{1cm}}l}
+\begin{array}{l}
+\valueconsist[]{bv}{bool} \\
+\valueconsist[]{iv}{int} \\
+\valueconsist[]{null}{\hat T@\rho} \\
+\end{array} &
+\begin{array}{lll}
+\valueconsist[]{l}{\hat T@\rho} & \Leftrightarrow & l \in \rho \wedge H(l) = \hat T \\
+\valueconsist[]{\tuple{v_1}{v_2}}{\tuple{\hat T_1}{\hat T_2}} & \Leftrightarrow & (\valueconsist[]{v_1}{\hat T_1}) \wedge (\valueconsist[]{v_2}{\hat T_2}) \\
+\valueconsist[]{\langle \langle \oton{\rho}, v \rangle \rangle}{\text{rr}[\oton{r}]\ \hat T\text{ where }\hat \Omega} & \Leftrightarrow & (\valueconsist[]{v}{\hat T[\rho_1/r_1, \ldots \rho_n/r_n]}) \wedge (\mapconsist[\{ (r_i, \rho_i) \}]{\hat \Omega}) \\
+\valueconsist[]{K}{coloring(\rho)} & \Leftrightarrow & \forall l_1, v_1. (l_1, v_1) \in K \Rightarrow (l_1 \in \rho\ \wedge \\
+& & \forall l_2, v_2. (l_2, v_2) \in K \Rightarrow (l_1 \not= l_2) \vee (v_1 = v_2)) \\
+\end{array}
+\end{array}
+\end{array}
+$
+}
+\caption{Consistency Properties}
+\label{fig:constpropfull}
+\vspace{-5mm}
+\end{figure*}
+}
+
+\begin{thm}
+\label{thm:effectsfull}
+\rm
+If $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$  and $\mapconsist{\Omega}$, $\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$,
+then
+$\valueconsist{v}{T}$, $\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+\end{thm}
+
+The proof is a standard induction on the structure of the derivation.
+For each of 
+the Core Legion expressions there are six separate parts to the proof,
+one for each of the three consistency properties that must be shown
+for the execution environment of subexpressions and one for each of
+the three properties of the execution's results.
+Many of the cases are similar, and benefit from
+the use of the following straightforward lemmas:
+\begin{lem}
+\label{lemma:heapconst:apply}
+\rm
+If $\storeconsist{S}{H}$ and $\traceconsist{E}$, then $\storeconsist{\text{apply}(S, E)}{H}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:heapconst:effects1}
+\rm
+If $\traceconsist{E_1}$ and $\traceconsist{E_2}$, then $\traceconsist{E_1 \dplus E_2}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:heapconst:effects2}
+\rm
+If $\traceconsist{E_1}$ and $\traceconsist{E_2}$ and \\
+$valid\_interleave(S, C, E', E_1, E_2)$, then $\traceconsist{E'}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:effsound:effects1}
+\rm
+If $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$, then $\privconsist{E_1 \dplus E_2}{\Phi}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:effsound:effects2}
+\rm
+If $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and \\ 
+$valid\_interleave(S, C, E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:omegaclosure}
+\rm
+$\mapconsist{\Omega^*}$ if and only if $\mapconsist{\Omega}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:phiclosure}
+\rm
+$\privconsist{E}{\Phi^*}$ if and only if $\privconsist{E}{\Phi}$.
+\end{lem}
+
+\begin{lem}
+\label{lemma:mappedomega}
+\rm
+$\mapconsist{\Omega}$ if and only if $\mapconsist[\emptyset]{M \llbracket \Omega \rrbracket}$.
+\end{lem}
+
+We first give an outline of the idea behind the proof.  For each subexpression of a compound expression,
+there are three consistency properties we must prove to be able to apply induction: \\
+
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\mapconsist{\Omega}$ - Three expressions have subexpressions that modify $M$ or $\Omega$ and therefore do not
+trivially satisfy region mapping consistency.  For {\tt partition},
+the consistency of the coloring preserves region mapping consistency
+with respect to the constraints.  For {\tt unpack}, the consistency of
+a region relation instance guarantees consistency of region mapping.
+Finally, the body of a called function uses an initially-empty set of
+constraints, which are trivially satisfied.
+
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\localconsist{L}{\Gamma}$ -  Four expressions have subexpressions that modify $L$, $\Gamma$, or $M$.  For
+{\tt partition}, which only modifies $M$, the requirement that it not reuse existing
+names ensures that $M \llbracket \Gamma \rrbracket$ does not change.  For {\tt let},
+the value and type of the binding is obviously consistent, while the binding created in
+an {\tt unpack} is less obviously so, requiring an induction over the type of the 
+unpacked value to show equivalence under the new mapping.  The last case is the body of a
+called function, which requires the same style of proof as for {\tt unpack} 
+for each formal parameter.
+
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\storeconsist{S}{H}$ -  The heap typing consistency of all stores used in subexpressions follows directly from
+Lemma~\ref{lemma:heapconst:apply}.
+
+\vspace{4pt}
+With the necessary consistency conditions proven for a subexpression, the conclusion of the theorem follows for
+the subexpression by the inductive hypothesis.  The remaining obligation is to prove the the three parts of the
+conclusion for an entire expression:
+
+
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\valueconsist{v}{T}$ - The consistency of 
+{\tt upregion} is guaranteed by the type checking requirement of appropriate subregion
+constraints and the mapping's consistency with those constraints, and {\tt downregion}'s
+result is consistent because of the run time check.  
+%(The requirement
+%for appropriate constraints in the {\em downregion} typing rule is primarily for performance
+%(i.e. knowing which part of the region tree to examine) and to catch downcasts that will never
+%work at runtime.) 
+The consistency of a {\tt read}'s result is trivial for an address in the
+clobber set and uses the consistency of the store otherwise.  The consistency of a 
+{\tt color}'s result depends on the pointer subexpression's consistency and the 
+removal of any previous coloring of that location from the coloring set.  
+
+\hangindent=2\parindent \hangafter=1 \indent\indent\indent %
+The remaining interesting cases arise from changes to the mapping $M$ rather than transformations on the
+value $v$.  In the case of {\tt partition} and {\tt unpack}, the type system
+guarantees that the subexpression's result cannot use the regions that were added to the
+mapping, allowing the changes to the mapping to be ignored.  The last case is again the body
+of a called function, and the same strategy that was used for the type consistency of the
+formal parameters works in reverse for the function's result.
+
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\traceconsist{E}$ -  The type consistency of the values in an expression's memory
+trace follows from Lemma~\ref{lemma:heapconst:effects1} and Lemma~\ref{lemma:heapconst:effects2}.
+New memory operations are added by {\tt write} and {\tt reduce} expressions, but consistency follows
+directly from the induction hypothesis.  Finally, the consistency of the
+values in a called function's memory trace is addressed in the same way as the return value.
+
+\vspace{4pt}
+\hangindent=2\parindent \hangafter=1 \noindent %
+$\privconsist{E}{\Phi}$ -  The proof of the crucial property of containment of heap accesses within the available privileges
+is similar in outline to the previous step.  The easy cases are covered by a lemma combining the corresponding results
+for subexpressions: if $\privconsist{E_1}{\Phi}$ and $\privconsist{E_2}{\Phi}$ and $any\_interleave(E', E_1, E_2)$, then $\privconsist{E'}{\Phi}$.
+Straightforward proofs cover {\tt read}, {\tt write}, {\tt reduce}, and one final special case for function calls. 
+
+\begin{proof}
+The proof of the theorem is by cases on the structure of the derivation of $e$.
+{\begin{itemize}
+\setlength{\itemsep}{4pt}
+\item
+Case [E-Bool]. By assumption, 
+$$\opsenv{bv}{bv}{[]}$$ and
+$$\typeenv{bv}{T}$$ and
+$\mapconsist{\Omega}$ and
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Bool], so $T = bool$.
+Therefore $\valueconsist{bv}{bool}$ and 
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item Case [E-Int].  
+By assumption, 
+$$\opsenv{iv}{iv}{[]}$$ and 
+$$\typeenv{iv}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Int], so $T = int$.
+Therefore $\valueconsist{iv}{int}$ and 
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item Case [E-Null].
+By assumption, 
+$$\opsenv{\text{null\ }T@r}{null}{[]}$$ and 
+$$\typeenv{\text{null\ }T@r}{T'}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Null], so $T' = T@r$.
+Therefore $\valueconsist{null}{T@r}$, $\traceconsist{[]}$ and $\privconsist{[]}{\Phi}$ all follow trivially.
+
+\item
+Case [E-MakeTuple].
+By assumption, 
+$$\opsenv{\langle e_1, e_2 \rangle}{\langle v_1,v_2 \rangle}{E'}$$ and 
+$$\typeenv{\langle e_1, e_2 \rangle}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-MakeTuple], so $T = \langle T_1, T_2 \rangle$.
+
+For the subexpression $e_1$, 
+from the form of rule [E-MakeTuple], we know that $$\opsenv{e_1}{v_1}{E_1}$$
+From the form of rule [T-MakeTuple], we know that $$\typeenv{e_1}{T_1}$$
+Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+
+For the subexpression $e_2$, 
+from the form of rule [E-MakeTuple], we know that $$\opsenv[S=S']{e_2}{v_2}{E_2}$$
+where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From the form of rule [T-MakeTuple], we know that $$\typeenv{e_2}{T_2}$$
+Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+From the preceding steps we can conclude that $\valueconsist{\langle v_1, v_2\rangle}{\langle T_1, T_2 \rangle}$.
+Finally, from [E-MakeTuple] we also have $$valid\_interleave(S,C,E',E_1,E_2)$$ and
+Lemma~\ref{lemma:heapconst:effects2}, $\traceconsist{E'}$ and by Lemma~\ref{lemma:effsound:effects2}
+$\privconsist{E'}{\Phi}$.
+
+
+
+\item Case [E-Tuple1].
+By assumption, 
+$$\opsenv{e\text{.1}}{v_1}{E}$$ and 
+$$\typeenv{e\text{.1}}{T_1}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+From the form of [E-Tuple1] we know that
+$$\opsenv{e}{\langle v_1, v_2 \rangle}{E}$$
+The only type rule that can apply is [T-Tuple1], and from the form of the rule we know
+$$\typeenv{e}{\langle T_1, T_2 \rangle}$$
+By induction, we have $\valueconsist{\langle v_1, v_2 \rangle}{\langle T_1, T_2 \rangle}$, $\traceconsist{E}$ and 
+      $\privconsist{E}{\Phi}$.
+It follows immediately that $\valueconsist{v_1}{T_1}$ also holds.
+
+
+\item Case [E-Tuple2] is symmetric to case [E-Tuple1].
+
+\item Case[E-New].
+By assumption, 
+$$\opsenv{\text{new }T@r}{l}{[]}$$ and 
+$$\typeenv{\text{new }T@r}{T@r}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The hypothesis of the [E-New] rule is that $l \in M(r)$ and $H(l) = M \llbracket T \rrbracket$,
+which establishes $\valueconsist{l}{T}$.  
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+\item Case [E-Var].
+By assumption, 
+$$\opsenv{id}{v}{[]}$$ and 
+$$\typeenv{id}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The hypothesis of the [E-Var] rule is $L(id) = v$.
+From $\localconsist{L}{\Gamma}$ we have $\valueconsist{L(id)}{\Gamma(id)}$.
+The hypothesis of the [T-Var] rule is $\Gamma(id) = T$.
+Putting these three facts together we conclude $\valueconsist{v}{T}$.
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+
+\item Case [E-IsNull-F].
+By assumption, 
+$$\opsenv{\text{isnull}(e)}{\textit{false}}{E}$$ and 
+$$\typeenv{\text{isnull}(e)}{bool}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+From the form of [E-IsNull-F] we know that
+$\opsenv{e}{l}{E}$, and
+and from the form of the type rule [T-IsNull] we know
+$\typeenv{e}{T@(\oton{r})}$.
+Clearly $\valueconsist{\textit{false}}{bool}$, and
+$\traceconsist{E}$ and 
+      $\privconsist{E}{\Phi}$ follow by induction.
+
+\item Case [E-IsNull-T] is almost identical to case [E-IsNull-F], with $l$ replaced by \textit{null} and
+\textit{false} replaced by \textit{true}.
+
+\item Case [E-Let].
+By assumption, 
+$$\opsenv{\text{let } id:T_1 = e_1 \text{ in } e_2}{v_2}{E'}$$ and 
+$$\typeenv{\text{let } id:T_1 = e_1 \text{ in } e_2}{T_2}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+
+
+For the subexpression $e_1$, 
+from [E-Let], we know that $$\opsenv{e_1}{v_1}{E_1}$$
+From type rule [T-Let], we know that $$\typeenv{e_1}{T_1}$$
+Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-Let], we have $$\opsenv[L=L',S=S']{e_2}{v_2}{E_2}$$
+where $L' = L[v_1/id]$ and $S' = apply(S,E_1)$.  
+From [T-Let], we have $\typeenv[G={\Gamma[T_1/id]}]{e_2}{T_2}$.
+By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From $\localconsist{L}{\Gamma}$ and $\valueconsist{v_1}{T_1}$ we conclude $\localconsist{L[v_1/id]}{\Gamma[T_1/id]}$.
+Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+Finally, from [E-Let] we also have $$valid\_interleave(S,C,E',E_1,E_2)$$
+Then, by Lemma~\ref{lemma:heapconst:effects2}, $\traceconsist{E'}$ and by 
+Lemma~\ref{lemma:effsound:effects2} $\privconsist{E'}{\Phi}$.
+
+\item Case [E-Add].
+By assumption, 
+$$\opsenv{e_1 + e_2}{v'}{E'}$$ and 
+$$\typeenv{e_1 + e_2}{T}$$ and 
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and $\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Add], so $T = int$.
+
+For the subexpression $e_1$, 
+from [E-Add] we know $$\opsenv{e_1}{v_1}{E_1}$$
+From [T-Add], we know that $$\typeenv{e_1}{int}$$
+Then, by induction, we have $\valueconsist{v_1}{T_1}$, $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-Add], we know $$\opsenv[S=S']{e_2}{v_2}{E_2}$$
+where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From [T-Add] we know $$\typeenv{e_2}{int}$$
+Then, by induction, we have $\valueconsist{v_2}{T_2}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+It is immediate that $\valueconsist{v_1 + v_2}{int}$.
+Finally, from [E-Add] we also have $$valid\_interleave(S,C,E',E_1,E_2)$$ and
+Lemma~\ref{lemma:heapconst:effects2}, $\traceconsist{E'}$ and by Lemma~\ref{lemma:effsound:effects2},
+$\privconsist{E'}{\Phi}$.
+
+\item Case [E-Compare] is isomorphic to [E-Add].
+
+\item Case [E-IfElse-T].
+ By assumption, 
+$$\opsenv{\text{ if } e_1 \text{ then } e_2 \text{ else } e_3}{v_2}{E_1 \dplus E_2}$$ and 
+$$\typeenv{\text{ if } e_1 \text{ then } e_2 \text{ else } e_3}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For the subexpression $e_1$, 
+from [E-IfElse-T] we know $$\opsenv{e_1}{true}{E_1}$$
+From [T-IfElse], we know that $$\typeenv{e_1}{bool}$$
+Clearly $\valueconsist{true}{bool}$, and by induction we have  $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-IfElse-T] we know $$\opsenv[S=S']{e_2}{v_2}{E_2}$$
+where $S' = apply(S,E_1)$.  By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S' = \text{apply}(S,E)}{H}$.
+From [T-IfElse-T] we know $$\typeenv{e_2}{T}$$
+Then, by induction, we have $\valueconsist{v_2}{T}$, $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+Finally, by Lemma~\ref{lemma:heapconst:effects1}, $\traceconsist{E_1 \dplus E_2}$ and by Lemma~\ref{lemma:effsound:effects1},
+$\privconsist{E_1 \dplus E_2}{\Phi}$.
+
+\item Case [E-IfElse-F] is nearly the same as [E-IfElse-T] with {\em false} replacing {\em true} and $e_3$ replacing $e_2$.
+
+\item Case [E-Newcolor].
+By assumption, 
+$$\opsenv{\text{newcolor } r}{K}{[]}$$ 
+where  $K = \{ (l_1,iv_1),\ldots,(l_p,iv_p) \}$ such that
+$l_i \in M(r)$ for all $i$ and $l_1,\ldots,l_p$ are pairwise distinct locations.
+In addition, we have the assumptions
+$$\typeenv{\text{newcolor } r}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Newcolor], so we can infer that $T = \text{coloring}(r)$.
+From the structure of $K$ it follows that $\valueconsist{K}{\text{coloring(r)}}$.
+The other two conclusions,
+$\traceconsist{[]}$ and 
+$\privconsist{[]}{\Phi}$, follow trivially.
+
+\item  Case [E-Color].
+By assumption, 
+$$\opsenv{\text{color($e_1$, $e_2$, $e_3$)}}{K'}{E'}$$ and
+$$\typeenv{\text{color($e_1$, $e_2$,$e_3$)}}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The only type rule that can apply is [T-Color], so we know $T = \text{coloring}(r)$.
+
+For the subexpression $e_1$, 
+from [E-Color] we know $$\opsenv{e_1}{K}{E_1}$$
+From [T-Color], we know that $$\typeenv{e_1}{\text{coloring}(r)}$$
+By induction it follows that $\valueconsist{K}{\text{coloring(r)}}$ and $\traceconsist{E_1}$ and 
+      $\privconsist{E_1}{\Phi}$.
+
+For the subexpression $e_2$, 
+from [E-Color] we know $$\opsenv[S=S']{e_2}{l}{E_2}$$ where $S' = \text{apply}(S,E_1)$.
+From [T-Color], we know that $$\typeenv{e_2}{T'@r}$$
+By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S'}{H}$.
+By induction, $\valueconsist{l}{T'@r}$ and $\traceconsist{E_2}$ and 
+      $\privconsist{E_2}{\Phi}$.
+
+For the subexpression $e_3$, 
+from [E-Color] we know $$\opsenv[S=S'']{e_3}{v}{E_3}$$ where $S'' = \text{apply}(S',E_2)$.
+From [T-Color], we know that $$\typeenv{e_3}{int}$$
+By Lemma~\ref{lemma:heapconst:apply}, $\storeconsist{S''}{H}$.
+By induction, $\valueconsist{v}{int}$ and $\traceconsist{E_3}$ and 
+      $\privconsist{E_3}{\Phi}$.
+
+Now $K'$ is built from $K$ by extending $K$ with a mapping for location $l$.  First, because $\valueconsist{l}{T'@r}$ and
+$\valueconsist{K}{\text{coloring}(r)}$ and because $K'$ excludes any previous mapping for $l$ (guaranteeing the the coloring is a function), we conclude $\valueconsist{K'}{\text{coloring}(r)}$.  From [E-Color], we also know
+$$valid\_interleave(S, C, E', E_1, E_2, E_3)$$ and by applying Lemma~\ref{lemma:heapconst:effects2} twice
+we can conclude $\traceconsist{E'}$.  Similarly, by applying Lemma~\ref{lemma:effsound:effects2} twice
+we can conclude $\privconsist{E'}{\Phi}$.
+
+\item  Case [E-UpRgn].
+By assumption, $$\opsenv{\text{upregion}(e,\oton{r})}{v}{E}$$ and
+$$\typeenv{\text{upregion}(e,\oton{r})}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The type rule must be [T-UpRgn], so we also know $T = T' @ (\oton{r})$.
+
+From [E-UpRgn] we know $$\opsenv{e}{v}{E}$$ and
+from [T-UpRgn] we know $$\typeenv{e}{T' @ (r_1',\ldots,r_k')}$$
+By induction, we can conclude that $\valueconsist{v}{T'@(r_1',\ldots,r_k')}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+To show $\valueconsist{v}{T'@(\oton{r})}$, we first observe that from
+$\valueconsist{v}{T'@(r_1',\ldots,r_k')}$ we know
+there is an $i$ such that $v \in M(r_i')$ and 
+$H(v) = \hat T'$.   From [T-UpRgn]
+we know $\forall i. \exists j. r_i' \leq r_j \in \Omega^*$.
+%  Combining this with $\mapconsist{\Omega}$ and 
+From Lemma~\ref{lemma:omegaclosure}, we have $\mapconsist{\Omega^*}$, so there
+must be some $r_j$ such that $M(r_i') \subseteq M(r_j)$.  Then $v \in M(r_j)$
+and $\valueconsist{v}{T'@(\oton{r})}$.
+
+\item Case [E-DownRgn].
+By assumption, $$\opsenv{\text{downregion}(e,\oton{r})}{v}{E}$$ and
+$$\typeenv{\text{downregion}(e,\oton{r})}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+The type rule must be [T-DownRgn], so we also know $T = T' @ (\oton{r})$.
+
+From [E-DownRgn] we know $$\opsenv{e}{l}{E}$$ and
+from [T-DownRgn] we know $$\typeenv{e}{T' @ (r_1',\ldots,r_k')}$$
+By induction, we can conclude that $\valueconsist{l}{T'@(r_1',\ldots,r_k')}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+To show $\valueconsist{v}{T'@(\oton{r})}$ there are two cases.
+If $v = null$ then $\valueconsist{null}{T'@(\oton{r})}$ follows by definition.
+Otherwise, $v = l$ and $l \in M(r_i)$ for some $i$.  We also know $H(v) = \hat T'$
+because $\valueconsist{l}{T'@(r_1',\ldots,r_k')}$.  Therefore
+$\valueconsist{v}{T'@(\oton{r})}$.
+
+\item Case [E-Read].
+By assumption, $$\opsenv{\text{read}(e)}{v}{E \dplus [ read(l,excl,v) ]}$$ and
+$$\typeenv{\text{read}(e)}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+From [E-Read] we have $$\opsenv{e}{l}{E}$$ and
+from [T-Read] we know $$\typeenv{e}{T @ (\oton{r})}$$
+By induction, we can conclude that $\valueconsist{l}{T@(\oton{r})}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+To show $\valueconsist{v}{T}$ there are two cases.  If $l \not\in C$, then $v = S'(l)$.
+Since $\storeconsist{S'}{H}$ from Lemma~\ref{lemma:heapconst:apply}, we have $\valueconsist[]{S'(l)}{H(l)}$.
+If $l \in C$, we have $v = \valueconsist[]{v'}{H(l)}$ from [E-Read] directly.  In
+both cases, $\valueconsist{l}{T@(\oton{r})}$ gives us $H(l) = \hat T$ and therefore
+$\valueconsist{v}{T}$.
+%If $v = M(l)$ then the claim follows from $\valueconsist{l}{T@(\oton{r})}$.
+%If $v$ is instead some $v'$ of type $H(l)$ the result also follows because $H(l) = \hat{T}$.
+Next, $\traceconsist{E \dplus [ read(l,excl,v)]}$ follows immediately from $\traceconsist{E}$ as
+any read operation is consistent (the restriction is only on writes and reductions).
+
+Finally, we must show $\privconsist{E \dplus [ read(l,excl,v)]}{\Phi}$.
+Since we have already shown $\privconsist{E}{\Phi}$, it suffices to show $\privconsist{[ read(l,excl,v) ]}{\Phi}$.
+By $\valueconsist{l}{T@(\oton{r})}$, there is some $r_i$ such that $l \in M(r_i)$.  Furthermore,
+from [T-Read] we have $reads(r_i) \in \Phi^*$, which shows $\privconsist{[ read(l,excl,v)]}{\Phi^*}$.
+The result follows from Lemma~\ref{lemma:phiclosure}.
+
+\item Case [E-Write].
+By assumption, $$\opsenv{\text{write}(e_1,e_2)}{l}{E' \dplus [ write(l,excl,v) ]}$$ and
+$$\typeenv{\text{write}(e_1,e_2)}{T@(\oton{r})}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For subexpression $e_1$,
+From [E-Write] we have $$\opsenv{e_1}{l}{E_1}$$ and
+from [T-Write] we know $$\typeenv{e_1}{T @ (\oton{r})}$$.
+By induction, we can conclude that $\valueconsist{l}{T@(\oton{r})}$,
+$\traceconsist{E_1}$ and $\privconsist{E_1}{\Phi}$.
+
+For subexpression $e_2$,
+From [E-Write] we have $$\opsenv[S=S']{e_2}{v}{E_2}$$ where
+$S' = \text{apply}(S,E_1)$.
+From [T-Write] we know $\typeenv{e_2}{T}$.
+Using Lemma~\ref{lemma:heapconst:apply} it follows that $\storeconsist{S'}{H}$. 
+Then by induction, we can conclude that $\valueconsist{v}{T}$,
+$\traceconsist{E_2}$ and $\privconsist{E_2}{\Phi}$.
+
+
+We have already shown $\valueconsist{l}{T@(\oton{r})}$, so it only remains to show
+$\traceconsist{E' \dplus [ write(l,excl,v) ]}$ and 
+$\privconsist{E' \dplus [ write(l,excl,v) ]}{\Phi}$.
+From [E-Write] we have $$valid\_interleave(S,C,E',E_1,E_2)$$ and therefore by Lemma~\ref{lemma:heapconst:effects2} we have
+$\traceconsist{E'}$.  To show $\traceconsist{[ write(l,excl,v)]}$ we must show $\valueconsist{v}{H(l)}$,
+which follows from $\valueconsist{v}{T}$ and $\valueconsist{l}{T@(\oton{r})}$ and $\storeconsist{S}{H}$.
+Thus, $\traceconsist{E' \dplus [ write(l,excl,v) ]}$.
+
+To show $\privconsist{E' \dplus [ write(l,excl,v) ]}{\Phi}$, we first observe that
+$valid\_interleave(S,C,E',E_1,E_2)$ and Lemma~\ref{lemma:effsound:effects2} imply
+$\privconsist{E'}{\Phi}$.  To show $\privconsist{[ write(l,excl,v) ]}{\Phi}$, we observe that because
+$\valueconsist{l}{T@(\oton{r})}$, there is some $r_i$ such that $l \in M(r_i)$.  Furthermore,
+from [T-Write] we have $writes(r_i) \in \Phi^*$, which shows $\privconsist{[ write(l,excl,v)]}{\Phi^*}$.
+The result follows from Lemma~\ref{lemma:phiclosure}.
+
+\item Case[E-Reduce].
+By assumption, $$\opsenv{\text{reduce}(id,e_1,e_2)}{l}{E' \dplus [ reduce_{id}(l,excl,v) ]}$$ and
+$$\typeenv{\text{reduce}(id,e_1,e_2)}{T_1@(\oton{r})}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For subexpression $e_1$,
+From [E-Reduce] we have $$\opsenv{e_1}{l}{E_1}$$ and
+from [T-Reduce] we know $$\typeenv{e_1}{T @ (\oton{r})}$$.
+By induction, we can conclude that $\valueconsist{l}{T@(\oton{r})}$,
+$\traceconsist{E_1}$ and $\privconsist{E_1}{\Phi}$.
+
+For subexpression $e_2$,
+From [E-Reduce] we have $$\opsenv[S=S']{e_2}{v}{E_2}$$ where
+$S' = \text{apply}(S,E_1)$.
+From [T-Reduce] we know $$\typeenv{e_2}{T_2}$$
+Using Lemma~\ref{lemma:heapconst:apply} it follows that $\storeconsist{S'}{H}$. 
+Then by induction, we can conclude that $\valueconsist{v}{T_2}$,
+$\traceconsist{E_2}$ and $\privconsist{E_2}{\Phi}$.
+
+
+We have already shown $\valueconsist{l}{T_1@(\oton{r})}$, so it only remains to show
+$\traceconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}$ and 
+$\privconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}{\Phi}$.
+From [E-Reduce] we have $valid\_interleave(S,C,E',E_1,E_2)$ and therefore by Lemma~\ref{lemma:heapconst:effects2} we have
+$\traceconsist{E'}$.  To show $\traceconsist{[ reduce_{id}(l,excl,v)]}$ we must show three things.
+First, we must show $M \llbracket \Gamma \rrbracket (id) = (\hat T_1, \hat T_2), \emptyset, \emptyset \rightarrow \hat T_1$ which
+follows from the assumption $\Gamma(id) = (T_1, T_2), \emptyset, \emptyset \rightarrow T_1$ in [T-Reduce].
+Second, we must show $H(l) = \hat T_1$, which follows from $\valueconsist{l}{T_1@(\oton{r})}$.
+Finally, we have already shown $\valueconsist{v}{\hat T_2}$.
+Thus, $$\traceconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}$$.
+
+To show $$\privconsist{E' \dplus [ reduce_{id}(l,excl,v) ]}{\Phi}$$, we first observe that
+$valid\_interleave(S,C,E',E_1,E_2)$ and Lemma~\ref{lemma:effsound:effects2} imply
+$\privconsist{E'}{\Phi}$.  To show $\privconsist{[ reduce_{id}(l,excl,v) ]}{\Phi}$, we observe that because
+$\valueconsist{l}{T@(\oton{r})}$, there is some $r_i$ such that $l \in M(r_i)$.  Furthermore,
+from [T-Reduce] we have $reduce_{id}(r_i) \in \Phi^*$, which shows $\privconsist{[ reduce_{id}(l,excl,v)]}{\Phi^*}$.
+The result follows from Lemma~\ref{lemma:phiclosure}.
+
+
+\item Case [E-Pack].
+By assumption, $$\opsenv{\text{pack } e_1 \text{ as } T_1[\otok{k}{r}]}{v'}{E}$$ and
+$$\typeenv{\text{pack } e_1 \text{ as } T_1[\otok{k}{r}]}{T_1}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+From [E-Pack] we have $\opsenv{e_1}{v}{E}$ and
+from [T-Pack] we know $\typeenv{e_1}{T_2[r_1/r'_1,\ldots,r_k/r'_k]}$.
+By induction, we can conclude that $\valueconsist{v}{T_2[r_1/r'_1,\ldots,r_k/r'_k]}$,
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+The only thing remaining to show is $\valueconsist{v'}{T_1}$.
+From [E-Pack] we have   $v' = \langle \langle \otok{k}{\rho}, v \rangle \rangle$ and $M(r_i) = \rho_i$.
+From [T-Pack] we have $T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1$
+and $\Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^*$.  
+
+Let $M \llbracket T_1 \rrbracket = \exists r'_1, \ldots, r'_n.\ \hat T_2\text{ where }\hat \Omega_1$.
+We require that $\valueconsist[]{v}{\hat T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$ and $\mapconsist[\{(r'_i,\rho_i)\}]{\hat \Omega_1}$.
+The right hand side of the first condition can be rewritten as $\hat T_2[M(r_1)/r'_1,\ldots,M(r_k)/r'_k]$, which is equal
+to $M \llbracket T_2 [r_1/r'_1,\ldots,r_k/r'_k] \rrbracket$.
+
+Similarly, observe that
+$$\hat \Omega_1 [ \rho_1/r'_1,\ldots,\rho_k/r'_k ] = M \llbracket \Omega_1 [ r_1/r'_1,\ldots,r_k/r'_k ] \rrbracket$$
+With two applications of Lemma~\ref{lemma:mappedomega}, we have
+$$\mapconsist[\{(r'_i,\rho_i)\}]{\hat \Omega_1} \Leftrightarrow \mapconsist{\Omega_1 [ r_1/r'_1,\ldots,r_k/r'_k ]}$$
+The latter constraints are a subset of
+$\Omega^*$, and must be satisfied if $\mapconsist{\Omega^*}$, which we have from Lemma~\ref{lemma:omegaclosure}.
+
+\begin{comment}
+For the second condition, consider each constraint $x_i \leq x_j \in \hat \Omega_1$, where each $x_i$ is either a 
+physical region $\rho_i$ or one of the bounded logical regions $r'_i$.
+
+
+We must therefore show $\valueconsist{v}{T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$ and $\mapconsist[\{(r_i',\rho_i)\}]{M \llbracket \Omega_1 \rrbracket}$.  We have $\rho_i = M(r_i)$ from [E-Pack] and a partial application of $M$ satisfies
+the first condition.  To show the second condition, we apply the renaming $[r_1/r'_1,\ldots,r_k/r'_k]$ to both sides,
+yielding
+$$\mapconsist[\{(r_i,\rho_i)\}]{M \llbracket \Omega_1 [r_1/r'_1,\ldots,r_k/r'_k] \rrbracket}$$
+,  Observe that the left hand side is a subset of $M$
+By partially applying $M$ to $T_2[r_1/r'_1,\ldots,r_k/r'_k]$, we get $\valueconsist{v}{T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$, satisfying the first half o
+Observe that 
+$$M \llbracket \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \rrbracket$$
+replaces all free region names in $T_2$ and particularly $\Omega_1$ by physical regions, so
+that the only region names remaining are $r'_1,\ldots,r'_n$.  It is then easy to show that
+$$\mapconsist[\{(r'_i,\rho_i)\}]{M \backslash \{r'_1,\ldots, r'_n \}\llbracket \Omega_1 \rrbracket}$$
+from which $\valueconsist{v'}{T_1}$ follows (see Figure~\ref{fig:constprop}).
+\end{comment}
+
+\item Case [E-Unpack].
+By assumption, $$\opsenv{\text{unpack } e_1 \text{ as } id : T_1[\otok{k}{r}] \text{ in } e_2}{v_2}{E'}$$ and
+$$\typeenv{\text{unpack } e_1 \text{ as } id : T_1[\otok{k}{r}] \text{ in } e_2}{T}$$ and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$.
+
+For subexpression $e_1$, from [E-UnPack] we have $$\opsenv{e_1}{\langle \langle \otok{k}{\rho},v_1 \rangle\rangle}{E}$$ and
+from [T-Unpack] we know $$\typeenv{e_1}{T_1 = \exists r'_1,\ldots,r'_n.T_2 \text{ where }\Omega_1}$$
+By induction, we can conclude that $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$ and
+$\traceconsist{E}$ and $\privconsist{E}{\Phi}$.
+ 
+For subexpression $e_2$, from [E-UnPack] we have
+$$\opsenv[M=M',L=L',S=S']{e_2}{v_2}{E_2}$$ where
+$S' = \text{apply}(S,E_2)$, $L' = L[v_1/id]$ and $M' = M[\rho_1/r_1,\ldots,\rho_k/r_k]$.
+From [T-Unpack] we have
+$$\typeenv[G=\Gamma',O=\Omega']{e_2}{T_3}$$
+where
+$\Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id]$ and
+$\Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$.
+To establish the induction hypothesis for $e_2$, we must show
+$\mapconsist[M']{\Omega'}$ and
+$\localconsist[M']{L'}{\Gamma'}$ and
+$\storeconsist{S'}{H}$.
+
+We can show $\mapconsist[M']{\Omega'}$ by showing both $\mapconsist[M']{\Omega}$ and $\mapconsist[M']{\Omega_1[r_1/r'_1,\ldots,r_k/r'_k]}$.  The former follows directly from $\mapconsist{\Omega}$ as $M'$ does not change any existing
+mappings in $M$.  The latter requires an argument similar to the [E-Pack] case.  We let
+$M \llbracket T_1 \rrbracket = \exists r'_1, \ldots, r'_n.\ \hat T_2\text{ where }\hat \Omega_1$, and conclude that
+$\mapconsist[\{ \rho_1/r'_1,\ldots,\rho_k/r'_k \}]{\hat \Omega_1}$.  From Lemma~\ref{lemma:mappedomega} we have 
+$\mapconsist[\emptyset]{\hat \Omega_1[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$.  Finally, we observe that 
+$$M' \llbracket \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \rrbracket = \hat \Omega_1[\rho_1/r'_1,\ldots,\rho_k/r'_k]$$
+and conclude $\mapconsist[M']{\Omega'}$ with another application of Lemma~\ref{lemma:mappedomega}.
+
+\begin{comment}
+To show $\mapconsist[M']{\Omega'}$, consider a constraint $r \leq r' \in \Omega'$.  There are two cases. If $r \leq r' \in \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$
+then $M'(r) \subseteq M'(r')$ follows from $\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$.
+If $r \leq r' \not\in \Omega_1[r_1/r'_1,\ldots,r_k/r'_k]$ then $r \leq r' \in \Omega$ and $M'(r) = M(r) \subseteq M(r') = M'(r')$.
+The reasoning for constraints $r * r'$ is the same.
+\end{comment}
+
+To show $\localconsist[M']{L'}{\Gamma'}$, we must show
+$\valueconsist[M']{L'(x)}{\Gamma'(x)}$ for all identifiers $x$ in
+the domain of $\Gamma'$.  For any $id' \neq id$, the statement is equivalent
+to showing $\valueconsist[M']{L(x)}{\Gamma(x)}$, which must hold because $M'$ does 
+does not change any existing binding in $M$.
+For $id$, we have $\valueconsist[]{v_1}{\hat T_2[\rho_1/r'_1,\ldots,\rho_k/r'_k]}$
+and again observe that since $r'_1,\ldots,r'_k$ do not appear in $M$, the right hand side
+is equal to $M' \llbracket T_2[r_1/r'_1,\ldots,r_k/r'_k] \rrbracket$.
+
+\begin{comment}
+$\valueconsist[M']{v_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$, which is implied by
+$\valueconsist{\langle \langle \otok{k}{\rho},v \rangle\rangle}{T_1}$.
+\end{comment}
+
+Finally, as in previous cases, $\storeconsist{S'}{H}$ follows from Lemma~\ref{lemma:heapconst:apply}.
+Thus, we can conclude that 
+$\valueconsist[M']{v_2}{T_3}$ and
+$\traceconsist{E_2}$ and 
+$\privconsist{E_2}{\Phi}$.
+
+Because $T_3$ cannot include any of the unpacked regions in it, $\valueconsist{v_2}{T_3}$.
+From [E-Unpack] we have $$valid\_interleave(S, C, E', E_1, E_2)$$ and using Lemma~\ref{lemma:heapconst:effects2} we
+prove $\traceconsist{E'}$.
+To finish the case, we note that from $\privconsist{E_1}{\Phi}$, $\privconsist{E_2}{\Phi}$, 
+$valid\_interleave(S, C, E', E_1, E_2)$, and using Lemma~\ref{lemma:effsound:effects2} we can conclude $\privconsist{E'}{\Phi}$.
+
+
+\item Case [E-Part].
+By assumption,
+$$\opsenv{\text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2}{v}{E'}$$
+and
+$$\typeenv{\text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2}{T}$$
+and
+$\mapconsist{\Omega}$ and 
+$\localconsist{L}{\Gamma}$ and 
+$\storeconsist{S}{H}$. 
+
+For subexpression $e_1$, from [E-Part] we have $$\opsenv{e_1}{K}{E_1}$$ and
+from [T-Part] we have $$\typeenv{e_1}{\text{coloring}(r_p)}$$
+By induction, we conclude that $\valueconsist{K}{\text{coloring}(r_p)}$ and
+$\traceconsist{E_1}$ and 
+$\privconsist{E_1}{\Phi}$.
+For subexpression $e_2$, from [E-Part] we have
+$$\opsenv[M=M',S=S']{e_2}{v}{E_2}$$
+where 
+$M' = M[\rho_1/r_1, \ldots, \rho_k/r_k]$ and
+$S' = \text{apply}(S, E_1)$.
+From [T-Part] we have
+$$\typeenv[O=\Omega']{e_2}{T}$$ 
+where
+$\Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j$.    
+To establish the induction hypothesis for $e_2$, we must show
+$\mapconsist[M']{\Omega'}$ and
+$\localconsist[M']{L}{\Gamma}$ and
+$\storeconsist{S'}{H}$.
+
+For $\mapconsist[M']{\Omega'}$, we observe that all of the constraints are either present previously
+(hold in $\mapconsist{\Omega}$) or are established explicitly by the partition operation.  Note that
+the type of the coloring carries the name of the region being partitioned and that all introduced region names are
+not in use in $M$.  For $\localconsist[M']{L}{\Gamma}$, we simply observe that $\localconsist{L}{\Gamma}$ holds
+and $M'$ is an extension of $M$.  
+Finally, as in previous cases, $\storeconsist{S'}{H}$ follows from Lemma~\ref{lemma:heapconst:apply}.
+
+Therefore, we can conclude by induction
+$\valueconsist[M']{v}{T}$ and
+$\traceconsist{E_2}$ and 
+$\privconsist{E_2}{\Phi}$.
+Because $T$ may not mention any of the regions introduced in the partitioning, we have
+$\valueconsist{v}{T}$.
+From [E-Part] we have $$valid\_interleave(S, C, E', E_1, E_2)$$ and using Lemma~\ref{lemma:heapconst:effects2} we
+prove $\traceconsist{E'}$.
+To finish the case, we note that from $\privconsist{E_1}{\Phi}$, $\privconsist{E_2}{\Phi}$, 
+$$valid\_interleave(S, C, E', E_1, E_2)$$, and using Lemma~\ref{lemma:effsound:effects2} we can conclude $\privconsist{E'}{\Phi}$.
+
+
+\item Case [E-Call].
+From [E-Call] we have
+$$\opsenv{id[\otok{k}{r}](\oton{e})}{v_{n+1}}{E''}$$
+and from [T-Call] we have
+$$\typeenv{id[\otok{k}{r}](\oton{e})}{T_r[r_1/r'_1,\ldots,r_k/r'_k]}$$
+
+For subexpression $e_1$, from [E-Call] we have $$\opsenv{e_1}{v_1}{E_1}$$ and from [T-Call] we have
+$$\typeenv{e_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$$
+By induction, 
+$\valueconsist{v_1}{T_1[r_1/r'_1,\ldots,r_k/r'_k]}$,
+$\traceconsist{E_1}$ and 
+$\privconsist{E_1}{\Phi}$.
+
+For the other subexpressions that are arguments to the call the reasoning is very similar; we show
+only the last argument $e_n$.  First, 
+$$S_n
+= \text{apply}(E_{n-1},\text{apply}(E_{n-2},\ldots \text{apply}(E_1,S) \ldots
+)$$ An induction on the number of applications of {\em apply} using
+Lemma~\ref{lemma:heapconst:apply} shows that
+$\storeconsist{S_n}{H}$.  We also have $$\opsenv{e_n}{v_n}{E_n}$$ from
+[E-Call] and $$\typeenv{e_n}{T_n[r_1/r'_1,\ldots,r_k/r'_k]}$$ from
+[T-Call].  By induction,
+$\valueconsist{v_n}{T_n[r_1/r'_1,\ldots,r_k/r'_k]}$,
+$\traceconsist{E_n}$ and $\privconsist{E_n}{\Phi}$.
+
+
+Now, from [E-Call] we have
+$$valid\_interleave(S, C, E', \oton{E})$$
+and furthermore
+$$M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \}$$
+$$L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \}$$
+$$S' = \text{apply}(S, E')$$
+We also know from [E-Call] that
+$$\opsenv[M=M',L=L',S=S',C=C']{e_{n+1}}{v_{n+1}}{E_{n+1}}$$
+where $e_{n+1}$ is the body of the called function.
+From [T-Program] we know
+$$\typeenv[G=\Gamma',O=\emptyset,P=\Phi']{e_{n+1}}{T_r}$$
+where $\Gamma'(a_i) = T_i$.
+To apply the induction hypothesis to $e_{n+1}$ we want to show
+\begin{enumerate}
+\item $\storeconsist{S'}{H}$, 
+\item $\mapconsist[M']{\emptyset}$, and
+\item $\localconsist[M']{L'}{\Gamma'}$ 
+\end{enumerate}
+
+For (1), using $\traceconsist{E_i}$ for $1 \leq i \leq n$ and applying Lemma~\ref{lemma:heapconst:effects2} $n - 1$ times
+we can conclude that $\traceconsist{E'}$.  Then because $\storeconsist{S}{H}$ and $S' = \text{apply}(S, E')$ by
+Lemma~\ref{lemma:heapconst:apply} we have $\storeconsist{S'}{H}$.
+
+Part (2) is immediate by the definition of mapping consistency.
+
+For (3), in previous steps we have shown  $$\valueconsist{v_i}{T_i[r_1/r'_1,\ldots,r_k/r'_k]}$$ for $1 \leq i \leq n$.
+Since $M \llbracket r_i \rrbracket = M' \llbracket r'_i \rrbracket$ it follows that
+$M \llbracket T_i[r_1/r'_1,\ldots,r_k/r'_k \rrbracket = M' \llbracket T_i \rrbracket$ and therefore
+$\valueconsist[M']{v_i}{T_i}$, from which the result follows.
+ 
+Thus, by induction, we conclude that
+$\valueconsist[M']{v_{n+1}}{T_r}$, $\traceconsist{E_{n+1}}$ (under
+$M'$) and $\privconsist[M']{E_{n+1}}{\Phi'}$.  Because 
+$$M \llbracket T_r[r_1/r'_1,\ldots,r_k/r'_k \rrbracket = M' \llbracket T_r \rrbracket$$ we can conclude
+$\valueconsist{v_{n+1}}{T_r[r_1/r'_1,\ldots,r_k/r'_k}$.  
+
+To show that
+$\traceconsist{E_{n+1}}$ under $M'$ implies $\traceconsist{E_{n+1}}$
+under $M$, note that $H(\cdot)$ does not depend on the mapping (because it includes only physical, not logical, regions) so the
+types of locations are unaffected by the mapping (see
+Figure~\ref{fig:constprop}).  Now, the environment
+$M' \llbracket \Gamma' \rrbracket$ is used to look up reduction
+functions, but the reduction function signatures are restricted to
+have no regions named in their arguments and so
+$$M \llbracket \Gamma' \rrbracket(id)  = M' \llbracket \Gamma' \rrbracket(id)$$
+Finally, from 
+$$valid\_interleave(S, C, E'', E', E_{n+1})$$
+and Lemma~\ref{lemma:heapconst:effects2} we conclude $\traceconsist{E''}$.
+
+For the last consistency property of the function call, we first observe
+that $\privconsist[M']{E_{n+1}}{\Phi'}$ is equivalent to 
+$$\privconsist{E_{n+1}}{\Phi[r_1/r'_1,\ldots,r_k/r'_k]}$$
+because, again, $E_{n+1}$ does not mention logical region names and
+$M' \llbracket r' \rrbracket = M \llbracket r \rrbracket$.
+From [T-Call] we have 
+$$\Phi[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*$$
+and so
+$\privconsist{E_{n+1}}{\Phi^*}$.  Applying Lemma~\ref{lemma:phiclosure} we conclude
+that $\privconsist{E_{n+1}}{\Phi}$.
+Finally, from Lemma~\ref{lemma:effsound:effects2} we conclude $\privconsist{E''}{\Phi}$.
+\end{itemize}}
+\end{proof}
+
+\section{Coherence}
+\label{sec:coherencefull}
+
+Theorem~\ref{thm:effectsfull} guarantees that a function call produces a value of the
+correct type and does so within the regions of memory for which privileges are held.
+It does not, however, address {\em coherence}, what concurrent operations on the regions are permitted.
+An innovation in Legion is that programmers can control coherence on a per-region basis.  Intuitively,
+the different coherence modes permit different interleavings of memory traces.  For example,
+in addition to being an interleaving of the constituent traces, exclusive access requires interleaved memory traces to be:
+\begin{itemize}
+\item {\em coherent} - a read of location $l$ should see the effect of all writes and reductions to $l$
+occurring earlier in the interleaved trace, and
+\item {\em sequentially equivalent} - the value read by each read 
+operation and the result of applying the interleaved trace to the original store should be the same as if each constituent trace
+was applied to the store in a valid sequential execution of the program.
+\end{itemize}
+These requirements are relaxed for either a non-empty clobber set (representing
+operations that may occur concurrently as part of evaluating other functions) or for coherence
+modes other than {\em excl}.
+
+\texcomment{
+\begin{figure*}
+$$
+\begin{array}{lll}
+valid\_interleave(S, C, E', \oton{E}) & = & any\_interleave(E', \oton{E}) \wedge \\
+& & coherent(S, L_{excl}(E', C), L_{excl}(E', C), E')\ \wedge \\
+& & seq\_equiv(S, L_{excl}(E', C), L_{excl}(E', C), E', \oton{E})\ \wedge \\
+& & coherent(S, L_{atomic}(E', C), \emptyset, E')\ \wedge \\
+& & \exists \oton{\pi}, (\oton{\pi}) \text{ is a permutation of } (1,\ldots,n)\ \wedge \\
+& & \ \ \ seq\_equiv(S, L_{atomic}(E', C), \emptyset, E', E_{\pi_1}, \ldots, E_{\pi_n}) \\
+coherent(S, L_1, L_2, []) & = & \text{true} \\
+coherent(S, L_1, L_2, [ \epsilon ] \dplus E) & = &\
+\begin{cases}
+(l \in L_2 \Rightarrow S(l) = v)\ \wedge \\
+\ \ \ coherent(S, L_1, L_2, E), & \text{if $\epsilon = read(l, c, v)$} \\
+coherent(apply(S, \epsilon), L_1, L_2 \cup \{ l \}, E), & \text{if $\epsilon = write(l, c, v)$ and $l \in L_1$} \\
+coherent(apply(S, \epsilon), L_1, L_2, E), & \text{otherwise}
+\end{cases} \\
+seq\_equiv(S, L_1, L_2, E', \oton{E}) & = & coherent(S, L_1, L_2, E_1 \dplus \ldots \dplus E_2)\ \wedge \\
+& & \forall l \in L_1. apply(S, E')(l) = apply(S, E_1 \dplus \ldots \dplus E_n)(l) \\
+L_{excl}(E, C) & = & \{ l : op(l, excl, v) \text{ in } E  \} \setminus C \\
+L_{atomic}(E, C) & = & \{ l : op(l, atomic, v) \text{ in } E \} \setminus (C \cup L_{excl}(E, C)) \\
+\end{array}
+$$
+\caption{Valid Interleaving Test}
+\label{fig:validinterleavefull}
+\vspace{-5mm}
+\end{figure*}
+}
+
+Figure~\ref{fig:validinterleave} formally defines {\em
+valid\_interleave}, which we briefly explain.  Consider
+traces $\oton{E}$.  The {\em exclusive location set} $L_{excl}$ is the
+set of locations used in an operation with coherence mode $excl$ in
+some trace $E_i$, excepting any locations in the clobber set $C$.
+Similarly, the {\em atomic location set} $L_{atomic}$ is the set of
+locations in an operation with coherence mode $atomic$, but no
+operations with coherence mode $excl$, again excepting any location in
+the clobber set.  The $coherent(S,L_1,L_2,E)$ test checks that all
+reads of locations in $L_2$, and any read of a location $l \in L_1$
+that comes after a write to $l$, return the value most recently written
+to the store.  (If $L_2 = \emptyset$ initially, atomic reads without a preceding write are not 
+checked, but are deferred to a point where traces that might be ordered before $E$ are included.)  The $seq\_equiv$
+test verifies every read in $E'$ with a location in $L_1$ 
+is coherent if operations are performed in 
+program order and that the store that results from applying $E'$
+matches the store resulting from applying the
+constituent traces in program order for all locations in $L_1$.  Program order
+is implicitly defined in the operational semantics, and is equivalent to a 
+postorder traversal of an expression's tree.  For
+the atomic location set, we allow the constituent traces to be
+permuted, but all locations must be checked with the same permutation.
+
+Flexibility in interleaving operations is the key to achieving parallel execution, but
+implementing the precise criteria for checking a valid interleaving is
+much too expensive.  We now consider practical mechanisms that generate valid interleavings and 
+under what conditions these approaches may be used.
+
+The first option is to serialize the evaluation of the subexpressions that
+make up an expression and attempt to generate a valid interleaving by simply
+concatenating the constituent traces in program order.  However, there is a
+complication related to the non-determinism that is allowed for reads.  Although
+each subexpression's trace will have been checked for coherence, the checking
+of some operations may have been deferred due to non-empty
+clobber sets.  It is possible that when an interleaving of these traces
+is attempted in the parent expression's context, there may no valid interleaving
+if the wrong guesses were made in the derivation of a subexpression.
+The solution in the case of serial execution is to not expand the clobber
+set for subexpressions, instead using the parent expression's clobber set.
+
+Only a single rule is modified for this alternate execution - $e_{n+1}$ in
+{\sc E-Call} uses the original $C$ instead of $C'$.  This change
+can result in there being no terminating execution for an expression in
+which the only terminating executions required a particular (non-program-)
+ordering of subexpression evaluation.  However, the Legion core language never
+guarantees parallel execution, so the evaluation of such an 
+expression is unlikely to terminate even under the original clobber set.
+We can, however, show that any terminating execution that results from using
+the restricted clobber set is a valid execution under the original:
+
+\begin{lem}
+\label{lem:clobberreducefull}
+\rm 
+Let $\typeenv{e}{T}$ and $\opsenv{e}{v}{E}$ and $\storeconsist{S}{H}$.  If $C \subseteq C'$, then
+$\opsenv[C=C']{e}{v}{E}$.
+\end{lem}
+
+\begin{proof}
+The proof is by induction on the structure of the derivation of $e$.  The clobber set is only manipulated
+in one case and only examined in one other case.  In all other cases, the clobber set is unchanged and
+used only in the derivation of subexpressions.  The case where the clobber set is manipulated is [E-Call], but
+the use of a union operation still allows the inductive hypothesis to be applied to the subexpression $e_{n+1}$.
+The examination of the clobber set occurs in [E-Read] where it is used to choose the result $v$ of the read
+from the heap.  For each use of the [E-Read] rule, there are three possible cases:
+\begin{itemize}
+\item $l \in C$, for which $v = S'(l)$ in the derivation using $C$.  Since $C \subseteq C'$, we have $l \in C'$, and $S'(l)$ is the correct result for the $C'$ derivation as well.
+\item $l \not\in C'$, and therefore $l \not\in C$.  Both derivations may use any value $v' : H(l)$.
+\item $l \in C, l \not\in C'$, for which $v = S'(l)$ must be chosen for the derivation using $C$.  From Theorem~\ref{thm:effectsfull} and Lemma~\ref{lemma:heapconst:apply}, we have $\traceconsist{E}$ and $\storeconsist{S' = apply(S, E)}{H}$, so $\valueconsist[]{S'(l)}{H(l)}$, and $v$ is a legal choice for $v'$ in the derivation using $C'$.
+\end{itemize}
+\end{proof}
+
+For the following proofs, we will need one additional lemma, which follows directly
+from the definition of $apply$:
+
+\begin{lem}
+\label{lemma:applychain}
+\rm
+Let $S$ be an initial store, and $E_1$ and $E_2$ be memory traces.  Then:
+$$apply(S, E_1 \dplus E_2) = apply(apply(S, E_1), E_2)$$
+\end{lem}
+
+We now show that the concatenation of the memory traces from these serially
+executed subexpressions is always a valid interleaving:
+
+\begin{thm}
+\label{thm:sequentialfull}
+\rm
+Let $\oton{e}$ be expressions such that 
+%$\opsenv[S={S_{i-1}}]{e_i}{v_i}{E_i}$, 
+$M, L, H, S_{i-1},\linebreak C \vdash e_i \mapsto v_i, E_i$,
+where $S_i = apply(S_{i-1}, E_i)$.  If $E' = E_1 \dplus \ldots \dplus E_n$, then
+$valid\_interleave(S_0, C, E', \oton{E})$.
+\end{thm}
+
+\begin{proof}
+First, we must show that $any\_interleave(E', \oton{E})$.  This is done by
+induction on the length of $E_1$, followed by $E_2$, and so on.  Next, we must
+show that $E'$ is coherent for both $L_{excl}$ and $L_{atomic}$.  This is done by
+matching the structure of $E'$ with $\oton{E}$ and the use of Lemma~\ref{lemma:applychain}.
+With the
+question of coherence addressed, the sequential equivalence of $E'$ is trivial
+for both the exclusive and atomic cases.
+\end{proof}
+
+Next we examine how to modify the serialized interleaving to produce valid interleavings allowing parallel execution. 
+We consider when we may swap the order of two adjacent memory operations in a valid interleaving.
+\begin{itemize}
+\item The two operations must have come from different constituent
+traces, or the swap would violate $any\_interleave$.
+\item If one is a read of
+a location $l$ (that is not in the clobber set), the other may not be a write or reduce to $l$, 
+as changing the order would almost certainly change the value read.
+\item If one is a write of a location $l$, the other may not be a write or reduce to $l$,
+as the store that would result from applying those operations in the opposite order may
+differ in $l$.
+\item Finally, if both operations are reductions to the same location, they may be swapped if they
+use the same reduction function, as each reduction function is assumed to commute with itself.  
+%(We 
+%follow the example of other work (i.e. DPJ) and leave proofs of commutativity to the programmer,
+%possibly with the aid of other tools.)  
+However, if the reduction functions have different names, swapping the two operations might result in a different store.
+\end{itemize}
+
+To summarize this, we define a {\em non-interference} operator on two memory operations that have been
+annotated with which constituent trace they came from as follows:
+$$
+\begin{array}{l@{ }l}
+op_1^{E_1}(l_1, c_1,& v_1)\ \nonint\ op_2^{E_2}(l_2, c_2, v_2) \Leftrightarrow E_1 \not= E_2\ \wedge \\
+& \big( l_1 \not= l_2 \vee (op_1 = read \wedge op_2 = read)\ \vee \\
+& (op_1 = reduce_{id_1} \wedge op_2 = reduce_{id_2} \wedge id_1 = id_2) \big)
+\end{array}
+$$
+
+\begin{lem}
+\label{lem:nonintswapfull}
+\rm
+Let $S$ be a store, $C$ a clobber set, $\oton{E}, E'_a, E'_b$ memory traces, and
+$\epsilon_1, \epsilon_2$ two annotated memory operations such that $\epsilon_1 \nonint \epsilon_2$.
+Then,
+$$valid\_interleave(S, C, E'_a \dplus [ \epsilon_1, \epsilon_2 ] \dplus E'_b, \oton{E})$$
+if and only if
+$$valid\_interleave(S, C, E'_a \dplus [ \epsilon_2, \epsilon_1 ] \dplus E'_b, \oton{E}).$$
+\end{lem}
+\begin{proof}
+As before, we consider the three conditions needed to be a valid interleaving.  We describe the
+implication in the ``forward'' direction, but the arguments are all symmetric.
+\begin{enumerate}
+\item If $E'_a \dplus [ \epsilon_1 ] \dplus [ \epsilon_2 ] \dplus E'_b$ is an interleaving of $\oton{E}$,
+the proof must first ``pop off'' all of $E'_a$, leaving $[ \epsilon_1 ] \dplus [ \epsilon_2 ] \dplus E'_b$ for
+the interleaved subtrace.  The next two steps must pop $\epsilon_1$ and $\epsilon_2$, leaving $E'_b$.
+They cannot be in the same subtrace because $\epsilon_1 \nonint \epsilon_2$, so we could also pop
+$\epsilon_2$ and then $\epsilon_1$, resulting in a proof that $E'_a \dplus [ \epsilon_2 ] \dplus [ \epsilon_1 ] \dplus E'_b$ is also an interleaving of the constituent traces.
+\item For coherence, we must show the value read (if any) by $\epsilon_1$ does not change, the value
+read (if any) by $\epsilon_2$ does not change, and that any read in $E'_b$ sees no change.  With the
+help of Lemma~\ref{lemma:applychain}, we can eliminate the common $E'_a$ from all sequences by
+using $S' = apply(S, E'_a)$.  Similarly to show that $apply(S', [ \epsilon_1  ] \dplus [ \epsilon_2 ] \dplus E) = apply(S', [ \epsilon_2 ] \dplus [ \epsilon_1 ] \dplus E)$ for any $E$, we need only to show that it holds
+for $E = []$.  The proof is now reduced to showing the following:
+\begin{enumerate}
+\item $\epsilon_1 = read(l, c, v) \Rightarrow S'(l) = apply(S',\epsilon_2)(l)$ - since $\epsilon_1$
+is a read, either $\epsilon_2$ must be a read (in which case $apply(S, \epsilon_2) = S'$) or must be
+to a different location, so the result of applying just it to $S'$ cannot change the value in 
+location $l$.
+\item $\epsilon_2 = read(l, c, v) \Rightarrow apply(S', \epsilon_1)(l) = S'(l)$ - this is the same
+as above, with $\epsilon_1$ and $\epsilon_2$ switched.
+\item $apply(S', \epsilon_1 \dplus \epsilon_2) = apply(S', \epsilon_2 \dplus \epsilon_1)$ - we must
+show that the two store operations $apply(\bullet, \epsilon_1)$ and $apply(\bullet, \epsilon_2)$
+commute.  Modifications to two different locations commute, as do two reads (which make no change
+to the store).  Finally, two reductions using the same function to the same location also commute.
+\end{enumerate}
+\item The proof that sequential equivalence is maintained comes down to showing the final store
+is identical after the swap of the two operations, and this is merely a special case of the third
+piece of the coherence proof.
+\end{enumerate}
+\end{proof}
+
+We now extend the non-interference operator to entire memory traces, providing a way to say that
+no operation in a trace interferes with any operation in another:
+$$E_1 \nonint E_2 \Leftrightarrow \displaystyle\bigwedge_{\epsilon_1 \text{ in } E_1, \epsilon_2 \text{ in } E_2} \epsilon_1 \nonint \epsilon_2$$
+and observe that this property permits arbitrary ordering (i.e. parallel execution) of the 
+corresponding subexpressions.
+
+\begin{lem}
+\label{lem:noninteffectsfull}
+\rm
+Let $S$ be an initial store, $C$ be a clobber set, $\oton{E}$ be memory traces such that $E_i \nonint E_j$
+for every $1 \leq i < j \leq n$.  Then any trace $E'$ satisfying $any\_interleave(E', \oton{E})$
+is a valid interleaving.
+\end{lem}
+\begin{proof}
+We will use Theorem~\ref{thm:sequentialfull} and Lemma~\ref{lem:nonintswapfull} to make repeated swaps
+of adjacent operations to transform $E'$ into $E_1 \dplus \ldots \dplus E_n$.  The symmetry of
+Lemma~\ref{lem:nonintswapfull} is then used to show that the validity of $E_1 \dplus \ldots \dplus E_n$
+under Theorem~\ref{thm:sequentialfull} implies the validity of $E'$.
+
+The swapping algorithm as follows: Associate with each operation in $E'$ the index of that operation
+in $E_1 \dplus \ldots \dplus E_n$.  Any consecutive pair of operations $\epsilon_1$ and $\epsilon_2$
+for which $index(\epsilon_1) > index(\epsilon_2)$ is a {\em misordered pair}.  For any such pair,
+$\epsilon_1$ and $\epsilon_2$ will be from different constituent traces (if they were from the same
+trace, their misordering would mean that $E'$ was not an interleaving of $\oton{E}$).  Every pair of
+traces is non-interfering, so $\epsilon_1 \nonint \epsilon_2$ and they can be swapped while preserving
+validity of the trace.  At most $n^2/2$ swaps are needed to eliminate all misordered pairs.
+\end{proof}
+
+We next extend non-interference to privileges.  We 
+use the region mapping $M$ to translate the logical regions named in privileges into sets of
+locations (i.e. physical regions), and define non-interference between individual privileges and
+sets of privileges:
+$$
+\begin{array}{@{}l@{}}
+priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow (M(r_1) \cap M(r_2) = \emptyset)\ \vee \\
+\hspace{0.35in} (priv_1 = reads \wedge priv_2 = reads)\ \vee \\
+\hspace{0.35in} (priv_1 = reduces_{id_1} \wedge priv_2 = reduces_{id_2} \wedge id_1 = id_2)
+\end{array}
+$$
+%% 
+%% \begin{center}
+%%  \begin{tabular}{llc}
+%%  \multicolumn{1}{c}{$\phi_1$} & \multicolumn{1}{c}{$\phi_2$} & $\phi_1 \nonint[M] \phi_2$? \\
+%%  \multirow{3}{*}{$reads(r_1)$} & $reads(r_2)$ & true \\
+%%  & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  \cline{1-1}
+%%  \multirow{3}{*}{$writes(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $reduces_{id_2}(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  \cline{1-1}
+%%  \multirow{3}{*}{$reduces_{id_1}(r_1)$} & $reads(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $writes(r_2)$ & $M(r_1) \cap M(r_2) = \emptyset$ \\
+%%  & $reduces_{id_2}(r_2)$ & $\begin{array}{c}id_1 = id_2 \vee \\ M(r_1) \cap M(r_2) = \emptyset\end{array}$ \\
+%%  \end{tabular}
+%%  \end{center}
+
+$$\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2$$
+
+\begin{lem}
+\label{lem:nonintprivfull}
+\rm
+Let $M$ be a region mapping and $E_1$ and $E_2$ two memory traces such that $\privconsist{E_1}{\Phi_1}$ and $\privconsist{E_2}{\Phi_2}$.  If $\Phi_1$ and $\Phi_2$ are non-interfering under $M$, then $E_1$ and $E_2$ must be non-interfering.
+\end{lem}
+
+\begin{proof}
+The proof is by contradiction.  Assume $E_1 \cancel\nonint E_2$.  Then there must be some $\epsilon_1$ in $E_1$ and some $\epsilon_2$ in $E_2$ such that $\epsilon_1 \cancel\nonint \epsilon_2$.  This requires that
+$\epsilon_1$ and $\epsilon_2$ be operations to the same location $l$ and not both be reads or both
+reductions using the same function name.  Assume $\epsilon_1 = read(l, c_1, v_1)$ and $\epsilon_2 = write(l, c_2, v_2)$.  The definition of $\privconsist{E_1}{\Phi_1}$ tells us that there must be some $r_1$ satisfying $l \in M(r_1) \wedge reads(r_1) \in \Phi_1$.  Similarly, there must be some $r_2$ satisfying $l \in M(r_2) \wedge writes(r_2) \in \Phi_2$.  Letting $\phi_1 = reads(r_1)$ and $\phi_2 = writes(r_2)$, we have $M(r_1) \cap M(r_2) \not= \emptyset$ (the intersection contains at least $l$), so $\phi_1 \cancel{\nonint[M]} \phi_2$ and $\Phi_1 \cancel{\nonint[M]} \Phi_2$.  There are seven other cases to consider (using $id_1 \not= id_2$ for the reduce-reduce case), but all yield the same result.
+\end{proof}
+
+We can now state the key result that allows the Legion runtime to safely evaluate subexpressions as
+separate tasks in parallel.
+
+\begin{thm}
+\label{thm:parallelexecfull}
+\rm
+Let $\oton{e}$ be well-typed Legion expressions, each with its own privileges $\Phi_i$.
+Let $M$ be a region mapping, $L$ a local value mapping,
+$H$ a heap typing, and $S$ be an initial store satisfying
+$\mapconsist{\Omega}$, $\localconsist{L}{\Gamma}$, and $\storeconsist{S}{H}$.
+If $\Phi_i \nonint[M] \Phi_j$ for $1 \leq i < j \leq n$, then any parallel execution of expressions
+$\oton{e}$ results in a valid interleaving of memory operations.
+\end{thm}
+
+The proof follows directly from Lemmas~\ref{lem:noninteffectsfull}
+and \ref{lem:nonintprivfull}.  This result holds even if the
+clobber set $C$ is non-empty, allowing two ``locally independent''
+subtasks to run in parallel even if one or both of them is interacting
+(in a programmer-permitted way) with a third subtask.
+
+We now highlight an important aspect of the Legion
+implementation that is different from other systems and relies on the
+soundness of privileges.  Non-interference of memory operations is
+something that can only be determined after evaluation of an
+expression is completed, and only at great expense, as illustrated at
+one extreme by work on transactional
+memory \cite{Harris05}.  At the other extreme are systems
+that check non-interference statically, such as Jade \cite{Rinard98} and
+DPJ \cite{Bocchino11}.  In contrast, Legion checks non-interference of privileges
+at runtime, which is much simpler and more efficient than checking
+non-interference of dynamic memory traces.  Even though the privileges
+themselves are static, the region mapping $M$ is dynamic.  Testing
+non-interference on the privileges with physical regions allows
+parallel execution in many more cases than a purely static analysis
+can achieve.
+
+
+
+\subsection{Relaxed Coherence}
+\label{subsec:relaxedfull}
+
+The analysis above does not consider the coherence modes of operations,
+making the worst-case assumption that all operations use $excl$ mode.  However, if two or more
+subexpressions contain calls to functions using $atomic$ or $simult$ coherence modes
+on some regions, executions besides serial program order may 
+result in valid interleavings even if constituent traces have locations in common.  We discuss
+two cases of interest.  In both, the previous section's analysis 
+is repeated with minor modifications, so for brevity we limit
+discussion to a description of the differences rather than complete proofs.
+
+The first important case occurs when all apparently-interfering operations have coherence modes
+of either $atomic$ or $simult$.  In this case, the conditions required for
+coherence and sequential equivalence are trivially satisfied for locations in $L_{excl}$.  The
+requirements for locations in $L_{atomic}$ allow any permutation of the constituent traces,
+so the runtime is free to serialize the execution of the subexpressions in any order, not just
+program order.
+
+To convert the required analysis to one that can be performed on regions, we modify
+the non-interference operator for memory operations to consider only locations in $L_{excl}$ and show that
+traces that are non-interfering under this modified check satisfy the requirement for atomic
+execution.  We then modify the non-interference operator on privileges to allow 
+$M(r_1) \cap M(r_2) \not= \emptyset$ if either $atomic(r_1)$ or $simult(r_1)$ is in $Q_1$ and
+either $atomic(r_2)$ or $simult(r_2)$ is in $Q_2$. We then show that subexpressions with 
+privileges that are {\em atomically non-interfering} (under a dynamic region mapping
+$M$) always have memory traces compatible with atomically-reordered execution.  Finally,
+in the special case where each subexpression has $atomic(r)$ or $simult(r)$ in $Q_i$ for every $r$
+in $\Phi_i$, we can eliminate the dynamic check entirely.
+
+The second case is a subset of the first, in which all apparently-interfering operations have
+the $simult$ coherence mode.  In this case, all the coherence and sequential equivalence 
+checks are trivially satisfied, and any interleaving of the constituent traces is valid.
+We again modify the non-interference criteria for memory operations, traces, and privileges, this time
+only allowing $simult$ coherence annotations. We show that subexpression with privileges
+that are {\em simultaneously non-interfering} (under mapping $M$) can be executed
+in parallel, which includes all the cases covered by Theorem~\ref{thm:parallelexecfull} as well
+as those where the programmer has used the $simult$ coherence mode to explicitly allow parallel
+execution.  Again, a special (but important) case exists where all privileges for each
+subexpression are paired with $simult$ coherence mode declarations, allowing the safety of
+parallel execution to be determined at compile time.
+
+\section{Hierarchical Scheduling}
+\label{sec:schedulingfull}
+
+The enforcement of a (locally) valid interleaving at every step in the operational semantics
+captures the hierarchical nature of the scheduler used by the Legion runtime.  As the cost of
+a scheduling decision is quadratic in the number of function calls (more precisely, the number of 
+privileges for those calls), it should be clear that a hierarchical scheduling algorithm will
+be vastly more efficient than a global algorithm that must consider the privileges of every
+concurrently executing expression.
+However, a scheduling algorithm that makes decisions hierarchically must do so with limited
+information, and must respect all required scheduling dependencies while ideally imposing as
+few extra dependencies as possible.  The following theorem forms the basis of the 
+Legion scheduler.
+
+
+Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
+$\Phi_2$.  Now let $e_3$ be some subexpression of $e_1$ and $e_4$ be some 
+subexpression of $e_2$, with corresponding privileges $\Phi_3$ and $\Phi_4$.
+By Theorem~\ref{thm:parallelexecfull}, if the runtime can verify $\Phi_1 \nonint[M] \Phi_2$, then 
+expressions $e_1$ and $e_2$ may be evaluated in parallel.  The evaluation of the subexpressions
+$e_3$ and $e_4$ will therefore be allowed to run in parallel, and we must show that this is
+permissible.  We do so by proving that any memory traces that can result from the evaluation
+of the subexpression must be non-interfering (allowing parallel execution by
+Lemma~\ref{lem:noninteffectsfull}).
+
+\begin{thm}
+\label{thm:hierschedfull}
+\rm
+Let $e_1$ and $e_2$ be well-typed Legion expressions using privileges $\Phi_1$ and
+$\Phi_2$ respectively, where $\Phi_1 \nonint[M] \Phi_2$.  Let $e_3$ be a subexpression of $e_1$ and $e_4$ be a 
+subexpression of $e_2$.  Any memory traces $E_3$ of $e_3$ and $E_4$ of $e_4$ resulting from evaluation of
+$e_1$ and $e_2$ (with the usual consistent $M$, $L$, $H$, and $S$), must be
+non-interfering.
+\end{thm}
+
+\begin{proof}
+Let $E_1$ be the result of an evaluation of $e_1$, with $E_3$ being the memory trace from the
+evaluation of $e_3$ within the expression tree.  $E_1$ will be formed from a tree of valid
+interleavings, each of which must include all the memory operations of each constituent trace.
+By induction over the number of intermediate subexpressions between $e_1$ and $e_3$, we
+can show that any memory operation $\epsilon_3$ that is in $E_3$ must also be in $E_1$.
+Similarly, any memory operation $\epsilon_4$ that is in $E_4$ must also be in $E_2$.  We have
+$E_1 \nonint E_2$ from Lemma~\ref{lem:nonintprivfull}, so and therefore $\epsilon_3 \nonint \epsilon_4$.  Since
+this holds for all $\epsilon_3$ in $E_3$ and all $\epsilon_4$ in $E_4$, we have $E_3 \nonint E_4$.
+\end{proof}
+
+ The Legion task scheduler uses Theorem~\ref{thm:hierschedfull} in the
+following way.  Sibling function calls (those invoked within the same
+function body) are checked for non-interference of their (dynamic)
+privileges.  If they interfere they are serialized; otherwise they are
+considered for execution as parallel subtasks.  Although determining that $e_1$
+and $e_2$ are non-interfering guarantees $e_3$ and $e_4$ are
+non-interfering, the converse is not true.  It is possible for $e_1$
+and $e_2$ to be judged to be potentially interfering and be serialized
+even when the subexpressions are non-interfering.  This loss of
+precision can impact performance, and did in a few instances in our
+experiments.  
+%When the performance impact is significant, two options
+%exist to improve matters.  
+In cases where $e_1$ and $e_2$ are in fact
+non-interfering, region partitions can be further refined to make the
+disjointness visible in the privileges.  Alternately, the code can be
+refactored to lift the subexpressions up to the same level, allowing
+the dynamic test based on the region mapping to infer non-interference
+in more cases.  
+%Although this can increase the overhead of scheduling
+%decisions, judicious use of this technique in practice has not shown
+%any measurable performance degradation.
+
