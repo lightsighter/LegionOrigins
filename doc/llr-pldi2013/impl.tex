@@ -339,7 +339,7 @@ would eventually catch up.
 \label{subsec:reducimpl}
 
 In addition to normal physical region instances, our implementation supports a special reduction-only
-instance that differ in two important ways.  First, the per-element storage in a reduction-only instance
+instance that differs in two important ways.  First, the per-element storage in a reduction-only instance
 is sized to hold the ``right-hand side'' of the reduction operation (e.g. the $v$ in an operation like
 $struct.field\ \text{+=}\ v$), allowing a more compact representation.  Second, individual reductions are applied
 (atomically) to the local instance, which can then be sent as a large batched reduction to the target

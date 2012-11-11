@@ -21,8 +21,7 @@ that takes a stream of tasks with region requirements and asynchronously
 runs ahead of the actual execution using a scheduler called a {\em Software Out-of-Order Processor} 
 (SOOP).  The SOOP leverages our interface by asynchronously issuing task launches, copy
 operations, and synchronization operations with the dependencies between them expressed
-as events.  The full details of the SOOP are beyond the scope of this paper
-and are described in \cite{Legion12}.
+as events.  For details the interested reader is referred to the work of \cite{Legion12}.
 
 The fully asynchronous design of the interface proposed in
 this paper is crucial to Legion's SOOP implementation.  Without a fully
