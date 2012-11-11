@@ -1539,10 +1539,12 @@ of two or more traces when reordering a pair of memory operations.
 \rm
 Let $S$ be a store, $C$ a clobber set, $\oton{E}, E'_a, E'_b$ memory traces, and
 $\epsilon_1, \epsilon_2$ be two memory operations from $E_i$ and $E_j$ ($i \not= j$).  Then,
-$$\begin{array}{l@{}l}
-valid\_interleave&(S, C, E'_a \dplus [ \epsilon_1, \epsilon_2 ] \dplus E'_b, \oton{E}) \wedge \epsilon_1 \nonint \epsilon_2 \Rightarrow \\
- & valid\_interleave(S, C, E'_a \dplus [ \epsilon_2, \epsilon_1 ] \dplus E'_b, \oton{E}).
-\end{array}$$
+%%$$\begin{array}{l}
+\begin{align*}
+valid&\_interleave(S, C, E'_a \dplus [ \epsilon_1, \epsilon_2 ] \dplus E'_b, \oton{E}) \wedge \epsilon_1 \nonint \epsilon_2 \\
+&\Rightarrow valid\_interleave(S, C, E'_a \dplus [ \epsilon_2, \epsilon_1 ] \dplus E'_b, \oton{E}).
+\end{align*}
+%%\end{array}$$
 \end{lem}
 %The proof follows from the definitions of {\em coherent} and {\em seq\_equiv} in Figure~\ref{fig:validinterleave}.
 
@@ -1653,11 +1655,14 @@ the task issued later in program order to possibly run before the task issued ea
 in program order.  This relaxation only applies if all aliased regions are annotated with atomic coherence.
 %or a more relaxed coherence mode (see Section~\ref{subsec:coherencesimult}).
 To show this is safe, we define a relaxed version of non-interference for atomic coherence:
-$$
-\begin{array}{l@{}l}
-op_1(l_1, c_1, v_1)\ \nonint^A\ op_2(l_2, c_2, v_2) \Leftrightarrow &op_1(l_1, c_1, v_1)\ \nonint\ op_2(l_2, c_2, v_2) \vee \\
-& (c_1 = atomic \wedge c_2 = atomic)
-\end{array}$$
+%$$
+%\begin{array}{l@{}l}
+\begin{align*}
+op_1 &(l_1, c_1, v_1)\ \nonint^A\ op_2(l_2, c_2, v_2) \Leftrightarrow  \\
+& op_1(l_1, c_1, v_1)\ \nonint\ op_2(l_2, c_2, v_2) \vee (c_1 = atomic \wedge c_2 = atomic)
+\end{align*}
+%\end{array}
+%$$
 
 We repeat the steps in Section~\ref{subsec:coherenceparallel} using the $\nonint^A$ operator and reach another
 result used by the Legion runtime scheduler:
