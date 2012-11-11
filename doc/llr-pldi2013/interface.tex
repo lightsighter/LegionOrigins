@@ -1,9 +1,9 @@
 
 \section{Programming Interface}
 \label{sec:interface}
-The target set of clients for our interface are higher-level language
+The clients for our interface are higher-level language
 compilers and runtimes such as Legion\cite{Legion12} as well as 
-advanced systems programmers.  This class of clients expect total control
+advanced systems programmers.  These clients expect total control
 over the underlying hardware and transparent performance from an
 implementation.  To support these demands we have designed our interface
 to be as low-level as possible.  In many cases we have chosen to trade-off
@@ -57,7 +57,7 @@ names a unique event in the system.  {\tt NO\_EVENT} (line 3)
 is a special instance
 of an event that by definition has always triggered.  The event interface
 supports testing whether an event has triggered (line 5) and waiting on
-an event to trigger (line 6).  While these methods can be useful, the preferred
+an event to trigger (line 6), but the preferred
 use of events is passing them as preconditions for other operations.  The client can use the
 {\tt merge\_events} call (line 7) to create an event that triggers only when every
 event in a given set of events has triggered.  A code example using events follows in
@@ -202,17 +202,17 @@ class Machine {
 Lines 14-24 of Figure~\ref{fig:runtimeapi} show the interface for {\tt Processor} objects which allow for
 the creation of parallel computations.  Processors provide a way of naming 
 every computational unit in the machine.  We describe how to discover processor handles
-in Section~\ref{subsec:machmodel}.  In the case of our current interface 
-processors are either individual CPU cores or discrete GPUs, but this is easily modified 
+in Section~\ref{subsec:machmodel}.  In the current interface 
+processors are either individual CPU cores or discrete GPUs, but this is easily extended
 to include new processor types (line 20).   Processors support a single {\tt spawn}
 method (line 23) that launches a new {\em task} on that processor.
 Note that because the spawn operation
-is invoked on a processor handle, it is possible to launch a task on any
+is invoked on a processor handle, a task can be launched on a 
 processor from anywhere in the system.  
-The spawn call takes an optional event that must trigger before the task can begin, and
-always returns an event that will trigger when the task completes.
+The spawn call takes an optional event that must trigger before the task begins and
+always returns an event that triggers when the task completes.
 
-Figure~\ref{fig:procevents} shows a simple example using 
+Figure~\ref{fig:procevents} shows an example using 
 the processor and event interface.  The {\tt diamond\_task} launches four
 sub-tasks with a diamond dependence pattern.
 The {\tt merge\_events} call
@@ -408,8 +408,8 @@ An important difference between deferred locks and blocking locks is that the pr
 that requests the lock doesn't have to be the one that uses it.  A common
 convention in writing code with deferred locks is to acquire locks on behalf of a task being
 launched.  Figure~\ref{fig:lockevents} illustrates this with a simple example.  The {\tt lock\_example}
-function needs to launch two subtasks on two othe processors, each with exclusive access to some resource protected by a
-lock named {\tt mutex}.  For each subtask, it first requests the lock on the subtaks behalf, making the
+function needs to launch two subtasks on two other processors, each with exclusive access to some resource protected by a
+lock named {\tt mutex}.  For each subtask, it first requests the lock on the subtask's behalf, making the
 subtask wait until the lock has been acquired.  The parent task also requests that the runtime automatically
 release the lock after each subtask has completed.  In the event dependency graph, solid arrows represent
 the explicit events used in the code, while the dotted line represents the dynamic ordering that results
@@ -419,13 +419,13 @@ When a lock is used to mediate access to a piece of data, the first thing a task
 do after being granted the lock is access the data.  To hide the latency of that
 access as well, an additional feature of locks in our interface is the association of a lock with a
 {\em payload}, a small (i.e. less than 4KB) 
-piece of data that is moved around with the lock and guaranteed to be coherent while 
+piece of data that is moved with the lock and guaranteed to be coherent while 
 the lock is held.  The size of the payload is specified when the lock is created (line 35 of Figure~\ref{fig:runtimeapi}) and
 the pointer to the local copy of the payload can be obtained from the {\tt payload\_ptr} method
 (line 36).
 
-Between deferred locks and barriers (described in Section~\ref{subsec:events}) clients 
-have access to the same set of synchronization primitives that they have
+With deferred locks and barriers (see Section~\ref{subsec:events}) clients 
+have the same synchronization primitives as
 in threading and bulk-synchronous interfaces.  However, these operations can now 
 be composed with other asynchronous operations which is not possible in any other interface
 of which we are aware.
@@ -459,12 +459,12 @@ the runtime aware of the structure of elements in the allocation and thereby ena
 layouts, such as specialized layouts for buffering individual reduction operations.
 
 A physical region is an allocation of data in a single memory in the memory hierarchy.  Physical
-regions are grouped into {\em classes} which are sets of physical regions that share the
-same names (i.e. addresses) for elements, but don't necessarily share the same data layout.  This
+regions are grouped into {\em classes}, which are sets of physical regions sharing the
+same names (i.e. addresses) for elements, but not necessarily sharing the same data layout.  This
 allows pointers to elements within regions to be used, even if the regions are copied from one memory
 to another.  Our
 interface supports sub-classing, but the details are omitted due to space constraints.  The
-interface allows copies between any pair of physical regions that are of
+interface allows copies between physical regions of
 the same class (or between super- and sub-classes).  
 
 %Note, clients can still pass arbitrary arrays
@@ -535,7 +535,7 @@ Each memory in the machine's memory hierarchy is named by a {\tt Memory} object 
 The next object is a {\tt RegionMetaData} object (line 44), which defines a class of
 regions.  Physical regions that belong to that class are created with the {\tt create\_instance}
 method (line 51) and represented by {\tt RegionInstance} objects (line 56).  When creating a physical
-region the client specifies the memory in which the physical region is going
+region the client specifies the memory in which the physical region is
 to be allocated.  To maintain performance transparency, a new physical region can only be allocated
 if the memory has sufficient capacity.
 There is no automatic coherence of data between physical regions in the
@@ -547,7 +547,7 @@ If the only operations a task will perform on a region are reductions, a special
 instance can be created (line 52).  Rather than applying each reduction separately to the target instance,
 the reduction operations can be accumulated in the reduction instance, and applied in bulk to 
 the target using the {\em reduce\_to} operation (line 60).  This has several benefits.  First, it results
-in much better performance, as we will show in section~\ref{subsec:reducmicro}), by reducing both
+in much better performance, as we show in Section~\ref{subsec:reducmicro}, by reducing both
 the total inter-node traffic and the overhead of that traffic while still allowing parallelism.
 Second, a reduction-only instance is often smaller that the target instance, potentially improving
 cache performance and helping address capacity issues for smaller memories (e.g. a GPU's device

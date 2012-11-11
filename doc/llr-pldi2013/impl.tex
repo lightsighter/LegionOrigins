@@ -39,20 +39,21 @@ We refer to this memory as {\em GASNet memory}.
 %% the GASNet memory.
 
 In addition to the RMA capabilities, GASNet provides {\em active messages} for 
-inter-node communication.  Active messages consist of a command and payload that
+inter-node communication.  Implementation of all runtime features requiring communication
+rely heavily on active messages.  Active messages consist of a command and payload that
 are sent by one node to another without any previous coordination.  Upon arrival
 at a destination node, a handler routine is invoked to process the message.
 %The handler may issue a response to the sender, but this is optional, and avoided
 %as much as possible in our implementation due to the latencies involved in waiting
 %for a response.  
-One example of a case where we use active messages involves the {\tt spawn} call on a {\tt Processor}
-object.  If the processor is not on the same node as the requestor, the information
+%One example of a case where we use active messages involves the {\tt spawn} call on a {\tt Processor}
+%object.  If the processor is not on the same node as the requestor, the information
 %about the task (e.g. the task ID and arguments, the actual target {\tt Processor},
 %the prerequisite event (if any), and the completion event ID) 
-for the task is sent in an
-active message to the node containing the target processor.  The recipient node
-unpacks the message, and either places the task on the ready queue for the target
-processor or marks it as being deferred until the prerequisite event has triggered.
+%for the task is sent in an
+%active message to the node containing the target processor.  The recipient node
+%unpacks the message, and either places the task on the ready queue for the target
+%processor or marks it as being deferred until the prerequisite event has triggered.
 %No response is sent to the original requestor.  The requestor already knows the event
 %that corresponds to the completion of this task (since it was provided in the active
 %message) - there is no utility in knowing exactly when the active message itself has
@@ -86,12 +87,12 @@ events, locks, and reduction instances.
 \label{subsec:eventimpl}
 
 Events are created on demand and are {\em owned} by the node on which they
-were created.  The creation of an event occurs with no inter-node communication.
+are created.  Creating an event requires no inter-node communication.
 The space of event
 handles is divided across the nodes at start-up time, allowing each node to assign handles
-to new events without the risk of conflicting with another node's assignments.  The static division
+to new events without conflicting with another node's assignments.  The static division
 of event handles also permits any node to determine the owning node of an event
-without any communication.
+without communication.
 %No broadcast of
 %the event creation is required either, as the static division is sufficient to allow any
 %node to correctly determine an event's owning node when (and only if) an operation on that
@@ -115,7 +116,7 @@ When a new event is created, the owning node allocates a data structure to track
 the event ({\em triggered} or {\em untriggered}) as well as to record a list of dependent operations
 (e.g. copy operation or task launch) from the same node called {\em waiters}.
 The first operation dependent on an event
-from a remote node will allocate the same data structure on the remote node.  A single
+from a remote node allocates the same data structure on the remote node.  A single
 {\em event subscription} active message is then sent from the remote node to the owning node indicating
 that the remote node should be informed when the event triggers.  Arbitrarily many dependent operations on
 the remote node can then be added to the list of waiters without any additional communication.
@@ -137,7 +138,7 @@ messages required per event to $2N-2$ where $N$ is the number of nodes
 %(which can be much smaller than the number of dependent operations) 
 monitoring the event.  An alternative
 would have been to share the list of subscribers so that the triggering node could notify all interested
-nodes directly.  However, such an algorithm is both more complicated due to race conditions, and requires $O(N^2)$
+nodes directly.  However, such an algorithm is both more complicated (due to race conditions) and requires $O(N^2)$
 active messages.  Any algorithm that is super-linear with the node count will not scale well, 
 and as we will see in Section~\ref{subsec:eventmicro}, the latency of a single event trigger
 active message is very small. 
@@ -265,10 +266,13 @@ is delayed to avoid a spurious triggering of the barrier.
 \subsection{Deferred Lock Implementation}
 \label{subsec:lockimpl}
 
-Like events, deferred locks, or locks from here on, are created on demand by the node on which the creation request was made.  The lock
-handles are also statically divided across the nodes, allowing the creation to be done without inter-node
-communication.  Whereas event ownership is static, locks may migrate; the {\em creating}
-node is the initial owner, but that ownership can be transferred to other nodes.
+Like events, deferred locks (henceforth called simply locks) are
+created on demand by the node of the creation request. 
+Lock handles are also statically divided across the nodes,
+allowing creation to be done without inter-node communication.
+Whereas event ownership is static, locks may migrate; the {\em
+  creating} node is the initial owner, but ownership can be
+transferred to other nodes.
 
 Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
 state of a lock on the node.
@@ -304,7 +308,7 @@ longer the owner, it forwards the message on to the node it has recorded as the 
 If the current owner's status shows
 the lock is currently held, the bit for the requesting node is set in the remote waiters bitmask.  If the lock is
 not held, the ownership of the lock is given to the requesting node via a {\em lock transfer} active
-message.  A lock transfer message includes the bitmask of remote waiters and an up-to-date copy 
+message, which includes the bitmask of remote waiters and an up-to-date copy 
 of the lock's payload.  The inclusion of the payload in the active message is the reason for the 
 4KB size limit specified on payloads in Section~\ref{subsec:locks}.
 
