@@ -545,8 +545,10 @@ Each memory in the machine's memory hierarchy is named by a {\tt Memory} object 
 The next object is a {\tt PhysicalRegion} object (line 44), which contains information about the
 maximum number and size of the elements within the region (line 48) and handles dynamic allocation
 within the region (lines 51-52), but does not contain any storage for the element data.  Instead,
-element data is stored in on or more {\tt RegionInstance} objects (line 59), each of which can be
-created in an arbitrary {\tt Memory} (line 54).
+element data is stored in one or more {\tt RegionInstance} objects (line 59), each of which can be
+created in an arbitrary {\tt Memory} (line 54).  To maintain performance transparency, there is no
+use of virtual memory - each {\tt Memory} is sized based on physical capacity and a new physical
+instance can only be allocated if sufficient space remains.
 
 A {\tt ptr\_t} value returned by the {\tt alloc}
 method may be used to access the corresponding element in any of the instances of the region (line 62).
@@ -557,17 +559,7 @@ In common cases, this is as cheap as array-addressing calculations, so the overh
 When more than one instance exists for a region, the client is responsible for maintaining coherence
 of the data between the regions.  This is typically achieved through the use of instance-to-instance
 copy operations (line 63) that use the producer task's completion event as a prerequisite and provide
-their own completion event as a prerequisite for the consumer task.
-defines a class of
-regions.  Physical regions that belong to that class are created with the {\tt create\_instance}
-method (line 51) and represented by {\tt RegionInstance} objects (line 56).  When creating a physical
-region the client specifies the memory in which the physical region is
-to be allocated.  To maintain performance transparency, a new physical region can only be allocated
-if the memory has sufficient capacity.
-There is no automatic coherence of data between physical regions in the
-same class.  It is the client's responsibility to manage data coherence using copies
-between physical regions (line 59).  Like other operations copies can be
-predicated on an event and return an event corresponding to completion.  When a copy operation is
+their own completion event as a prerequisite for the consumer task.  When a copy operation is
 the last use of a particular instance, the destruction of that instance can also be requested and made
 dependent on the copy operation's event, allowing the runtime to reclaim the memory as soon as (but no
 sooner than) possible.
