@@ -2,25 +2,24 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-As large supercomputers continue to scale, the latencies associated
-with common operations such as communication and synchronization will
-become larger and more variable.  To effectively hide these latencies
-future programming systems will need to compose asynchronous operations
-to overlap long latency operations with useful work.  We have
-presented a low-level programming interface that is fully asynchronous
-including a new synchronization primitive called a deferred lock.
-Our interface uses events to compose asynchronous operations.  Clients
-can use events to explicitly specify dependences between operations,
-giving the runtime the flexibility to schedule them in a way that maximizes latency 
+As supercomputers continue to grow, the latencies of communication and
+synchronization will become larger and more variable.  Effectively
+hiding latency in future programming systems will require composing
+asynchronous operations to overlap long latency operations with useful
+work.  We have presented a low-level programming interface that is
+fully asynchronous, including deferred locks, a new synchronization
+primitive.  Asynchronous operations are composed using events, which
+specify dependences between operations, giving the
+runtime the flexibility to schedule operations to maximize latency
 hiding while still obeying dependences.
 
-We've presented an implementation of our interface that is capable of running
-on a large heterogeneous cluster containing both CPUs and GPUs.  We
-employed micro-benchmarks to show that our implementation is efficient.
-We also demonstrated that our interface is capable of supporting Legion,
-an advanced high-level runtime system that fully leverages the asynchronous
-features of our interface.  We showed that for three real-world applications
-the asynchronous Legion implementations were between 22\% to 135\% faster than
-implementations which contained blocking operations.
+%We've presented an implementation of our interface that is capable of running
+%on a large heterogeneous cluster containing both CPUs and GPUs.  We
+%employed micro-benchmarks to show that our implementation is efficient.
+%We also demonstrated that our interface is capable of supporting Legion,
+%an advanced high-level runtime system that fully leverages the asynchronous
+%features of our interface.  We showed that for three real-world applications
+%the asynchronous Legion implementations were between 22\% to 135\% faster than
+%implementations which contained blocking operations.
 
 
