@@ -4,8 +4,6 @@
 Legion is most directly related to Sequoia \cite{Fatahalian06}. 
 Sequoia is a static language with a single unified hierarchy
 of tasks and data; Legion is more dynamic with separate task and region hierarchies. 
-Both Sequoia and Titanium\cite{TIT98} are array-based languages, with
-a limited repertoire of ways to partition arrays.
 
 Deterministic Parallel Java (DPJ) is the only other region-based parallel system of which we are
 aware\cite{Bocchino09}.  While there are similarities between DPJ's effects and Legion privileges, 
@@ -33,10 +31,14 @@ In contrast, Jade uses annotations to describe
 data disjointness,  and like Legion leverages the disjointness information
 to discover parallelism, but lacks a region system to name and organize unbounded collections of objects \cite{Rinard98}.  
 
+
 % Unclear to me what subtleties need to be pointed out here and explained
 % to properly differentiate our work
 Many efforts use static region systems for  memory management (e.g., \cite{Tofte94, Grossman02}).
 Our system is more closely affiliated with dynamic region systems used for expressing locality for performance \cite{Gay01}.
+Titanium\cite{TIT98} is an SPMD parallel language with a region system where regions are tightly bound to specific processors.
+
+
 
 %In addition to region languages with static type systems, there have been several
 %dynamic region languages.  Cyclone uses both a static type system and dynamic
