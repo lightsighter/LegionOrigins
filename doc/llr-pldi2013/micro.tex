@@ -217,13 +217,13 @@ All reductions are accumulated into the instance, which is then reduced into the
 \end{itemize}
 
 For our experiment, there are 8 reduction tasks created for each node, one per processor.  Each task performs 4M reductions
-into a histogram with 256K buckets.  The results for a variety of node counts are shown in Figure~\ref{fig:reducbench}.
+into a histogram with 256K buckets.  The input data is random, so although the average number of reductions per bucket is 16, there will be some buckets with more and some with fewer.  The results for a variety of node counts are shown in Figure~\ref{fig:reducbench}.
 They show that the version using reduction-only instance performs 
 best and scales nearly linearly with the number of nodes, achieving over a billion reductions
 per second in the 16 node case.  The localized instance approach works well for a single node, 
 but its inherently serial nature doesn't benefit from increasing node counts.  Finally, the version using individual
-reduction messages is scalable, but the per-message overhead makes it nearly 1000x slower than the versions that are
-able to move data in bulk.
+reduction messages is scalable, but the need to send each reduction separately and the per-message overhead make it nearly 1000x slower than the reduction instance version that is
+able to accumulate multiple reductions to the same location locally and move data in bulk.
 
 \begin{figure}
 \begin{center}
