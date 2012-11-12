@@ -5267,7 +5267,7 @@ namespace LegionRuntime {
           PhysicalCloser closer(user, rm, this, IS_READ_ONLY(user.usage));
           closer.add_upper_target(new_view);
           closer.targets_selected = true;
-          // If we're writing mark that the dirty bits in the closer
+          // If we're writing mark the dirty bits in the closer
           if (HAS_WRITE(user.usage))
             closer.dirty_mask = user.field_mask;
           siphon_open_children(closer, state, user, user.field_mask);

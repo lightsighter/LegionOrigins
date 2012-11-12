@@ -131,6 +131,10 @@ def get_speedups(exprs,baseline):
         result.append(baseline/e.time)
     return result
 
+def set_axis_size(a, size):
+    for ax in a.xaxis.get_major_ticks() + a.yaxis.get_major_ticks():
+        ax.label.set_fontsize(size)
+
 def make_plot(show = True, save = True, out_dir="figs/"):
     # Hard-coding the baseline values
     baseline48 = 181.033
@@ -152,33 +156,44 @@ def make_plot(show = True, save = True, out_dir="figs/"):
     print "Overheads for 96 piece experiments"
     print_overheads(orig_96_experiments,coher_96_experiments)
 
-    fig = plt.figure(figsize = (10,7))
+    fig1 = plt.figure(figsize = (10,7))
     # Plot the linear line
     plt.plot([0,70],[0,70],'k-',label="Linear")
-    # Plot 48 Pieces Orig
-    orig_48_speedups = get_speedups(orig_48_experiments,baseline48)
-    plt.plot(gpus48,orig_48_speedups,'--',color=tableau6,label='Legion P=48',
-              linestyle='dashed',markersize=10,marker='o',markerfacecolor=tableau6,linewidth=0.5)
-    # Plot 48 Pieces Coherhence 
-    coher_48_speedups = get_speedups(coher_48_experiments,baseline48)
-    plt.plot(gpus48,coher_48_speedups,'--',color=tableau2,label='Exclusive-Coherence P=48',
-              linestyle='dashed',markersize=10,marker='s',markerfacecolor=tableau2,linewidth=0.5)
     # Plot 96 Pieces Orig
     orig_96_speedups = get_speedups(orig_96_experiments,baseline96)
-    plt.plot(gpus96,orig_96_speedups,'--',color=tableau10,label='Legion P=96',
-              linestyle='dashed',markersize=10,marker='D',markerfacecolor=tableau10,linewidth=0.5)
+    plt.plot(gpus96,orig_96_speedups,'--',color=tableau10,label='Relaxed Coherence',
+              linestyle='dashed',markersize=10,marker='o',markerfacecolor=tableau10,linewidth=0.5)
     # Plot 96 Pieces Coherence 
     coher_96_speedups = get_speedups(coher_96_experiments,baseline96)
-    plt.plot(gpus96,coher_96_speedups,'--',color=tableau18,label='Exclusive-Coherence P=96',
-              linestyle='dashed',markersize=10,marker='v',markerfacecolor=tableau18,linewidth=0.5)
-    plt.legend(loc=2,ncol=1)
-    plt.xlabel('Total GPUs (3 GPUs/node)')
-    plt.ylabel('Speedup vs. Hand-Coded Single GPU')
+    plt.plot(gpus96,coher_96_speedups,'--',color=tableau18,label='Exclusive Coherence',
+              linestyle='dashed',markersize=10,marker='s',markerfacecolor=tableau2,linewidth=0.5)
+    plt.legend(loc=2,ncol=1,prop={'size':22})
+    plt.xlabel('Total GPUs (3 GPUs/node)',size=22)
+    plt.ylabel('Speedup vs. Hand-Coded Single GPU',size=22)
+    set_axis_size(plt.gca(),20)
     plt.xticks([1,16,32,48,64,80,96])
     plt.grid(True)
 
+    fig2 = plt.figure(figsize = (10,7)) 
+    plt.plot([0,50],[0,50],'k-',label="Linear")
+    # Plot 48 Pieces Orig
+    orig_48_speedups = get_speedups(orig_48_experiments,baseline48)
+    plt.plot(gpus48,orig_48_speedups,'--',color=tableau6,label='Relaxed Coherence',
+              linestyle='dashed',markersize=10,marker='o',markerfacecolor=tableau10,linewidth=0.5)
+    # Plot 48 Pieces Coherhence 
+    coher_48_speedups = get_speedups(coher_48_experiments,baseline48)
+    plt.plot(gpus48,coher_48_speedups,'--',color=tableau2,label='Exclusive Coherence',
+              linestyle='dashed',markersize=10,marker='s',markerfacecolor=tableau2,linewidth=0.5)
+    plt.legend(loc=2,ncol=1,prop={'size':22})
+    plt.xlabel('Total GPUs (3 GPUs/node)',size=22)
+    plt.ylabel('Speedup vs. Hand-Coded Single GPU',size=22)
+    set_axis_size(plt.gca(),20)
+    plt.xticks([1,16,32,48])
+    plt.grid(True)
+
     if save:
-        fig.savefig(out_dir+'circuit_coherence.pdf',format='pdf',bbox_inches='tight')
+        fig1.savefig(out_dir+'circuit_coherence_96.pdf',format='pdf',bbox_inches='tight')
+        fig2.savefig(out_dir+'circuit_coherence_48.pdf',format='pdf',bbox_inches='tight')
 
     if show:
         plt.show()
