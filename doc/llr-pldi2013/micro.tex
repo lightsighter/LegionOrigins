@@ -222,7 +222,8 @@ They show that the version using reduction-only instance performs
 best and scales nearly linearly with the number of nodes, achieving over a billion reductions
 per second in the 16 node case.  The localized instance approach works well for a single node, 
 but its inherently serial nature doesn't benefit from increasing node counts.  Finally, the version using individual
-reduction messages is scalable, but the need to send each reduction separately and the per-message overhead make it nearly 1000x slower than the reduction instance version that is
+reduction messages is scalable, but the need to send each reduction separately and the per-message overhead make it nearly 
+1000x slower than the reduction instance version, which is
 able to accumulate multiple reductions to the same location locally and move data in bulk.
 
 \begin{figure}

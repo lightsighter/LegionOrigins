@@ -557,21 +557,21 @@ allows the creation of irregular data structures within physical regions.  The {
 be safely stored in a region, and need not be changed when data is copied from one instance to another.
 In common cases, this is as cheap as array-addressing calculations, so the overhead is minimal.
 When more than one instance exists for a region, the client is responsible for maintaining coherence
-of the data between the regions.  This is typically achieved through the use of instance-to-instance
+of the data between instances of a region.  This is typically achieved through the use of instance-to-instance
 copy operations (line 63) that use the producer task's completion event as a prerequisite and provide
 their own completion event as a prerequisite for the consumer task.  When a copy operation is
 the last use of a particular instance, the destruction of that instance can also be requested and made
-dependent on the copy operation's event, allowing the runtime to reclaim the memory as soon as (but no
+dependent on the copy operation's event (line 56), allowing the runtime to reclaim the memory as soon as (but no
 sooner than) possible.
 
 If the only operations a task will perform on a instance are reductions, a special reduction-only
 instance can be created (line 55).  Rather than applying each reduction separately to the target instance,
 the reduction operations can be accumulated in the reduction instance.  Using the {\tt reduce\_to} 
 method (line 64), these accumulated reductions can be applied in bulk to another instance, which may be either
-a normal instance or another reduction-only instance.  First, it results
+a normal instance or another reduction-only instance.  The use of reduction instances can result 
 in much better performance, as we show in Section~\ref{subsec:reducmicro}, by reducing both
 the total inter-node traffic and the overhead of that traffic while still allowing parallelism.
-Second, a reduction-only instance is often smaller than a normal instance, potentially improving
+Furthermore, reduction-only instances are often smaller than normal instances, potentially improving
 cache performance and helping address capacity issues for smaller memories (e.g. a GPU's device
 memory).  For example, if reductions are being made to a single field in a larger structure, the 
 reduction-only instance only needs to store that field and not the other fields that won't be 
