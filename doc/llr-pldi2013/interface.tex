@@ -102,6 +102,7 @@ class UserEvent : public Event {
 \end{lstlisting}
 \end{lrbox}
 \subfigure{\usebox{\mylistingbox}} \\
+\vspace{-0.2cm}
 
 \begin{lrbox}{\mylistingbox}
 \begin{lstlisting}[firstnumber=14]
@@ -119,6 +120,7 @@ class Processor {
 \end{lstlisting}
 \end{lrbox}
 \subfigure{\usebox{\mylistingbox}} \\
+\vspace{-0.2cm}
 
 \begin{lrbox}{\mylistingbox}
 \begin{lstlisting}[firstnumber=25]
@@ -130,6 +132,7 @@ class Barrier : public Event {
 \end{lstlisting}
 \end{lrbox}
 \subfigure{\usebox{\mylistingbox}} \\
+\vspace{-0.2cm}
 
 \begin{lrbox}{\mylistingbox}
 \begin{lstlisting}[firstnumber=30]
@@ -145,6 +148,7 @@ class Lock {
 \end{lstlisting}
 \end{lrbox}
 \subfigure{\usebox{\mylistingbox}} \\
+\vspace{-0.2cm}
 
 \begin{lrbox}{\mylistingbox}
 \begin{lstlisting}[firstnumber=39]
@@ -153,30 +157,35 @@ class Memory {
   size_t size() const;
 };
 
-class RegionMetaData {
+class PhysicalRegion {
   const unsigned id;
-  static const RegionMetaData NO_REGION;
+  static const PhysicalRegion NO_REGION;
 
-  static RegionMetaData create_region(size_t num_elmts, size_t elmt_size);
+  static PhysicalRegion create_region(size_t num_elmts, size_t elmt_size);
   void destroy_region() const;
+
+  ptr_t alloc();
+  void free(ptr_t p);
 
   RegionInstance create_instance(Memory memory) const;
   RegionInstance create_instance(Memory memory, ReductionOpID redopid) const;
-  void destroy_instance(RegionInstance instance) const;
+  void destroy_instance(RegionInstance instance, Event wait_on = NO_EVENT) const;
 };
 
 class RegionInstance {
   const unsigned id;
 
+  void *element_data_ptr(ptr_t p);
   Event copy_to(RegionInstance target, Event wait_on = NO_EVENT);
   Event reduce_to(RegionInstance target, ReductionOpID redopid, Event wait_on = NO_EVENT);
 };
 \end{lstlisting}
 \end{lrbox}
 \subfigure{\usebox{\mylistingbox}} \\
+\vspace{-0.2cm}
 
 \begin{lrbox}{\mylistingbox}
-\begin{lstlisting}[firstnumber=62]
+\begin{lstlisting}[firstnumber=last]
 class Machine {
   Machine(int *argc, char ***argv, const Processor::TaskIDTable &task_table);
 
@@ -237,16 +246,16 @@ void diamond_task(const void *args,size_t arglen,Processor p){
 \scalebox{0.8}{
 \begin{tikzpicture}
   %\path (1,3) node (t1) [shape=rectangle,draw] {run TASK\_A} -- node [right=1pt] {ea} +(0,-0.5) node[auto] {eax};
-  \node (t1) at (0,0) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\TASK\_A\end{tabular}};
-  \draw (t1) to node[auto] {ea} (1.4,0);
+  \node (t1) at (-0.2,0) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\TASK\_A\end{tabular}};
+  \draw (t1) to node[auto] {ea} (1.2,0);
 
   \node (t2) at (2.8,1) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\TASK\_B\end{tabular}};
   \draw (t2) to node[auto] {eb} (4.2,1);
-  \draw [->] (1.4,0) to (t2.west);
+  \draw [->] (1.2,0) to (1.6,1) to (t2.west);
 
   \node (t3) at (2.8,-1) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\TASK\_C\end{tabular}};
   \draw (t3) to node[auto] {ec} (4.2,-1);
-  \draw [->] (1.4,0) to (t3.west);
+  \draw [->] (1.2,0) to (1.6,-1) to (t3.west);
 
   \node (t4j) at (4.6,0) [shape=circle,inner sep=2pt,draw] {+};
   \draw (t4j) to node[auto] {em} (5.4,0);
@@ -452,20 +461,21 @@ of which we are aware.
 %must be aware of the structure of data so it can perform accompanying operations with 
 %data movement operations.  To describe the structure of data our interface uses {\em physical regions.}
 Current APIs for moving data in machines with discrete memories only support untyped
-copies of a buffer of data.  This restriction requires programmers to manage both the layout of
+copies of a buffer of data and force the programmer to work with pointers in a variety of address
+spaces.  This restriction requires programmers to manage both the layout of
 data and the marshalling of data for communication.  {\em Physical regions} are a
-mechanism for decoupling the placement of data from its layout.  Physical regions make
-the runtime aware of the structure of elements in the allocation and thereby enable multiple data
+mechanism for decoupling the placement of data from its layout.  Physical regions allow portability
+of ``pointers'' as data is moved around the memory hierarchy, and enable multiple data
 layouts, such as specialized layouts for buffering individual reduction operations.
 
-A physical region is an allocation of data in a single memory in the memory hierarchy.  Physical
-regions are grouped into {\em classes}, which are sets of physical regions sharing the
-same names (i.e. addresses) for elements, but not necessarily sharing the same data layout.  This
-allows pointers to elements within regions to be used, even if the regions are copied from one memory
-to another.  Our
-interface supports sub-classing, but the details are omitted due to space constraints.  The
-interface allows copies between physical regions of
-the same class (or between super- and sub-classes).  
+%% A physical region is an allocation of data in a single memory in the memory hierarchy.  Physical
+%% regions are grouped into {\em classes}, which are sets of physical regions sharing the
+%% same names (i.e. addresses) for elements, but not necessarily sharing the same data layout.  This
+%% allows pointers to elements within regions to be used, even if the regions are copied from one memory
+%% to another.  Our
+%% interface supports sub-classing, but the details are omitted due to space constraints.  The
+%% interface allows copies between physical regions of
+%% the same class (or between super- and sub-classes).  
 
 %Note, clients can still pass arbitrary arrays
 %of bits via the processor {\tt spawn} call.
@@ -479,7 +489,7 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
   Memory m1,m2,m3; Processor p1,p2,p3;
   ... // Choose memory and processors, get redopid from args
   ReductionOpID redopid = ...;
-  RegionMetaData meta = RegionMetaData::
+  PhysicalRegion meta = PhysicalRegion::
                         create_region(num_elmts, elmt_size);
   Instance inst1 = meta.create_instance(m1, redop);
   Instance inst2 = meta.create_instance(m2, redop);
@@ -532,7 +542,23 @@ void reduction_ex(const void *args,size_t arglen,Processor p) {
 
 Lines 39-61 of Figure~\ref{fig:runtimeapi} show a subset of the interface for physical regions.  
 Each memory in the machine's memory hierarchy is named by a {\tt Memory} object (line 39).
-The next object is a {\tt RegionMetaData} object (line 44), which defines a class of
+The next object is a {\tt PhysicalRegion} object (line 44), which contains information about the
+maximum number and size of the elements within the region (line 48) and handles dynamic allocation
+within the region (lines 51-52), but does not contain any storage for the element data.  Instead,
+element data is stored in on or more {\tt RegionInstance} objects (line 59), each of which can be
+created in an arbitrary {\tt Memory} (line 54).
+
+A {\tt ptr\_t} value returned by the {\tt alloc}
+method may be used to access the corresponding element in any of the instances of the region (line 62).
+This
+allows the creation of irregular data structures within physical regions.  The {\tt ptr\_t} values can
+be safely stored in a region, and need not be changed when data is copied from one instance to another.
+In common cases, this is as cheap as array-addressing calculations, so the overhead is minimal.
+When more than one instance exists for a region, the client is responsible for maintaining coherence
+of the data between the regions.  This is typically achieved through the use of instance-to-instance
+copy operations (line 63) that use the producer task's completion event as a prerequisite and provide
+their own completion event as a prerequisite for the consumer task.
+defines a class of
 regions.  Physical regions that belong to that class are created with the {\tt create\_instance}
 method (line 51) and represented by {\tt RegionInstance} objects (line 56).  When creating a physical
 region the client specifies the memory in which the physical region is
@@ -541,12 +567,15 @@ if the memory has sufficient capacity.
 There is no automatic coherence of data between physical regions in the
 same class.  It is the client's responsibility to manage data coherence using copies
 between physical regions (line 59).  Like other operations copies can be
-predicated on an event and return an event corresponding to completion.
+predicated on an event and return an event corresponding to completion.  When a copy operation is
+the last use of a particular instance, the destruction of that instance can also be requested and made
+dependent on the copy operation's event, allowing the runtime to reclaim the memory as soon as (but no
+sooner than) possible.
 
 If the only operations a task will perform on a region are reductions, a special reduction-only
-instance can be created (line 52).  Rather than applying each reduction separately to the target instance,
+instance can be created (line 55).  Rather than applying each reduction separately to the target instance,
 the reduction operations can be accumulated in the reduction instance, and applied in bulk to 
-the target using the {\em reduce\_to} operation (line 60).  This has several benefits.  First, it results
+the target using the {\em reduce\_to} operation (line 64).  This has several benefits.  First, it results
 in much better performance, as we show in Section~\ref{subsec:reducmicro}, by reducing both
 the total inter-node traffic and the overhead of that traffic while still allowing parallelism.
 Second, a reduction-only instance is often smaller that the target instance, potentially improving
@@ -615,7 +644,7 @@ performed and a final task using the results in {\tt inst3} is launched (lines 1
 %the placement and movement of data in the interface.  Physical regions are an 
 %allocation of data in a single memory in the memory hierarchy.  Listing~\ref{lst:regionapi} 
 %shows a subset of the physical region interface.  The first object in the interface
-%is a {\tt RegionMetaData} object (line 1).  Region meta-data objects provide the interface for the
+%is a {\tt PhysicalRegion} object (line 1).  Region meta-data objects provide the interface for the
 %creation of sets of physical regions that possess the same number and type of elements (but not necessarily
 %the same data layout).  The interface is only able
 %to copy data between two physical regions that were created by the
@@ -675,15 +704,15 @@ performed and a final task using the results in {\tt inst3} is launched (lines 1
 
 \subsection{Machine}
 \label{subsec:machmodel}
-The last component of the interface is the {\tt Machine} object, shown in lines 62-73 of Figure~\ref{fig:runtimeapi},
+The last component of the interface is the {\tt Machine} object, shown in lines 66-77 of Figure~\ref{fig:runtimeapi},
 which provides initialization and run-time introspection
 of the current machine.
 The {\tt Machine} object is a singleton object that the client creates at the start of a
 program, providing a task table that maps task IDs to function pointers,
-and then invoking the {\tt run} method (lines 65).
+and then invoking the {\tt run} method (line 69).
 Any running task can get a pointer to the machine object with the
-{\tt get\_machine} method (line 67) and use it to obtain lists of all the {\tt Memory} (line 68) or 
-{\tt Processor} (line 69) handles in the system.  Using the affinity methods (lines 71-72),
+{\tt get\_machine} method (line 71) and use it to obtain lists of all the {\tt Memory} (line 72) or 
+{\tt Processor} (line 73) handles in the system.  Using the affinity methods (lines 75-76),
 the application can also determine which memories are accessible by each
 processor and with what performance, as well as which pairs of memories support copy operations.
 %are able to efficiently copy data between themselves.
