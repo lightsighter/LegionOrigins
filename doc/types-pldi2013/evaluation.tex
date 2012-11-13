@@ -104,7 +104,7 @@ sufficiently expressive to handle real-world applications.
 \label{subsec:overhead}
 The first Legion implementation consisted of a C++ library of Legion primitives
 \cite{Legion12} with no checking of region memory accesses.  
-When testing applications on this system we frequently encountered memory corruption due to
+When using this system we frequently encountered memory corruption due to
 illegal region accesses caused by application bugs.
 In many cases, this corruption occurred between nodes in the cluster or on 
 GPUs, environments for which debugging tools are primitive at best.
