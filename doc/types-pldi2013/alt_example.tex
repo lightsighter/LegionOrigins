@@ -123,15 +123,17 @@ is attractive: the former significantly complicates programming, the
 latter greatly increases runtime data movement and would limit parallelism.
 
 Programmers express partitions using {\em colorings},
-maps from region elements to integers (``colors'').
+maps from region elements to integers identifying which subregion an element
+should be in (``colors'').
 Listing~\ref{lst:coloring} shows the function {\tt create\_piece\_coloring}
 that constructs a coloring from the piece IDs of a list of nodes.
 %The coloring of wires is similar, with each wire
 %using the color of its first endpoint.  
 For aliased partitions such as the ghost nodes, a {\em multicoloring}
 is used, which assigns each region element to one or more colors.  
-%(Multicolorings are
-%implemented in Core Legion with separate colorings for each color.)
+\footnote{For simplicity, multicolorings are
+implemented in Core Legion as separate colorings for each color.}
+
 \begin{lstlisting}[label={lst:coloring},caption={Coloring Construction}]
 function create_piece_coloring[rl,rn](node_list: NodeList<rl,rn>@rl),
             reads(rl,rn) : coloring(rn) = 

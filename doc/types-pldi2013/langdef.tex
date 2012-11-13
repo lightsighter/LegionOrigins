@@ -436,7 +436,7 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \begin{minipage}{\linewidth}
 \vspace{-0.6cm}
 \begin{tabular}{m{5cm}m{5cm}m{8cm}}
-\infrule[T-Pack]{T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\ \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\ \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]}{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} &
+\infrule[T-Pack]{T_1 = \exists r'_1, \ldots r'_k.\ T_2\text{ where }\Omega_1 \\ \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\ \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]}{\typeenvx \text{pack}\ e_1\ \text{as}\ T_1[\otok{k}{r}] : T_1} &
 \infrule[T-IfElse]{\typeenvx e_1 : bool \\ \typeenvx e_2 : T \\ \typeenvx e_3 : T}{\typeenvx \text{if}\ e_1\ \text{then}\ e_2\ \text{else}\ e_3 : T} &
 \infrule[T-Call]{\Gamma(id) = \forall r'_1, \ldots r'_k.(\oton{T}),\Phi', Q' \rightarrow T_r \\ \typeenvx e_i : T_i[r_1/r'_1,\ldots,r_k/r'_k] \\ \Phi'[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Phi^*}{\typeenvx id[\otok{k}{r}](\oton{e}) : T_r[r_1/r'_1,\ldots,r_k/r'_k]}
 \end{tabular}
@@ -445,11 +445,11 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \begin{minipage}{\linewidth}
 \vspace{-0.7cm}
 \begin{tabular}{m{10cm}m{8cm}}
-\infrule[T-Unpack]{T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \andalso \typeenvx e_1 : T_1 \\
+\infrule[T-Unpack]{T_1 = \exists r'_1, \ldots, r'_k.\ T_2\text{ where }\Omega_1 \andalso \typeenvx e_1 : T_1 \\
   \Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \andalso \Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
-  \typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \andalso \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset}
-  {\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3} &
-\infrule[T-Part]{\typeenvx e_1 : \text{coloring}(r_p) \\ \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\ \typeenvx[O=\Omega'] e_2 : T \\ \{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset}
+  \typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \andalso \{ \otok{k}{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset}
+  {\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}]\ \text{in}\ e_2 : T_3} &
+\infrule[T-Part]{\typeenvx e_1 : \text{coloring}(r_p) \\ \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\ \typeenvx[O=\Omega'] e_2 : T \\ \{ \otok{k}{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset}
   {\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
 \end{tabular}
 \end{minipage}
@@ -510,11 +510,10 @@ environment includes an immutable heap typing $H$ assigning types to heap locati
 mapping $M$ mapping logical regions $r_i$ to physical regions $\rho_i$, which are sets of concrete memory
 locations.
 
-The environment also has a {\em clobber set} $C$.
-We will show that parallel Legion programs can be scheduled in
-a hierarchical fashion.  We therefore require an
-operational semantics that is parallel and hierarchical.  Now
-Legion allows limited nondeterminism, specifically because of relaxed coherence on
+The environment also has a {\em clobber set} $C$, which is the key to handling
+limited nondeterminism  while still having an operational
+semantics that is parallel and hierarchical.  Nondeterminism arises in a Legion
+program because of relaxed coherence on
 regions shared between parallel tasks and choices of reduction orderings.
 Thus, heap accesses performed by one expression may observe side-effects from 
 concurrent evaluations.  The traditional solution to this issue
@@ -915,11 +914,11 @@ valid\_interleave(S, C, E', E_1, E_2)
 % Row 10: task call
 \begin{minipage}{\linewidth}
 %\vspace{-0.5cm}
-\infrule[E-Call]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
+\infrule[E-Call]{\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = \text{apply}(S, E_1) \andalso \opsenvx[S=S_1] e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = \text{apply}(S_{n-1}, E_n) \\
   valid\_interleave(S, C, E', \oton{E}) \andalso \text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
   M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \andalso L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \andalso S' = \text{apply}(S, E') \\
   C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \vee simult(\rho) \in M' \llbracket Q' \rrbracket \} \\
-  \opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})}
+  \opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E'_{n+1})}
   {\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
 \end{minipage}
 \end{center}
@@ -1018,13 +1017,13 @@ valid\_interleave(S, C, E', E_1, E_2)
 \typeenvx e_1 : \text{coloring}(r_p) \\
 \Omega' = \Omega \wedge \bigwedge_{i \in [1,k]} r_i \leq r_p \wedge \bigwedge_{1 \leq i < j \leq k} r_i * r_j \\
 \typeenvx[O=\Omega'] e_2 : T \\
-\{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset
+\{ \otok{k}{r} \} \cap \textit{regions\_of}(\Gamma, T) = \emptyset
 \end{array}}
 {\typeenvx \text{partition}\ r_p\text{ using }e_1\text{ as }\otok{k}{r}\text{ in }e_2 : T}
 
 \ruleat{0,5.5}{\XB,5.7}{T-Pack}
 {\begin{array}{l}
-T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\
+T_1 = \exists r'_1, \ldots r'_k.\ T_2\text{ where }\Omega_1 \\
 \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \subseteq \Omega^* \\
 \typeenvx e_1 : T_2[r_1/r'_1,\ldots,r_k/r'_k]
 \end{array}}
@@ -1032,14 +1031,14 @@ T_1 = \exists r'_1, \ldots r'_n.\ T_2\text{ where }\Omega_1 \\
 
 \ruleat{\XA,6.2}{\XB,6.4}{T-Unpack}
 {\begin{array}{l}
-T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
+T_1 = \exists r'_1, \ldots, r'_k.\ T_2\text{ where }\Omega_1 \\
 \typeenvx e_1 : T_1 \\
 \Gamma' = \Gamma[T_2[r_1/r'_1,\ldots,r_k/r'_k] / id] \\
 \Omega' = \Omega \cup \Omega_1[r_1/r'_1,\ldots,r_k/r'_k] \\
 \typeenvx[G=\Gamma',O=\Omega'] e_2 : T_3 \\
-\{ \oton{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset
+\{ \otok{k}{r} \} \cap \textit{regions\_of}(\Gamma, T_1, T_3) = \emptyset
 \end{array}}
-{\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 : T_3}
+{\typeenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}]\ \text{in}\ e_2 : T_3}
 
 \ruleat{\XA,7.4}{\XB,7.6}{T-Call}
 {\begin{array}{l}
@@ -1112,11 +1111,11 @@ L' = L[v_1/id] \andalso S' = apply(S, E_1) \\
 }{\opsenvx \text{unpack}\ e_1\ \text{as}\ id : T_1[\otok{k}{r}] \text{in}\ e_2 \mapsto v_2, E'}
 
 \ruleatx{\XA,8.1}{\XE,8.4}{E-Call}{
-\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = apply(S, E_1) \andalso \opsenvx e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = apply(S_{n-1}, E_n) \\
+\opsenvx e_1 \mapsto v_1, E_1 \andalso S_1 = apply(S, E_1) \andalso \opsenvx[S=S_1] e_2 \mapsto v_2, E_2 \andalso \ldots \andalso S_n = apply(S_{n-1}, E_n) \\
 valid\_interleave(S, C, E', \oton{E}) \andalso \text{function }id[\otok{k}{r'}](a_1 : T_1, \ldots, a_n : T_n), \Phi', Q' : T_r = e_{n+1} \\
 M' = \{ (r'_1, M(r_1)), \ldots (r'_k, M(r_k)) \} \andalso L' = \{ (a_1, v_1), \ldots, (a_n, v_n) \} \andalso S' = apply(S, E') \\
 C' = C \cup \{ l : \exists \rho. atomic(\rho) \in M' \llbracket Q' \rrbracket \vee simult(\rho) \in M' \llbracket Q' \rrbracket \} \\
-\opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E_{n+1})
+\opsenvx[M=M',L=L',S=S',C=C'] e_{n+1} \mapsto v_{n+1}, E_{n+1} \andalso E'_{n+1} = mark\_coherence(E_{n+1}, M' \llbracket Q' \rrbracket) \andalso valid\_interleave(S, C, E'', E', E'_{n+1})
 }{\opsenvx id[\otok{k}{r}](\oton{e}) \mapsto v_{n+1}, E''}
 
 % try to fit helper rules at the bottom instead of in a separate figure
