@@ -41,7 +41,10 @@ Conceptually our interface is similar to the dataflow languages TAM supported.
 However, the implementation of TAM is designed for a class of much smaller machines
 and therefore is based on heavier communication and threading mechanisms.
 While TAM supports composable asynchronous computation and communication, its
-synchronization mechanisms still require blocking operations.
+synchronization mechanisms still require blocking operations. TinyOS\cite{PowerLock}
+provides {\em power locks} which provide non-blocking requests and callbacks on lock
+acquisition, but only to mediate access to hardware resources in a single-threaded
+environment.
 
 The design of coarse-grained dataflow languages such as Lucid \cite{Lucid95}
 and CGD \cite{CGD09} are orthogonal to the design of this work.  We view

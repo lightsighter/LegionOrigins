@@ -84,8 +84,7 @@ precondition an event that must trigger before $p$ can begin.
 %events before it begins.
 Events can be merged into new events and multiple operations
 can use an event as a precondition.
-  Using
-events clients can compose arbitrary chains of dependent
+Using events, clients can compose arbitrary chains of dependent
 operations, which the runtime is free to execute in any way that
 respects the event dependences.  With this freedom the runtime can
 schedule operations to optimize throughput while hiding long
@@ -108,10 +107,14 @@ via bulk transfers.  The structural information provided by physical regions als
 special reduction instances that buffer individual reduction operations for bulk
 transfer and application (Section~\ref{subsec:phyreg}).
 
-\item Our approach depends on the efficient handling of very large numbers of events.
-We describe a distributed implementation of our interface that requires no global coordination
-and has modest local storage costs.  We describe an optimized implementation of events, 
-deferred locks, and reductions (Section~\ref{sec:impl}).
+\item We describe an implmentation of events based on a {\em generational event}
+data structure that compactly represents a large number of events.  Generational
+events also amortize the cost of inter-node communication when multiple operations are dependent
+on the same event (Section~\ref{sec:impl}).
+%%\item Our approach depends on the efficient handling of very large numbers of events.
+%%We describe a distributed implementation of our interface that requires no global coordination
+%%and has modest local storage costs.  We describe an optimized implementation of events, 
+%%deferred locks, and reductions (Section~\ref{sec:impl}).
 
 \item We report on micro-benchmarks that stress
 our implementation.  The results indicate that our implementation approaches the performance of

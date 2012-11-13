@@ -308,7 +308,7 @@ Events and barriers express ordering properties between operations, but
 %in many cases 
 ordering is often too strict a requirement.  For many applications access to data need only be atomic and
 not necessarily ordered.  Traditionally locks have been used to serialize access to
-data.  However, all lock implementations that we are aware of require either blocking
+data.  However, lock implementations in existing parallel programming models require either blocking
 or spinning, neither of which composes well with asynchronous operations.
 {\em Deferred locks} are a new synchronization mechanism that allows for synchronization
 without blocking or spinning.
@@ -564,7 +564,7 @@ the last use of a particular instance, the destruction of that instance can also
 dependent on the copy operation's event (line 56), allowing the runtime to reclaim the memory as soon as (but no
 sooner than) possible.
 
-If the only operations a task will perform on a instance are reductions, a special reduction-only
+If the only operation a task will perform on an instance is a reduction, a special reduction-only
 instance can be created (line 55).  Rather than applying each reduction separately to the target instance,
 the reduction operations can be accumulated in the reduction instance.  Using the {\tt reduce\_to} 
 method (line 64), these accumulated reductions can be applied in bulk to another instance, which may be either

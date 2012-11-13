@@ -182,7 +182,7 @@ and number of chains per node.
 With only 32 chains per node (a total of 256 chains)
 there is little contention and the grant rate is high.  As the number of chains per node increases there is
 more contention for locks and the rate drops as a result.  For smaller lock counts, further increases in
-the number of chains result in improved rates.  Note that the point on each line where the increase occurs
+the number of chains result in improved performance.  Note that the point on each line where the increase occurs
 is when the chains per node is greater than total locks, which corresponds to the point where the expected 
 number of requests per lock 
 per node becomes more than one.  As soon as there are multiple expected requestors for the same lock on
