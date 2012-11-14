@@ -527,7 +527,7 @@ Instead we use a bottom-up approach with big-step semantics.
 Each expression has a clobber set $C$ of memory locations that might 
 be modified by concurrent evaluations.  Reads of locations in $C$ may be
 chosen to return a value other than what was most recently written by the current
-expression, as long a
+expression, as long as a
 valid interleaving of the operations with other concurrent operations can be found within
 an enclosing expression.
 %% While a read from a location not in $C$ is {\em coherent}
@@ -1200,7 +1200,7 @@ As usual, the soundness claim is proven assuming the initial type and execution 
 For our results, three consistency properties are needed:
 \begin{itemize}
 \item mapping consistency, written $\mapconsist{\Omega}$, guarantees a region mapping $M$ satisfies the region constraints $\Omega$% under which an expression was typed
-\item local value consistency, written $\localconsist{L}{\Gamma}$, guarantees local values in $L$ have types consistent with the environment $\Gamma$ (with logical regions mapped to physical regions via $M$)
+\item local value consistency, written $\localconsist{L}{\Gamma}$, guarantees local values in $L$ have types consistent with the environment $\Gamma$ (using $M$ to map logical regions in $\Gamma$ to physical regions)
 %under which the expression was typed
 \item store consistency, written $\storeconsist{S}{H}$, guarantees locations in $S$ have values consistent with heap typing $H$
 \end{itemize}
