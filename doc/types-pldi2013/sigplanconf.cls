@@ -1016,9 +1016,9 @@
    \parfillskip = 0pt
    \spaceskip = .7em
    \noindent \LARGE \bfseries \@titletext \par}
-  \vskip 6pt
+  \vskip 4pt
   \noindent \Large \@subtitletext \par
-  \vskip 12pt
+  %vskip 12pt
   \ifcase \@authorcount
     \@latex@error{No authors were specified for this paper}{}\or
     \@titleauthors{i}{}{}\or

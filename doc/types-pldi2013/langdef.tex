@@ -175,7 +175,7 @@ $v$ & ::= & & values &
 Figure~\ref{fig:langdef} defines Core Legion, a subset of the full Legion language
 that illustrates the important issues.  
 %Types include booleans, integers, tuples, and pointers.  
-Pointers are annotated with a list of logical regions---a non-null pointer must point to a 
+Pointer types are annotated with a list of logical regions---a non-null pointer value must point to a 
 location that is contained in at least one of the regions. There is a special
 {\em coloring} type, used to specify partitions of regions into subregions.
 %Functions in Legion are named, accept one or more arguments and
@@ -196,6 +196,28 @@ leverages both static and dynamic checks, resulting in interesting extensions be
 a basic expression language to both the type system and the operational semantics.
 The following two subsections illustrate these decisions and how they have been
 chosen to allow a straightforward proof of type soundness.
+
+\begin{figure}
+\centering{
+$\begin{array}{l}
+\Omega \subseteq \Omega^* \\
+r_i \leq r_j \in \Omega^*  \Rightarrow r_i \leq r_i \in \Omega^*\wedge r_j \leq r_j \in \Omega^* \\
+r_i \leq r_j \in \Omega^* \wedge r_j \leq r_k \in \Omega^* \Rightarrow r_i \leq r_k \in \Omega^* \\
+r_i \leq r_j \in \Omega^* \wedge r_j * r_k \in \Omega^* \Rightarrow r_i * r_k \in \Omega^* \\
+r_i * r_j \in \Omega^* \Rightarrow r_j * r_i \in \Omega^* \\
+\\
+\Phi \subseteq \Phi^* \\
+r_i \leq r_j \in \Omega^* \wedge \text{reads}(r_j) \in \Phi^* \Rightarrow \text{reads}(r_i) \in \Phi^* \\
+r_i \leq r_j \in \Omega^* \wedge \text{writes}(r_j) \in \Phi^* \Rightarrow \text{writes}(r_i) \in \Phi^* \\
+r_i \leq r_j \in \Omega^* \wedge \text{reduces}_{id}(r_j) \in \Phi^* \Rightarrow \text{reduces}_{id}(r_i) \in \Phi^* \\
+\text{reads}(r) \in \Phi^* \wedge \text{writes}(r) \in \Phi^* \Rightarrow \text{reduces}_{id}(r) \in \Phi^* \\
+\ \ \ \mbox{for every function identifier $id$}
+\end{array}$
+}
+\caption{Privilege and Constraint Closure}
+\vspace{-5mm}
+\label{fig:closure}
+\end{figure}
 
 \subsection{Core Type System}
 \label{subsec:coretypes}
@@ -475,28 +497,6 @@ T_1 = \exists r'_1, \ldots, r'_n.\ T_2\text{ where }\Omega_1 \\
 \end{figure*}
 }
 
-\begin{figure}
-\centering{
-$\begin{array}{l}
-\Omega \subseteq \Omega^* \\
-r_i \leq r_j \in \Omega^*  \Rightarrow r_i \leq r_i \in \Omega^*\wedge r_j \leq r_j \in \Omega^* \\
-r_i \leq r_j \in \Omega^* \wedge r_j \leq r_k \in \Omega^* \Rightarrow r_i \leq r_k \in \Omega^* \\
-r_i \leq r_j \in \Omega^* \wedge r_j * r_k \in \Omega^* \Rightarrow r_i * r_k \in \Omega^* \\
-r_i * r_j \in \Omega^* \Rightarrow r_j * r_i \in \Omega^* \\
-\\
-\Phi \subseteq \Phi^* \\
-r_i \leq r_j \in \Omega^* \wedge \text{reads}(r_j) \in \Phi^* \Rightarrow \text{reads}(r_i) \in \Phi^* \\
-r_i \leq r_j \in \Omega^* \wedge \text{writes}(r_j) \in \Phi^* \Rightarrow \text{writes}(r_i) \in \Phi^* \\
-r_i \leq r_j \in \Omega^* \wedge \text{reduces}_{id}(r_j) \in \Phi^* \Rightarrow \text{reduces}_{id}(r_i) \in \Phi^* \\
-\text{reads}(r) \in \Phi^* \wedge \text{writes}(r) \in \Phi^* \Rightarrow \text{reduces}_{id}(r) \in \Phi^* \\
-\ \ \ \mbox{for every function identifier $id$}
-\end{array}$
-}
-\caption{Privilege and Constraint Closure}
-\vspace{-5mm}
-\label{fig:closure}
-\end{figure}
-
 \subsection{Operational Semantics}
 \label{subsec:opsemantics}
 
@@ -525,11 +525,16 @@ decisions are made with limited information.
 
 Instead we use a bottom-up approach with big-step semantics.
 Each expression has a clobber set $C$ of memory locations that might 
-be modified by concurrent evaluations.  While a read from a location not in $C$ is {\em coherent}
-(returning the most recently written value), the value read from a location $l$ in $C$ may be any
-value.  Determining which value is deferred until all potentially-concurrent
-modifications to $l$ are observable in the evaluation of a parent expression whose clobber set does
-not include $l$ and a consistent interleaving of the subexpressions' memory traces is determined.
+be modified by concurrent evaluations.  Reads of locations in $C$ may be
+chosen to return a value other than what was most recently written by the current
+expression, as long a
+valid interleaving of the operations with other concurrent operations can be found within
+an enclosing expression.
+%% While a read from a location not in $C$ is {\em coherent}
+%% (returning the most recently written value), the value read from a location $l$ in $C$ may be any
+%% value.  Determining which value is deferred until all potentially-concurrent
+%% modifications to $l$ are observable in the evaluation of a parent expression whose clobber set does
+%% not include $l$ and a consistent interleaving of the subexpressions' memory traces is determined.
 %With this formulation, the criteria for when a hierarchical scheduler may execute subexpressions in parallel can be
 %made clear, but they are no longer constructive.  Instead, we will have to show that the scheduling algorithm
 %used by the Legion runtime satisfies these constraints, guaranteeing the soundness of the Legion programming model.
@@ -569,7 +574,8 @@ Legion supports first partitioning regions and then allocating data in the subre
 %the {\em partition-then-allocate} model (see Section~\ref{sec:example}) in which the {\em new} expression may be called
 %on subregions, 
 Thus, each subregion resulting from a partitioning may need an arbitrary number of locations that are
-unknown at partitioning time.  The semantics of newcolor allows this while
+unknown at partitioning time.  The semantics of newcolor allows extra locations to be placed in every
+subregion while
 guaranteeing all explicit colorings performed by the program are honored.
 
 %The semantics for the {\em pack} and {\em unpack} expressions are straightforward.  
@@ -579,11 +585,11 @@ unpacking simply gives those physical regions fresh logical names.
 Finally, calls to subtasks evaluate actual arguments and create the subtasks's
 environment (with potentially different names for logical regions).  A key point in Legion task calls is the
 handling of relaxed coherence.  Any location that falls within
-a logical region whose coherence has been relaxed (via {\em atomic} or {\em simult}) is added to the clobber set
-$C'$, allowing non-deterministic evaluation within the subtask with respect to those locations.  All actual accesses
-to those locations within the resulting memory trace ($E_{n+1}$) are marked with the corresponding coherence mode,
-allowing the {\em valid\_interleave} check within the caller's environment to verify the consistency of the overall
-memory trace.
+a logical region whose coherence has been relaxed (via {\em atomic} or {\em simult}) is added to the
+subtask's clobber set $C'$, allowing non-deterministic evaluation within the subtask with respect to
+those locations.  All actual accesses to those locations within the resulting memory trace ($E_{n+1}$)
+are marked with the corresponding coherence mode, allowing the {\em valid\_interleave} check within
+the caller's environment to verify the consistency of the overall memory trace.
 
 \texcomment{
 \begin{figure*}
@@ -1182,9 +1188,9 @@ locations covered by privileges $\Phi$:
 \[ 
 \begin{array}{l}
 \privconsist{E}{\Phi} \Leftrightarrow \forall \epsilon \in E. \\
-\quad\quad (\epsilon = read(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge \text{reads}(r) \in \Phi)\ \wedge \\
-\quad\quad (\epsilon = write(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge \text{writes}(r) \in \Phi)\ \wedge \\
-\quad\quad (\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r. l \in M(r) \wedge \text{reduces}_{id}(r) \in \Phi)
+\quad\quad (\epsilon = read(l, c, v) \Rightarrow \exists r, l \in M(r) \wedge \text{reads}(r) \in \Phi)\ \wedge \\
+\quad\quad (\epsilon = write(l, c, v) \Rightarrow \exists r, l \in M(r) \wedge \text{writes}(r) \in \Phi)\ \wedge \\
+\quad\quad (\epsilon = reduce_{id}(l, c, v) \Rightarrow \exists r, l \in M(r) \wedge \text{reduces}_{id}(r) \in \Phi)
 \end{array}
 \]
 
@@ -1194,7 +1200,7 @@ As usual, the soundness claim is proven assuming the initial type and execution 
 For our results, three consistency properties are needed:
 \begin{itemize}
 \item mapping consistency, written $\mapconsist{\Omega}$, guarantees a region mapping $M$ satisfies the region constraints $\Omega$% under which an expression was typed
-\item local value consistency, written $\localconsist{L}{\Gamma}$, guarantees local values in $L$ have types consistent with the environment $\Gamma$
+\item local value consistency, written $\localconsist{L}{\Gamma}$, guarantees local values in $L$ have types consistent with the environment $\Gamma$ (with logical regions mapped to physical regions via $M$)
 %under which the expression was typed
 \item store consistency, written $\storeconsist{S}{H}$, guarantees locations in $S$ have values consistent with heap typing $H$
 \end{itemize}
@@ -1399,8 +1405,7 @@ it does not rely on the full definition of {\em valid\_interleave}.  Weakening
 {\em valid\_interleave} to {\em any\_interleave} (Figure~\ref{fig:validinterleave}), 
 which  allows arbitrary interleavings of memory traces from subexpressions, 
 is sufficient for the proof of soundness.  
-The stronger constraints in {\em valid\_interleave}
-(Figure~\ref{fig:validinterleave}) address the coherence of heap accesses;
+The stronger constraints address the coherence of heap accesses;
 {\em valid\_interleave} specifies permitted interleavings of memory operations for
 the particular coherence modes on logical regions.
 
@@ -1414,7 +1419,7 @@ as if all writes and reductions were applied from each trace in order.
 are in neither $L_{excl}$ nor the clobber set.  For these locations, we allow permutations of the original
 subexpression trace order.
 \item for locations with only access in {\em simult} mode or in the clobber set, no constraints are
-enforced.  The validity of the interleaving of these accesses is performed by some enclosing expression.
+enforced.  The validity of the interleaving of these accesses is determined within the context of some enclosing expression.
 \end{itemize}
 
 \begin{figure*}
@@ -1531,8 +1536,10 @@ $$
 Reads have no side effects, and cannot change what another read returns.  The safety of the second case
 follows from the requirement that reduction operations be commutative.  
 Finally, accesses to different locations cannot affect each other.
-We next show that this non-interference operator preserves the validity of an interleaving
-of two or more traces when reordering a pair of memory operations.
+Therefore, an adjacent pair of non-interfering memory operations in a memory trace can be reordered while
+preserving the validity of an interleaving.
+%We next show that this non-interference operator preserves the validity of an interleaving
+%of two or more traces when reordering a pair of memory operations.
 \begin{lem}
 \label{lem:nonintswap}
 \rm
@@ -1568,15 +1575,14 @@ We now use the bounds that static privileges place on
 runtime accesses to give an efficient runtime test for non-interference.  We first extend the non-interference operator 
 to work on privileges:
 
-$
-\begin{array}{l@{}l}
-\multicolumn{2}{l}{priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow} \\
-& (priv_1 = \text{reads} \wedge priv_2 = \text{reads})\ \vee \\
+$\begin{array}{@{}l@{}l@{}}
+\multicolumn{2}{@{}l}{priv_1(r_1) \nonint[M] priv_2(r_2) \Leftrightarrow} \\
+\hspace*{0.5cm} & (priv_1 = \text{reads} \wedge priv_2 = \text{reads})\ \vee \\
 & (priv_1 = \text{reduces}_{id_1} \wedge priv_2 = \text{reduces}_{id_2} \wedge id_1 = id_2)\ \vee \\
 & (r_1 * r_2)\ \vee \\
 & (M(r_1) \cap M(r_2) = \emptyset) \\
 \\
-\multicolumn{2}{l}{\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2}
+\multicolumn{2}{@{}l}{\Phi_1 \nonint[M] \Phi_2 \Leftrightarrow \displaystyle\bigwedge_{\phi_1 \in \Phi_1, \phi_2 \in \Phi_2} \phi_1 \nonint[M] \phi_2}
 \end{array}$
 
 \noindent The cases where both subtasks have read-only privileges or both subtasks have reduce-only privileges have equivalents
@@ -1705,9 +1711,10 @@ $\Phi_i \nonint[M]^{AS} \Phi_j$.
 \section{Hierarchical Scheduling}
 \label{sec:scheduling}
 
-Because testing non-interference of tasks is a pairwise operation, scheduling $n$ tasks can require ${\cal O}(n^2)$
-tests.  Thus, a scheduler that must globally consider all pairs of tasks will be impractical for large machines 
-and large numbers of tasks.  The following theorem, however, shows that Legion programs enjoy a locality property that
+Because testing non-interference of tasks is a pairwise operation, scheduling $n$ tasks
+can require ${\cal O}(n^2)$ tests.  Thus, a scheduler that must globally consider all
+pairs of tasks will be impractical for large machines and large numbers of tasks.  The
+following theorem, however, shows that Legion programs enjoy a locality property that
 limits the scope of needed non-interference tests.
 
 
@@ -1754,11 +1761,13 @@ Similarly, any memory operation $\epsilon_2'$ that is in $E_2'$ must also be in 
 $E_1 \nonint E_2$ from Lemma~\ref{lem:nonintpriv}, so and therefore $\epsilon_1' \nonint \epsilon_2'$.  Since
 this holds for all $\epsilon_1'$ in $E_1'$ and all $\epsilon_2'$ in $E_2'$, we have $E_1' \nonint E_2'$.
 \end{proof}
-} The Legion task scheduler uses Theorem~\ref{thm:hiersched} as follows: 
+}
+
+The Legion task scheduler uses Theorem~\ref{thm:hiersched} as follows: 
 sibling function calls (those invoked within the same
 function body) $e_1$ and $e_2$ are checked for non-interference of their (dynamic)
-privileges.  Since $e_1$ and $e_2$ are guaranteed to be created on the node on which their parent
-is running, no communication is required to perform the non-interference
+privileges.  Since $e_1$ and $e_2$ are called on the parent task's node, no communication
+is required to perform the non-interference
 test.  If they interfere they are executed in program order or serialized
 depending on their coherence specifications; otherwise they are
 considered for execution as parallel subtasks.    If $e_1$ and $e_2$ are 

@@ -37,16 +37,16 @@ names {\tt rn} and {\tt rg} which contain {\tt CircuitNode} elements.
 Our type system enforces the correctness of pointer types.
 
 \begin{lstlisting}[label={lst:tuples},caption={Tuples and Pointers Example}]
---                        voltage,current,charge,capacitance,piece ID
-type CircuitNode        = <float,float,float,float,int>
+--                        voltage, current, charge, capacitance, piece ID
+type CircuitNode        = <float, float, float, float, int>
 --                      owned node, owned or ghost node, resistance, current
-type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg),float,float>
+type CircuitWire<rn,rg>  = <CircuitNode@rn, CircuitNode@(rn,rg), float, float>
 \end{lstlisting}
 
 The most important decision in any Legion program is how to partition
 program data.  An ideal partitioning depends on many factors,
-including the shape of data structures, the input, and the number of
-partitions, which usually varies with the target machine.  To allow
+including the shape of data structures, the input, and the desired number of
+partitions (which usually varies with the target machine).  To allow
 the necessary flexibility, in Legion partitioning is simply programmed,
 rather than expressed in a more structured and restricted
 sublanguage.  In the example we invoke METIS\cite{Metis98}, a 
@@ -91,7 +91,7 @@ have privileges that its caller also possesses; this property is verified static
 }
 \vspace{-2mm} 
 \caption{Partitions of $r{\_}all{\_}nodes$. \label{fig:part_fig}}
-\vspace{-6mm}
+\vspace{-4mm}
 %  \caption[My caption
 \end{figure}
 
@@ -148,8 +148,8 @@ function create_piece_coloring[rl,rn](node_list: NodeList<rl,rn>@rl),
 
 Colorings are the input to partition operations in Legion.  The partition
 statement shown in Listing~\ref{lst:partition} performs the ``owned nodes''
-partitioning.    Since colorings assign each region element at most one color
-(dynamically checked), the partition operation results in 
+partitioning.    Since colorings assign each region element at most one color,
+the partition operation results in 
 {\em disjoint} subregions, each a subset of the {\em parent} region.
 A partition operation introduces constraints into the static type environment describing
 both the disjointness of subregions (e.g., {\tt rn0 $*$ rn1})
@@ -164,8 +164,8 @@ only introduces the subregion relationships, as the partition may be aliased.
 %for each color.
 
 \begin{lstlisting}[label={lst:partition},caption={Partition Operation Example}]
-let piece_coloring : coloring(all_nodes) = create_piece_coloring[rl,all_nodes](node_list) in
-partition all_nodes using piece_coloring as rn0,rn1... in ...
+let owned_map : coloring(all_nodes) = create_piece_coloring[rl,all_nodes](node_list) in
+partition all_nodes using owned_map as rn0,rn1... in ...
 \end{lstlisting}
 
 
@@ -212,7 +212,7 @@ relationship---privileges belong to functions. When a function unpacks
 a region relationship it must already hold privileges for the unpacked regions it wishes to access.
 
 Listing~\ref{lst:loop} shows the main time step loop run by the 
-recursive function {\em execute\_time\_steps} (line 11)
+recursive function {\em execute\_time\_steps} (lines 13-24)
 as well the leaf task functions (lines 2-7).  
 For each time step, the loop unpacks 
 two previously packed circuit pieces, giving new names to the subregions introduced
@@ -231,7 +231,7 @@ privileges, allowing both instances of the task to be
 run in parallel.  In {\tt distribute\_charge} the
 privilege is for a reduction which can also be done in parallel
 because of the atomic and commutative nature of reductions.  Finally,
-the {\tt update\_voltage} function (line 6) modifies only the disjoint owned regions, 
+the {\tt update\_voltage} function (lines 6-7) modifies only the disjoint owned regions, 
 permitting each piece to be updated in parallel.  No single partition of the nodes
 describes these data sharing patterns.
 
@@ -258,6 +258,7 @@ function distribute_charge[rl,rw,rn,rg] ( ptr_list : WireList<rl,rw,rn,rg>@rl ),
       reads(rl,rw,rn), reduces(reduce_charge,rn,rg), atomic(rn,rg) : bool 
 function update_voltage[rl,rn] ( ptr_list : NodeList<rl,rn>@rl ), 
       reads(rl,rn), writes(rn) : bool
+
 -- Reduction function for distribute charge
 function reduce_charge ( node : CircuitNode, current : float ) : CircuitNode
 
@@ -277,14 +278,14 @@ function execute_time_steps[rl,rw,rn] ( p0 : CircuitPiece<rl,rw,rn>,
 \end{lstlisting}
 
 The {\tt execute\_time\_steps} function also demonstrates the need to 
-dynamically discover parallelism through region disjointess.  
+dynamically discover parallelism through region disjointness.  
 To run the two instances of 
 {\tt calc\_new\_currents} in parallel requires knowing that {\tt rw0}
 and {\tt rw1} are disjoint (lines 17-18).  There is a similar requirement for parallel
 execution of the two {\tt update\_voltage} calls with {\tt rn0} and {\tt rn1} (lines 21-22).  In
 both cases, this knowledge was statically available when the subregions were created 
 and could have been captured in a region relationship at the cost
-of much more complicated code.  Instead, we use a simpler region relationship
+of much more complicated code.  Instead, we are able to use a simpler region relationship
 and rely on an inexpensive dynamic disjointness
 check by the Legion runtime to (re)discover the parallelism.
 
