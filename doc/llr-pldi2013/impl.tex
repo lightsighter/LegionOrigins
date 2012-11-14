@@ -21,7 +21,7 @@ framebuffer memory on each GPU (and accessible only by that GPU).  The third kin
 of memory is system memory on a node that has been made accessible to the GPU(s) on
 that node as well as the CPU cores, commonly referred to as {\em zero-copy memory}.
 The final kind of memory is the portion of system memory on each node that has been registered with
-the GASNet runtime to allow {\em remote memory access} (RMA) by other nodes in the cluster.
+the GASNet runtime to allow {\em remote direct memory access} (RDMA) by other nodes in the cluster.
 We refer to this memory as {\em GASNet memory}.
 %% For every node in the system
 %% there is a memory corresponding to the DRAM associated with that node.  For
@@ -30,7 +30,7 @@ We refer to this memory as {\em GASNet memory}.
 %% memory contains pages that are mapped in both framebuffer and node memory with
 %% coherence maintained by the PCI-E protocol.}. The last memory is 
 %% a global GASNet memory that represents pages that have been registered 
-%% with all nodes in the system for supporting remote memory accesses (RMAs).
+%% with all nodes in the system for supporting remote memory accesses (RDMAs).
 %% The GASNet memory provides the illusion of global memory.  CPU processors
 %% can directly access their node memory, all zero-copy memories for GPUs on
 %% their node, and the GASNet memory.  GPU processors can only access their
@@ -38,7 +38,7 @@ We refer to this memory as {\em GASNet memory}.
 %% between all pairs of memory except between any framebuffer memory and
 %% the GASNet memory.
 
-In addition to the RMA capabilities, GASNet provides {\em active messages} for 
+In addition to the RDMA capabilities, GASNet provides {\em active messages} for 
 inter-node communication.  Implementation of all runtime features requiring communication
 rely heavily on active messages.  Active messages consist of a command and payload that
 are sent by one node to another without any previous coordination.  Upon arrival
@@ -119,15 +119,15 @@ When a new event is created, the owning node allocates a data structure to track
 the event ({\em triggered} or {\em untriggered}) as well as to record a list of dependent operations
 (e.g. copy operation or task launch) from the same node called {\em waiters}.
 The first operation dependent on an event
-from a remote node allocates the same data structure on the remote node.  A single
-{\em event subscription} active message is then sent from the remote node to the owning node indicating
+from a remote node allocates the same data structure on the remote node.  An
+{\em event subscription} active message is then sent to the owning node indicating
 that the remote node should be informed when the event triggers.  Arbitrarily many dependent operations on
-the remote node can then be added to the list of waiters without any additional communication.
-When the event does trigger, the owner node notifies all local waiters and
-sends a single {\em event trigger} active message to each node from which it has seen an event subscription
+the subscribing node can be added to the list of waiters without any additional communication.
+When the event triggers, the owner node notifies all local waiters and
+sends an {\em event trigger} active message to each node from which it has seen an event subscription
 to notify remote waiters.
-In the case where an event triggers while a subscription message is in flight from a remote node, the owner node will
-immediately respond with a trigger message.
+In the case where an event triggers while a subscription message is in flight from a remote node, the owner
+node will immediately respond with a trigger message upon receipt of the subscription message.
 
 The actual triggering of an event may occur on any node.  If it occurs on a node other than the owning
 node, an {\em event trigger} active message is sent from the triggering node back to the owning node, which
@@ -270,11 +270,11 @@ is delayed to avoid a spurious triggering of the barrier.
 \label{subsec:lockimpl}
 
 Like events, deferred locks (henceforth called simply locks) are
-created on demand by the node of the creation request. 
-Lock handles are also statically divided across the nodes,
-allowing creation to be done without inter-node communication.
-Whereas event ownership is static, locks may migrate; the {\em
-  creating} node is the initial owner, but ownership can be
+created on demand, using a space of handles that has been divided
+across the nodes.  As with events, lock creation requires no communication
+and the handle alone is sufficient for any node to determine the creator
+of a lock.  However, whereas event ownership is static, locks may migrate; the
+creating node is the initial owner, but ownership can be
 transferred to other nodes.
 
 Since any node may at some point be the owner of a lock, all nodes use the same data structure to track the
@@ -294,7 +294,7 @@ valid on the current owner.
 \item {\em local payload pointer and size} - the local node's copy of the lock payload
 \end{itemize}
 
-When a lock request is made, an event is created to track when the grant occurs.  The current node then
+Each time a lock request is made, a new event is created to track when the grant occurs.  The current node then
 examines its copy of the lock data structure to determine if it is the owner.
 %(creating it if this the first operation for that lock on that node).  
 If the current node is the owner and the lock isn't

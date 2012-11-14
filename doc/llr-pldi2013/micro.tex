@@ -66,7 +66,7 @@ which requires GASNet to poll a separate connection for every other node.
 
 Our second micro-benchmark for events measures the maximum rate at which events can
 be triggered by our implementation.  Instead of a single chain, many parallel chains
-are created.  Additionally, each step of the chain consists of a parameterized number
+are created.  Additionally, each step of the chain consists of a parametrized number
 of events, each one dependent on every event from the previous step of the chain.
 This parameter is called the {\em fan-in/out factor}.  The events within each step of
 a chain are distributed across the nodes.  Recall from Section~\ref{subsec:eventimpl}
@@ -118,8 +118,8 @@ described in Section~\ref{sec:apps}.
 
 Our lock micro-benchmark is designed to measure the rate at which deferred locks can be granted
 in a distributed environment.
-A parameterized number of locks are created per node and their handles are made available to
-every node.  Each node then creates a parameterized number of {\em chains} of lock/unlock
+A parametrized number of locks are created per node and their handles are made available to
+every node.  Each node then creates a parametrized number of {\em chains} of lock/unlock
 request pairs, where each request pair is to a random lock, and is made dependent on the 
 previous lock/unlock pair's completion by the event returned from the lock request.  
 %The chains are made long enough that start-up
@@ -149,7 +149,7 @@ for any given lock is low), the speedup with increasing node count suggests the 
 the rate at which lock-related active messages can be sent (nearly every request will require a
 transfer of ownership).  Especially in the middle of the node count range, the performance actually
 increases with
-decreasing lock counts.  Although contention increases, the favoring of local lock requestors makes
+decreasing lock counts.  Although contention increases, the favoring of local lock requesters makes
 the contention an advantage, reducing the number of lock-related active messages that must be sent
 per lock grant.
 
@@ -185,7 +185,7 @@ more contention for locks and the rate drops as a result.  For smaller lock coun
 the number of chains result in improved performance.  Note that the point on each line where the increase occurs
 is when the chains per node is greater than total locks, which corresponds to the point where the expected 
 number of requests per lock 
-per node becomes more than one.  As soon as there are multiple expected requestors for the same lock on
+per node becomes more than one.  As soon as there are multiple expected requesters for the same lock on
 a node, the unfairness property of our lock implementation is able to reduce the number of lock ownership 
 transfers, yielding better performance.
 
@@ -225,15 +225,6 @@ but its inherently serial nature doesn't benefit from increasing node counts.  F
 reduction messages is scalable, but the need to send each reduction separately and the per-message overhead make it nearly 
 1000x slower than the reduction instance version, which is
 able to accumulate multiple reductions to the same location locally and move data in bulk.
-
-\begin{figure}
-\begin{center}
-\includegraphics[scale=0.33]{figs/reduce_simple.pdf}
-\end{center}
-\vspace{-2mm}
-\caption{Reduction Benchmark.\label{fig:reducbench}}
-\vspace{-4mm}
-\end{figure}
 
 \texcomment{
 \begin{figure}

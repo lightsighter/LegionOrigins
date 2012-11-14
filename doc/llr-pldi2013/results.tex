@@ -23,6 +23,15 @@ runs ahead of the actual execution using a scheduler called a {\em Software Out-
 operations, and synchronization operations with the dependencies between them expressed
 as events.  For details the interested reader is referred to the work of \cite{Legion12}.
 
+\begin{figure}
+\begin{center}
+\includegraphics[scale=0.33]{figs/reduce_simple.pdf}
+\end{center}
+\vspace{-2mm}
+\caption{Reduction Benchmark.\label{fig:reducbench}}
+\vspace{-4mm}
+\end{figure}
+
 The composable design of the interface proposed in
 this paper is crucial to Legion's SOOP implementation.  If all
 operations in the interface could not be composed via events, 
@@ -40,17 +49,6 @@ The three applications that we characterize are all multi-phase
 applications that require parallel computation, data exchange, and
 synchronization between phases. 
 
-{\em Circuit} is a simulation of an integrated circuit that is described as an
-irregular graph of components connected by wires.  The graph is partitioned
-and distributed across the machine.  The computation for each time step consists
-of three phases: calculate currents on the wires, distribute charge between
-components, and update the voltages of all components.  In the distribute charge
-phase, a single component may be updated by wires from multiple partitions.  Reduction instances 
-are used to allow each partition to perform reductions in parallel and to do so locally in GPU
-framebuffer memory before merging all the reductions to a global instance
-residing in GASNet memory.  Without reduction instances this phase
-couldn't be performed using GPUs.
-
 {\em Fluid} is an incompressible fluid flow simulation from the PARSEC
 benchmark suite\cite{bienia11benchmarking}.  The reference implementation 
 only runs on shared memory machines, but when written in Legion, Fluid
@@ -61,6 +59,17 @@ particles in the same cell.  The space of cells is partitioned and neighboring
 cells in different partitions must exchange data between phases.  Legion ensures
 that these exchanges are done point-to-point by chaining copies and tasks
 using events rather than employing a global bulk-synchronous approach.
+
+{\em Circuit} is a simulation of an integrated circuit that is described as an
+irregular graph of components connected by wires.  The graph is partitioned
+and distributed across the machine.  The computation for each time step consists
+of three phases: calculate currents on the wires, distribute charge between
+components, and update the voltages of all components.  In the distribute charge
+phase, a single component may be updated by wires from multiple partitions.  Reduction instances 
+are used to allow each partition to perform reductions in parallel and to do so locally in GPU
+framebuffer memory before merging all the reductions to a global instance
+residing in GASNet memory.  Without reduction instances this phase
+couldn't be performed using GPUs.
 
 {\em AMR} is an adaptive mesh refinement benchmark based on the third heat
 equation example from the Berkeley Labs BoxLib project\cite{BoxLib}.  AMR
@@ -245,7 +254,7 @@ on distributed machines.
 }}
 %\vspace{-2mm}
 \caption{Locks by Request and Transfer Counts.\label{fig:lockcount}}
-\vspace{-4mm}
+\vspace{-6mm}
 \end{figure}
 }
 
@@ -273,7 +282,7 @@ reaped by the asynchronous and composable nature of our interface.
 
 Figure~\ref{fig:bulksync} compares
 the performance of the bulk-synchronous implementations versus the original
-implementations for Circuit, Fluid, and AMR.  Each plot contains
+implementations for Fluid, Circuit, and AMR.  Each plot contains
 performance curves for both implementations on two different problem sizes.
 Circuit is a compute-bound application and the bulk-synchronous implementation
 performs reasonably well.  By 16 nodes however the overhead grows to 19\%
@@ -301,23 +310,23 @@ will be crucial for supporting this ability in future high-level runtimes.
 
 \begin{figure}[!ht]
 \centering
-\subfigure[Circuit Application]{
-\label{fig:cktbulk}
-\includegraphics[scale=0.33]{figs/circuit_bulk_sync.pdf}
-}
-
 \subfigure[Fluid Application]{
 \label{fig:fluidbulk}
 \includegraphics[scale=0.33]{figs/fluid_bulk_sync.pdf}
+\vspace{-3mm}
 }
-
+\subfigure[Circuit Application]{
+\label{fig:cktbulk}
+\includegraphics[scale=0.33]{figs/circuit_bulk_sync.pdf}
+\vspace{-3mm}
+}
 \subfigure[AMR Application]{
 \label{fig:amrbulk}
 \includegraphics[scale=0.33]{figs/amr_bulk_sync.pdf}
 }
 \vspace{-2mm}
 \caption{Bulk-Synchronous Performance.\label{fig:bulksync}}
-\vspace{-4mm}
+\vspace{-6mm}
 \end{figure}
 
 

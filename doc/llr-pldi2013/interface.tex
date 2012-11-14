@@ -59,7 +59,7 @@ of an event that by definition has always triggered.  The event interface
 supports testing whether an event has triggered (line 5) and waiting on
 an event to trigger (line 6), but the preferred
 use of events is passing them as preconditions for other operations.  The client can use the
-{\tt merge\_events} call (line 7) to create an event that triggers only when every
+{\tt merge\_events} call (line 7) to create an aggregate event that triggers once every
 event in a given set of events has triggered.  A code example using events follows in
 Section~\ref{subsec:procs}.
 %corresponding to the conjunction of a set of events.
@@ -319,15 +319,15 @@ without blocking or spinning.
 \begin{lstlisting}
 void lock_example(const void *args, size_t arglen, Processor p) {
   // Unpack lock, input events, target processors from arguments
-  Lock needed = ...
+  Lock mutex = ...
   // Acquire lock, launch first subtask, release lock
-  Event lock_event_1 = needed.lock(prev_event_1);
+  Event lock_event_1 = mutex.lock(prev_event_1);
   Event task_event_1 = proc1.spawn(SUB, args_1, sizeof(args_1), lock_event_1);
-  needed.unlock(task_event_1);
+  mutex.unlock(task_event_1);
   // same for second subtask
-  Event lock_event_2 = needed.lock(prev_event_2);
+  Event lock_event_2 = mutex.lock(prev_event_2);
   Event task_event_2 = proc2.spawn(SUB, args_2, sizeof(args_2), lock_event_2);
-  needed.unlock(task_event_2);
+  mutex.unlock(task_event_2);
 }
 \end{lstlisting}
 \end{lrbox}
@@ -336,18 +336,21 @@ void lock_example(const void *args, size_t arglen, Processor p) {
 \centering
 \scalebox{0.8}{
 \begin{tikzpicture}
-  \node (l1) at (2,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
+  \node (l1) at (2,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf lock}\\mutex\end{tabular}};
   \node (t1) at (4.5,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\SUB(args\_1)\end{tabular}};
-  \node (u1) at (7,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
+  \node (u1) at (7,1.95) [shape=rectangle,draw] {\begin{tabular}{c}{\bf unlock}\\mutex\end{tabular}};
 
+  \node[auto] (x1) at (-0.3,2.15) {prev\_event\_1};
+  %\draw [->] (x1) to (l1.west);
   \draw [->] (0,1.95) to (l1.west);
   \draw [->] (l1.east) to (t1.west);
   \draw [->] (t1.east) to (u1.west);
 
-  \node (l2) at (2,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf lock}\\needed\end{tabular}};
+  \node (l2) at (2,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf lock}\\mutex\end{tabular}};
   \node (t2) at (4.5,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf run}\\SUB(args\_2)\end{tabular}};
-  \node (u2) at (7,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf unlock}\\needed\end{tabular}};
+  \node (u2) at (7,0.25) [shape=rectangle,draw] {\begin{tabular}{c}{\bf unlock}\\mutex\end{tabular}};
 
+  \node[auto] (x2) at (-0.3,0.45) {prev\_event\_2};
   \draw [->] (0,0.25) to (l2.west);
   \draw [->] (l2.east) to (t2.west);
   \draw [->] (t2.east) to (u2.west);
@@ -411,16 +414,19 @@ The interface for deferred locks is shown in lines 30-38 of Figure~\ref{fig:runt
 Unlike traditional blocking locks, the {\tt lock} method (line 32) doesn't
 wait if the lock is in use but instead always returns immediately with an event that will be triggered
 when the lock has been acquired.  Like a processor's spawn method, both the {\tt lock} 
-and {\tt unlock} methods take an optional event paramenter as a precondition (lines 32-33).
+and {\tt unlock} methods take an optional event parameter as a precondition (lines 32-33).
 
 An important difference between deferred locks and blocking locks is that the processor
 that requests the lock doesn't have to be the one that uses it.  A common
 convention in writing code with deferred locks is to acquire locks on behalf of a task being
 launched.  Figure~\ref{fig:lockevents} illustrates this with a simple example.  The {\tt lock\_example}
 function needs to launch two subtasks on two other processors, each with exclusive access to some resource protected by a
-lock named {\tt mutex}.  For each subtask, it first requests the lock on the subtask's behalf, making the
-subtask wait until the lock has been acquired.  The parent task also requests that the runtime automatically
-release the lock after each subtask has completed.  In the event dependency graph, solid arrows represent
+lock named {\tt mutex}.  For each subtask, it first requests the lock on the subtask's behalf.  Using the
+event returned by the lock request as a precondition, it then spawns the subtask.  The runtime will guarantee
+that the subtask is not started until the lock has been acquired.  The parent task also requests that the
+runtime automatically release the lock after each subtask has completed by using the subtask's completion
+event as a precondition for the unlock.  In the event dependency graph (Figure~\ref{fig:lockevents}),
+solid arrows represent
 the explicit events used in the code, while the dotted line represents the dynamic ordering that results
 from the mutual exclusion guarantee of the lock.  (In this example, the second subtask is granted the lock first.)
 
@@ -463,7 +469,7 @@ of which we are aware.
 Current APIs for moving data in machines with discrete memories only support untyped
 copies of a buffer of data and force the programmer to work with pointers in a variety of address
 spaces.  This restriction requires programmers to manage both the layout of
-data and the marshalling of data for communication.  {\em Physical regions} are a
+data and the marshaling of data for communication.  {\em Physical regions} are a
 mechanism for decoupling the placement of data from its layout.  Physical regions allow portability
 of ``pointers'' as data is moved around the memory hierarchy, and enable multiple data
 layouts, such as specialized layouts for buffering individual reduction operations.
@@ -664,7 +670,7 @@ performed and a final task using the results in {\tt inst3} is launched (lines 1
 %all memory is known to be directly accessible to the executing processor, which allows 
 %for direct references to elements.  In cases where not all memory is directly accessable, 
 %accessors supply the level of indirection necessary to convert operations into remote 
-%memory operations (RMAs) if supported by the underlying hardware.  
+%memory operations (RDMAs) if supported by the underlying hardware.  
 %An example of this is described in more detail in Section~\ref{sec:impl}.
 
 %One special (but common) case for applications is when reductions need to be performed.
