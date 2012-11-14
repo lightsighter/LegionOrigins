@@ -147,7 +147,7 @@ function create_piece_coloring[rl,rn](node_list: NodeList<rl,rn>@rl),
 \end{lstlisting}
 
 Colorings are the input to partition operations in Legion.  The partition
-statement shown in Listing~\ref{lst:partition} performs the ``owned nodes''
+statement shown in Listing~\ref{lst:partition} performs the owned nodes
 partitioning.    Since colorings assign each region element at most one color,
 the partition operation results in 
 {\em disjoint} subregions, each a subset of the {\em parent} region.
