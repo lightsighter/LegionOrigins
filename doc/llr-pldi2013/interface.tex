@@ -319,7 +319,7 @@ without blocking or spinning.
 \begin{lstlisting}
 void lock_example(const void *args, size_t arglen, Processor p) {
   // Unpack lock, input events, target processors from arguments
-  Lock mutex = ...
+  Lock mutex = Lock::create_lock(); 
   // Acquire lock, launch first subtask, release lock
   Event lock_event_1 = mutex.lock(prev_event_1);
   Event task_event_1 = proc1.spawn(SUB, args_1, sizeof(args_1), lock_event_1);
@@ -421,9 +421,9 @@ that requests the lock doesn't have to be the one that uses it.  A common
 convention in writing code with deferred locks is to acquire locks on behalf of a task being
 launched.  Figure~\ref{fig:lockevents} illustrates this with a simple example.  The {\tt lock\_example}
 function needs to launch two subtasks on two other processors, each with exclusive access to some resource protected by a
-lock named {\tt mutex}.  For each subtask, it first requests the lock on the subtask's behalf.  Using the
-event returned by the lock request as a precondition, it then spawns the subtask.  The runtime will guarantee
-that the subtask is not started until the lock has been acquired.  The parent task also requests that the
+lock named {\tt mutex} (created on line 3).  For each subtask, it first requests the lock on the subtask's behalf.  Using the
+event returned by the lock request as a precondition, it then spawns the subtask.  The event dependence guarantees that the runtime will 
+not start the subtask until the lock has been acquired.  The parent task also requests that the
 runtime automatically release the lock after each subtask has completed by using the subtask's completion
 event as a precondition for the unlock.  In the event dependency graph (Figure~\ref{fig:lockevents}),
 solid arrows represent
